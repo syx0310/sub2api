@@ -28,13 +28,19 @@ const (
 	InstallLockFile            = ".installed"
 	defaultUserConcurrency     = 5
 	simpleModeAdminConcurrency = 30
+	relayModeAdminConcurrency  = 100
 )
 
 func setupDefaultAdminConcurrency() int {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_MODE")), config.RunModeSimple) {
+	rm := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MODE")))
+	switch rm {
+	case config.RunModeSimple:
 		return simpleModeAdminConcurrency
+	case config.RunModeRelay:
+		return relayModeAdminConcurrency
+	default:
+		return defaultUserConcurrency
 	}
-	return defaultUserConcurrency
 }
 
 // GetDataDir returns the data directory for storing config and lock files.
