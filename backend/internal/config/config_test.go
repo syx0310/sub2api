@@ -36,6 +36,9 @@ func TestNormalizeRunMode(t *testing.T) {
 		{"simple", "simple"},
 		{"SIMPLE", "simple"},
 		{"standard", "standard"},
+		{"relay", "relay"},
+		{"RELAY", "relay"},
+		{"Relay", "relay"},
 		{"invalid", "standard"},
 		{"", "standard"},
 	}
