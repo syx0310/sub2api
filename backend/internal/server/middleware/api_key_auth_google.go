@@ -69,6 +69,28 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 
+		// Relay 模式：检查 Key 过期和配额，跳过订阅和余额
+		if cfg.RunMode == config.RunModeRelay {
+			if apiKey.IsExpired() {
+				abortWithGoogleError(c, 403, "API key has expired")
+				return
+			}
+			if apiKey.IsQuotaExhausted() {
+				abortWithGoogleError(c, 429, "API key quota exhausted")
+				return
+			}
+			c.Set(string(ContextKeyAPIKey), apiKey)
+			c.Set(string(ContextKeyUser), AuthSubject{
+				UserID:      apiKey.User.ID,
+				Concurrency: apiKey.User.Concurrency,
+			})
+			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
+			setGroupContext(c, apiKey.Group)
+			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+			c.Next()
+			return
+		}
+
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 		if isSubscriptionType && subscriptionService != nil {
 			subscription, err := subscriptionService.GetActiveSubscription(

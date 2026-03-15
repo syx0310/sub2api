@@ -640,6 +640,13 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 	if s.cfg.RunMode == config.RunModeSimple {
 		return nil
 	}
+	// Relay 模式：跳过余额/订阅检查，保留 API Key 限速检查
+	if s.cfg.RunMode == config.RunModeRelay {
+		if apiKey != nil && apiKey.HasRateLimits() {
+			return s.checkAPIKeyRateLimits(ctx, apiKey)
+		}
+		return nil
+	}
 	if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
 		return ErrBillingServiceUnavailable
 	}

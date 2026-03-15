@@ -95,5 +95,16 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 		}
 	}
 
+	// RELAY 模式：自动启用 backend mode 以禁用用户注册和自助服务。
+	// Group 由管理员手动管理，不自动创建。
+	if cfg.RunMode == config.RunModeRelay {
+		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer seedCancel()
+		if err := ensureRelayModeBackendMode(seedCtx, client); err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+	}
+
 	return client, drv.DB(), nil
 }

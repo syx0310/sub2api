@@ -68,6 +68,13 @@ func TestSetupDefaultAdminConcurrency(t *testing.T) {
 			t.Fatalf("setupDefaultAdminConcurrency()=%d, want %d", got, defaultUserConcurrency)
 		}
 	})
+
+	t.Run("relay mode admin uses highest concurrency", func(t *testing.T) {
+		t.Setenv("RUN_MODE", "relay")
+		if got := setupDefaultAdminConcurrency(); got != relayModeAdminConcurrency {
+			t.Fatalf("setupDefaultAdminConcurrency()=%d, want %d", got, relayModeAdminConcurrency)
+		}
+	})
 }
 
 func TestWriteConfigFileKeepsDefaultUserConcurrency(t *testing.T) {
