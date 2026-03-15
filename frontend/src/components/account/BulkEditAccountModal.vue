@@ -661,43 +661,6 @@
         </div>
       </div>
 
-      <!-- OpenAI OAuth WS mode -->
-      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
-        <div class="mb-3 flex items-center justify-between">
-          <label
-            id="bulk-edit-openai-ws-mode-label"
-            class="input-label mb-0"
-            for="bulk-edit-openai-ws-mode-enabled"
-          >
-            {{ t('admin.accounts.openai.wsMode') }}
-          </label>
-          <input
-            v-model="enableOpenAIWSMode"
-            id="bulk-edit-openai-ws-mode-enabled"
-            type="checkbox"
-            aria-controls="bulk-edit-openai-ws-mode"
-            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-          />
-        </div>
-        <div
-          id="bulk-edit-openai-ws-mode"
-          :class="!enableOpenAIWSMode && 'pointer-events-none opacity-50'"
-        >
-          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.openai.wsModeDesc') }}
-          </p>
-          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t(openAIWSModeConcurrencyHintKey) }}
-          </p>
-          <Select
-            v-model="openaiOAuthResponsesWebSocketV2Mode"
-            data-testid="bulk-edit-openai-ws-mode-select"
-            :options="openAIWSModeOptions"
-            aria-labelledby="bulk-edit-openai-ws-mode-label"
-          />
-        </div>
-      </div>
-
       <!-- RPM Limit (仅全部为 Anthropic OAuth/SetupToken 时显示) -->
       <div v-if="allAnthropicOAuthOrSetupToken" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -824,6 +787,165 @@
         </div>
       </div>
 
+      <!-- ═══ OpenAI: WS Mode ═══ -->
+      <div v-if="hasOpenAI" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-ws-mode-label" class="input-label mb-0" for="bulk-edit-ws-mode-enabled">
+            {{ t('admin.accounts.openai.wsMode') }}
+          </label>
+          <input v-model="enableWsMode" id="bulk-edit-ws-mode-enabled" type="checkbox" aria-controls="bulk-edit-ws-mode-body" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div id="bulk-edit-ws-mode-body" :class="!enableWsMode && 'pointer-events-none opacity-50'" role="group" aria-labelledby="bulk-edit-ws-mode-label">
+          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.wsModeDesc') }}</p>
+          <div v-if="hasOpenAIOAuth" class="mb-3">
+            <label class="input-label text-xs">OAuth WS Mode</label>
+            <Select v-model="oauthWsMode" :options="wsModeOptions" />
+          </div>
+          <div v-if="hasOpenAIAPIKey">
+            <label class="input-label text-xs">API Key WS Mode</label>
+            <Select v-model="apikeyWsMode" :options="wsModeOptions" />
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ OpenAI: Codex CLI Only ═══ -->
+      <div v-if="hasOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-codex-cli-label" class="input-label mb-0" for="bulk-edit-codex-cli-enabled">
+            {{ t('admin.accounts.openai.codexCLIOnly') }}
+          </label>
+          <input v-model="enableCodexCliOnly" id="bulk-edit-codex-cli-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableCodexCliOnly" class="flex items-center justify-between">
+          <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.openai.codexCLIOnlyDesc') }}</span>
+          <button type="button" @click="codexCliOnly = !codexCliOnly" :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2', codexCliOnly ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']">
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', codexCliOnly ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: Window Cost Limit ═══ -->
+      <div v-if="hasAnthropicOAuthOrSetup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-window-cost-label" class="input-label mb-0" for="bulk-edit-window-cost-enabled">
+            {{ t('admin.accounts.quotaControl.windowCost.label') }}
+          </label>
+          <input v-model="enableWindowCost" id="bulk-edit-window-cost-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableWindowCost" class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="input-label text-xs">{{ t('admin.accounts.quotaControl.windowCost.limit') }}</label>
+            <div class="relative">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400">$</span>
+              <input v-model.number="windowCostLimit" type="number" min="0" step="1" class="input pl-7" />
+            </div>
+          </div>
+          <div>
+            <label class="input-label text-xs">{{ t('admin.accounts.quotaControl.windowCost.stickyReserve') }}</label>
+            <div class="relative">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400">$</span>
+              <input v-model.number="windowCostStickyReserve" type="number" min="0" step="1" class="input pl-7" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: Session Limit ═══ -->
+      <div v-if="hasAnthropicOAuthOrSetup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-session-limit-label" class="input-label mb-0" for="bulk-edit-session-limit-enabled">
+            {{ t('admin.accounts.quotaControl.sessionLimit.label') }}
+          </label>
+          <input v-model="enableSessionLimit" id="bulk-edit-session-limit-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableSessionLimit" class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="input-label text-xs">{{ t('admin.accounts.quotaControl.sessionLimit.maxSessions') }}</label>
+            <input v-model.number="maxSessions" type="number" min="1" step="1" class="input" />
+          </div>
+          <div>
+            <label class="input-label text-xs">{{ t('admin.accounts.quotaControl.sessionLimit.idleTimeout') }}</label>
+            <div class="relative">
+              <input v-model.number="sessionIdleTimeoutMinutes" type="number" min="1" step="1" class="input pr-12" />
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400">{{ t('common.minutes') }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: TLS Fingerprint ═══ -->
+      <div v-if="hasAnthropicOAuthOrSetup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-tls-fp-label" class="input-label mb-0" for="bulk-edit-tls-fp-enabled">
+            {{ t('admin.accounts.quotaControl.tlsFingerprint.label') }}
+          </label>
+          <input v-model="enableTlsFingerprint" id="bulk-edit-tls-fp-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableTlsFingerprint" class="flex items-center justify-between">
+          <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}</span>
+          <button type="button" @click="tlsFingerprint = !tlsFingerprint" :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2', tlsFingerprint ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']">
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', tlsFingerprint ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: Session ID Masking ═══ -->
+      <div v-if="hasAnthropicOAuthOrSetup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-sid-mask-label" class="input-label mb-0" for="bulk-edit-sid-mask-enabled">
+            {{ t('admin.accounts.quotaControl.sessionIdMasking.label') }}
+          </label>
+          <input v-model="enableSessionIdMasking" id="bulk-edit-sid-mask-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableSessionIdMasking" class="flex items-center justify-between">
+          <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.quotaControl.sessionIdMasking.hint') }}</span>
+          <button type="button" @click="sessionIdMasking = !sessionIdMasking" :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2', sessionIdMasking ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']">
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', sessionIdMasking ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: Cache TTL Override ═══ -->
+      <div v-if="hasAnthropicOAuthOrSetup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-cache-ttl-label" class="input-label mb-0" for="bulk-edit-cache-ttl-enabled">
+            {{ t('admin.accounts.quotaControl.cacheTTLOverride.label') }}
+          </label>
+          <input v-model="enableCacheTTLOverride" id="bulk-edit-cache-ttl-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableCacheTTLOverride" class="space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.quotaControl.cacheTTLOverride.hint') }}</span>
+            <button type="button" @click="cacheTTLOverrideEnabled = !cacheTTLOverrideEnabled" :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2', cacheTTLOverrideEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']">
+              <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', cacheTTLOverrideEnabled ? 'translate-x-5' : 'translate-x-0']" />
+            </button>
+          </div>
+          <div v-if="cacheTTLOverrideEnabled">
+            <label class="input-label text-xs">{{ t('admin.accounts.quotaControl.cacheTTLOverride.target') }}</label>
+            <select v-model="cacheTTLOverrideTarget" class="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-dark-500 dark:bg-dark-700 dark:text-white">
+              <option value="5m">5m</option>
+              <option value="1h">1h</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Anthropic: API Key Passthrough ═══ -->
+      <div v-if="hasAnthropicAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label id="bulk-edit-anthro-pt-label" class="input-label mb-0" for="bulk-edit-anthro-pt-enabled">
+            {{ t('admin.accounts.anthropic.apiKeyPassthrough') }}
+          </label>
+          <input v-model="enableAnthropicPassthrough" id="bulk-edit-anthro-pt-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <div v-if="enableAnthropicPassthrough" class="flex items-center justify-between">
+          <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.anthropic.apiKeyPassthroughDesc') }}</span>
+          <button type="button" @click="anthropicPassthrough = !anthropicPassthrough" :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2', anthropicPassthrough ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']">
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', anthropicPassthrough ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+      </div>
+
       <!-- Groups -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -922,9 +1044,9 @@ import {
 } from '@/composables/useModelWhitelist'
 import {
   OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_PASSTHROUGH,
-  isOpenAIWSModeEnabled,
-  resolveOpenAIWSModeConcurrencyHintKey
+  isOpenAIWSModeEnabled
 } from '@/utils/openaiWsMode'
 import type { OpenAIWSMode } from '@/utils/openaiWsMode'
 interface Props {
@@ -934,6 +1056,7 @@ interface Props {
   selectedTypes: AccountType[]
   proxies: ProxyConfig[]
   groups: AdminGroup[]
+  accountPlatformMap: Record<number, string>
 }
 
 const props = defineProps<Props>()
@@ -957,15 +1080,6 @@ const allOpenAIPassthroughCapable = computed(() => {
   )
 })
 
-const allOpenAIOAuth = computed(() => {
-  return (
-    props.selectedPlatforms.length === 1 &&
-    props.selectedPlatforms[0] === 'openai' &&
-    props.selectedTypes.length > 0 &&
-    props.selectedTypes.every(t => t === 'oauth')
-  )
-})
-
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
   return (
@@ -975,6 +1089,17 @@ const allAnthropicOAuthOrSetupToken = computed(() => {
   )
 })
 
+// Platform/type detection for conditional field rendering
+const hasOpenAI = computed(() => props.selectedPlatforms.includes('openai'))
+const hasOpenAIOAuth = computed(() => hasOpenAI.value && props.selectedTypes.includes('oauth'))
+const hasOpenAIAPIKey = computed(() => hasOpenAI.value && props.selectedTypes.includes('apikey'))
+const hasAnthropicOAuthOrSetup = computed(() =>
+  props.selectedPlatforms.includes('anthropic') &&
+  props.selectedTypes.some(t => t === 'oauth' || t === 'setup-token')
+)
+const hasAnthropicAPIKey = computed(() =>
+  props.selectedPlatforms.includes('anthropic') && props.selectedTypes.includes('apikey')
+)
 const filteredPresets = computed(() => {
   if (props.selectedPlatforms.length === 0) return []
 
@@ -1010,7 +1135,6 @@ const enableRateMultiplier = ref(false)
 const enableStatus = ref(false)
 const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
-const enableOpenAIWSMode = ref(false)
 const enableRpmLimit = ref(false)
 
 // State - field values
@@ -1033,12 +1157,43 @@ const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
 const openaiPassthroughEnabled = ref(false)
-const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const rpmLimitEnabled = ref(false)
 const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const bulkRpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref<string | null>(null)
+
+// OpenAI fields
+const enableWsMode = ref(false)
+const oauthWsMode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const apikeyWsMode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const enableCodexCliOnly = ref(false)
+const codexCliOnly = ref(false)
+
+// Anthropic fields
+const enableWindowCost = ref(false)
+const windowCostLimit = ref<number | null>(null)
+const windowCostStickyReserve = ref<number | null>(null)
+const enableSessionLimit = ref(false)
+const maxSessions = ref<number | null>(null)
+const sessionIdleTimeoutMinutes = ref<number | null>(null)
+const enableTlsFingerprint = ref(false)
+const tlsFingerprint = ref(false)
+const enableSessionIdMasking = ref(false)
+const sessionIdMasking = ref(false)
+const enableCacheTTLOverride = ref(false)
+const cacheTTLOverrideEnabled = ref(false)
+const cacheTTLOverrideTarget = ref<string>('5m')
+const enableAnthropicPassthrough = ref(false)
+const anthropicPassthrough = ref(false)
+
+// WS mode options
+const wsModeOptions = computed(() => [
+  { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
+  { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
+  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') },
+])
+
 const umqModeOptions = computed(() => [
   { value: '', label: t('admin.accounts.quotaControl.rpmLimit.umqModeOff') },
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
@@ -1065,14 +1220,6 @@ const isOpenAIModelRestrictionDisabled = computed(
     allOpenAIPassthroughCapable.value &&
     enableOpenAIPassthrough.value &&
     openaiPassthroughEnabled.value
-)
-
-const openAIWSModeOptions = computed(() => [
-  { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
-  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
-])
-const openAIWSModeConcurrencyHintKey = computed(() =>
-  resolveOpenAIWSModeConcurrencyHintKey(openaiOAuthResponsesWebSocketV2Mode.value)
 )
 
 // Model mapping helpers
@@ -1152,7 +1299,8 @@ const buildModelMappingObject = (): Record<string, string> | null => {
   )
 }
 
-const buildUpdatePayload = (): Record<string, unknown> | null => {
+// 构建通用 payload（适用于所有平台）
+const buildCommonPayload = (): Record<string, unknown> => {
   const updates: Record<string, unknown> = {}
   const credentials: Record<string, unknown> = {}
   let credentialsChanged = false
@@ -1164,36 +1312,27 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   }
 
   if (enableProxy.value) {
-    // 后端期望 proxy_id: 0 表示清除代理，而不是 null
     updates.proxy_id = proxyId.value === null ? 0 : proxyId.value
   }
-
   if (enableConcurrency.value) {
     updates.concurrency = concurrency.value
   }
-
   if (enableLoadFactor.value) {
-    // 空值/NaN/0 时发送 0（后端约定 <= 0 表示清除）
     const lf = loadFactor.value
     updates.load_factor = (lf != null && !Number.isNaN(lf) && lf > 0) ? lf : 0
   }
-
   if (enablePriority.value) {
     updates.priority = priority.value
   }
-
   if (enableRateMultiplier.value) {
     updates.rate_multiplier = rateMultiplier.value
   }
-
   if (enableStatus.value) {
     updates.status = status.value
   }
-
   if (enableGroups.value) {
     updates.group_ids = groupIds.value
   }
-
   if (enableBaseUrl.value) {
     const baseUrlValue = baseUrl.value.trim()
     if (baseUrlValue) {
@@ -1201,15 +1340,6 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       credentialsChanged = true
     }
   }
-
-  if (enableOpenAIPassthrough.value) {
-    const extra = ensureExtra()
-    extra.openai_passthrough = openaiPassthroughEnabled.value
-    if (!openaiPassthroughEnabled.value) {
-      extra.openai_oauth_passthrough = false
-    }
-  }
-
   if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value) {
     // 统一使用 model_mapping 字段
     if (modelRestrictionMode.value === 'whitelist') {
@@ -1228,31 +1358,20 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       credentialsChanged = true
     }
   }
-
   if (enableCustomErrorCodes.value) {
     credentials.custom_error_codes_enabled = true
     credentials.custom_error_codes = [...selectedErrorCodes.value]
     credentialsChanged = true
   }
-
   if (enableInterceptWarmup.value) {
     credentials.intercept_warmup_requests = interceptWarmupRequests.value
     credentialsChanged = true
   }
-
   if (credentialsChanged) {
     updates.credentials = credentials
   }
 
-  if (enableOpenAIWSMode.value) {
-    const extra = ensureExtra()
-    extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-    extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(
-      openaiOAuthResponsesWebSocketV2Mode.value
-    )
-  }
-
-  // RPM limit settings (写入 extra 字段)
+  // RPM limit (extra)
   if (enableRpmLimit.value) {
     const extra = ensureExtra()
     if (rpmLimitEnabled.value && bulkBaseRpm.value != null && bulkBaseRpm.value > 0) {
@@ -1262,9 +1381,6 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         extra.rpm_sticky_buffer = bulkRpmStickyBuffer.value
       }
     } else {
-      // 关闭 RPM 限制 - 设置 base_rpm 为 0，并用空值覆盖关联字段
-      // 后端使用 JSONB || merge 语义，不会删除已有 key，
-      // 所以必须显式发送空值来重置（后端读取时会 fallback 到默认值）
       extra.base_rpm = 0
       extra.rpm_strategy = ''
       extra.rpm_sticky_buffer = 0
@@ -1272,14 +1388,81 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.extra = extra
   }
 
-  // UMQ mode（独立于 RPM 保存）
+  // UMQ mode
   if (userMsgQueueMode.value !== null) {
     const umqExtra = ensureExtra()
-    umqExtra.user_msg_queue_mode = userMsgQueueMode.value  // '' = 清除账号级覆盖
-    umqExtra.user_msg_queue_enabled = false  // 清理旧字段（JSONB merge）
+    umqExtra.user_msg_queue_mode = userMsgQueueMode.value
+    umqExtra.user_msg_queue_enabled = false
   }
 
-  return Object.keys(updates).length > 0 ? updates : null
+  return updates
+}
+
+// 构建 OpenAI 平台特有的 extra
+const buildOpenAIExtra = (): Record<string, unknown> | null => {
+  const extra: Record<string, unknown> = {}
+
+  if (enableWsMode.value) {
+    if (hasOpenAIOAuth.value) {
+      extra.openai_oauth_responses_websockets_v2_mode = oauthWsMode.value
+      extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(oauthWsMode.value)
+    }
+    if (hasOpenAIAPIKey.value) {
+      extra.openai_apikey_responses_websockets_v2_mode = apikeyWsMode.value
+      extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(apikeyWsMode.value)
+    }
+  }
+  if (enableCodexCliOnly.value) {
+    extra.codex_cli_only = codexCliOnly.value
+  }
+  if (enableOpenAIPassthrough.value) {
+    extra.openai_passthrough = openaiPassthroughEnabled.value
+    if (!openaiPassthroughEnabled.value) {
+      extra.openai_oauth_passthrough = false
+    }
+  }
+
+  return Object.keys(extra).length > 0 ? extra : null
+}
+
+// 构建 Anthropic 平台特有的 extra
+const buildAnthropicExtra = (): Record<string, unknown> | null => {
+  const extra: Record<string, unknown> = {}
+
+  if (enableWindowCost.value) {
+    extra.window_cost_limit = windowCostLimit.value || 0
+    extra.window_cost_sticky_reserve = windowCostStickyReserve.value || 0
+  }
+  if (enableSessionLimit.value) {
+    extra.max_sessions = maxSessions.value || 0
+    extra.session_idle_timeout_minutes = sessionIdleTimeoutMinutes.value || 0
+  }
+  if (enableTlsFingerprint.value) {
+    extra.enable_tls_fingerprint = tlsFingerprint.value
+  }
+  if (enableSessionIdMasking.value) {
+    extra.session_id_masking_enabled = sessionIdMasking.value
+  }
+  if (enableCacheTTLOverride.value) {
+    extra.cache_ttl_override_enabled = cacheTTLOverrideEnabled.value
+    if (cacheTTLOverrideEnabled.value) {
+      extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
+    }
+  }
+  if (enableAnthropicPassthrough.value) {
+    extra.anthropic_passthrough = anthropicPassthrough.value
+  }
+
+  return Object.keys(extra).length > 0 ? extra : null
+}
+
+// 合并 common payload 和 platform-specific extra
+const mergePayloadWithExtra = (common: Record<string, unknown>, platformExtra: Record<string, unknown> | null): Record<string, unknown> => {
+  if (!platformExtra) return { ...common }
+  const merged = { ...common }
+  const existingExtra = (merged.extra as Record<string, unknown>) || {}
+  merged.extra = { ...existingExtra, ...platformExtra }
+  return merged
 }
 
 const mixedChannelConfirmed = ref(false)
@@ -1341,29 +1524,107 @@ const handleSubmit = async () => {
     enableRateMultiplier.value ||
     enableStatus.value ||
     enableGroups.value ||
-    enableOpenAIWSMode.value ||
     enableRpmLimit.value ||
-    userMsgQueueMode.value !== null
+    userMsgQueueMode.value !== null ||
+    enableWsMode.value ||
+    enableCodexCliOnly.value ||
+    enableWindowCost.value ||
+    enableSessionLimit.value ||
+    enableTlsFingerprint.value ||
+    enableSessionIdMasking.value ||
+    enableCacheTTLOverride.value ||
+    enableAnthropicPassthrough.value
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
     return
   }
 
-  const built = buildUpdatePayload()
-  if (!built) {
-    appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
+  const common = buildCommonPayload()
+  const openaiExtra = buildOpenAIExtra()
+  const anthropicExtra = buildAnthropicExtra()
+  const hasPlatformSpecific = !!(openaiExtra || anthropicExtra)
+
+  if (!hasPlatformSpecific) {
+    // 无平台特有字段 → 单请求（现有逻辑）
+    if (Object.keys(common).length === 0) {
+      appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
+      return
+    }
+    const canContinue = await preCheckMixedChannelRisk(common)
+    if (!canContinue) return
+    await submitBulkUpdate(common, props.accountIds)
     return
   }
 
-  const canContinue = await preCheckMixedChannelRisk(built)
-  if (!canContinue) return
+  // 有平台特有字段 → 按平台拆分请求
+  const openaiIds = props.accountIds.filter(id => props.accountPlatformMap[id] === 'openai')
+  const anthropicIds = props.accountIds.filter(id => props.accountPlatformMap[id] === 'anthropic')
+  const otherIds = props.accountIds.filter(id => {
+    const p = props.accountPlatformMap[id]
+    return p !== 'openai' && p !== 'anthropic'
+  })
 
-  await submitBulkUpdate(built)
+  // 预检查 mixed channel risk（仅通用字段包含 groups 时）
+  if (enableGroups.value && Object.keys(common).length > 0) {
+    const canContinue = await preCheckMixedChannelRisk(common)
+    if (!canContinue) return
+  }
+
+  submitting.value = true
+  let totalSuccess = 0
+  let totalFailed = 0
+
+  try {
+    // OpenAI 账号: common + openai extra
+    if (openaiIds.length > 0) {
+      const payload = mergePayloadWithExtra(common, openaiExtra)
+      if (Object.keys(payload).length > 0) {
+        const res = await adminAPI.accounts.bulkUpdate(openaiIds, payload)
+        totalSuccess += res.success || 0
+        totalFailed += res.failed || 0
+      }
+    }
+
+    // Anthropic 账号: common + anthropic extra
+    if (anthropicIds.length > 0) {
+      const payload = mergePayloadWithExtra(common, anthropicExtra)
+      if (Object.keys(payload).length > 0) {
+        const res = await adminAPI.accounts.bulkUpdate(anthropicIds, payload)
+        totalSuccess += res.success || 0
+        totalFailed += res.failed || 0
+      }
+    }
+
+    // 其他平台: 只有 common
+    if (otherIds.length > 0 && Object.keys(common).length > 0) {
+      const res = await adminAPI.accounts.bulkUpdate(otherIds, common)
+      totalSuccess += res.success || 0
+      totalFailed += res.failed || 0
+    }
+
+    if (totalSuccess > 0 && totalFailed === 0) {
+      appStore.showSuccess(t('admin.accounts.bulkEdit.success', { count: totalSuccess }))
+    } else if (totalSuccess > 0) {
+      appStore.showError(t('admin.accounts.bulkEdit.partialSuccess', { success: totalSuccess, failed: totalFailed }))
+    } else {
+      appStore.showError(t('admin.accounts.bulkEdit.failed'))
+    }
+
+    if (totalSuccess > 0) {
+      pendingUpdatesForConfirm.value = null
+      emit('updated')
+      handleClose()
+    }
+  } catch (error: any) {
+    appStore.showError(error.message || t('admin.accounts.bulkEdit.failed'))
+    console.error('Error bulk updating accounts:', error)
+  } finally {
+    submitting.value = false
+  }
 }
 
-const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
-  // 无论是预检查确认还是 409 兜底确认，只要 mixedChannelConfirmed 为 true 就带上 flag
+const submitBulkUpdate = async (baseUpdates: Record<string, unknown>, accountIds: number[]) => {
   const updates = mixedChannelConfirmed.value
     ? { ...baseUpdates, confirm_mixed_channel_risk: true }
     : baseUpdates
@@ -1371,7 +1632,7 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
   submitting.value = true
 
   try {
-    const res = await adminAPI.accounts.bulkUpdate(props.accountIds, updates)
+    const res = await adminAPI.accounts.bulkUpdate(accountIds, updates)
     const success = res.success || 0
     const failed = res.failed || 0
 
@@ -1389,7 +1650,6 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
       handleClose()
     }
   } catch (error: any) {
-    // 兜底：多平台混合场景下，预检查跳过，由后端 409 触发确认框
     if (error.status === 409 && error.error === 'mixed_channel_warning') {
       pendingUpdatesForConfirm.value = baseUpdates
       mixedChannelWarningMessage.value = error.message
@@ -1407,7 +1667,7 @@ const handleMixedChannelConfirm = async () => {
   showMixedChannelWarning.value = false
   mixedChannelConfirmed.value = true
   if (pendingUpdatesForConfirm.value) {
-    await submitBulkUpdate(pendingUpdatesForConfirm.value)
+    await submitBulkUpdate(pendingUpdatesForConfirm.value, props.accountIds)
   }
 }
 
@@ -1434,7 +1694,6 @@ watch(
       enableStatus.value = false
       enableGroups.value = false
       enableOpenAIPassthrough.value = false
-      enableOpenAIWSMode.value = false
       enableRpmLimit.value = false
 
       // Reset all values
@@ -1453,12 +1712,35 @@ watch(
       rateMultiplier.value = 1
       status.value = 'active'
       groupIds.value = []
-      openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       rpmLimitEnabled.value = false
       bulkBaseRpm.value = null
       bulkRpmStrategy.value = 'tiered'
       bulkRpmStickyBuffer.value = null
       userMsgQueueMode.value = null
+
+      // OpenAI fields
+      enableWsMode.value = false
+      oauthWsMode.value = OPENAI_WS_MODE_OFF
+      apikeyWsMode.value = OPENAI_WS_MODE_OFF
+      enableCodexCliOnly.value = false
+      codexCliOnly.value = false
+
+      // Anthropic fields
+      enableWindowCost.value = false
+      windowCostLimit.value = null
+      windowCostStickyReserve.value = null
+      enableSessionLimit.value = false
+      maxSessions.value = null
+      sessionIdleTimeoutMinutes.value = null
+      enableTlsFingerprint.value = false
+      tlsFingerprint.value = false
+      enableSessionIdMasking.value = false
+      sessionIdMasking.value = false
+      enableCacheTTLOverride.value = false
+      cacheTTLOverrideEnabled.value = false
+      cacheTTLOverrideTarget.value = '5m'
+      enableAnthropicPassthrough.value = false
+      anthropicPassthrough.value = false
 
       // Reset mixed channel warning state
       showMixedChannelWarning.value = false
