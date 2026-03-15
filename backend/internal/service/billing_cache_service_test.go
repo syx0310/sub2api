@@ -102,3 +102,50 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 	})
 	require.False(t, enqueued)
 }
+
+func TestRelayModeSkipsBalanceCheck(t *testing.T) {
+	cache := &billingCacheWorkerStub{}
+	cfg := &config.Config{RunMode: config.RunModeRelay}
+	svc := NewBillingCacheService(cache, nil, nil, nil, cfg)
+	t.Cleanup(svc.Stop)
+
+	user := &User{ID: 1, Balance: 0} // zero balance
+	apiKey := &APIKey{ID: 1}          // no rate limits
+
+	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil)
+	require.NoError(t, err, "relay mode should skip balance check")
+}
+
+func TestRelayModeEnforcesAPIKeyRateLimits(t *testing.T) {
+	rateLimitData := &APIKeyRateLimitCacheData{
+		Usage1d:  10.0,                    // usage exceeds limit
+		Window1d: time.Now().Unix() - 100, // window started recently (not expired)
+	}
+	rateLimitCache := &rateLimitCacheStub{data: rateLimitData}
+
+	cfg := &config.Config{RunMode: config.RunModeRelay}
+	svc := NewBillingCacheService(rateLimitCache, nil, nil, nil, cfg)
+	t.Cleanup(svc.Stop)
+
+	user := &User{ID: 1, Balance: 0}
+	apiKey := &APIKey{
+		ID:          1,
+		RateLimit1d: 5.0, // limit is 5, usage is 10 → should be rejected
+	}
+
+	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil)
+	require.Error(t, err, "relay mode should enforce API key rate limits")
+}
+
+// rateLimitCacheStub implements BillingCacheWorker with custom rate limit behavior
+type rateLimitCacheStub struct {
+	billingCacheWorkerStub
+	data *APIKeyRateLimitCacheData
+}
+
+func (r *rateLimitCacheStub) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*APIKeyRateLimitCacheData, error) {
+	if r.data != nil {
+		return r.data, nil
+	}
+	return nil, errors.New("not found")
+}
