@@ -310,7 +310,7 @@ func (s *OpsCleanupService) tryAcquireLeaderLock(ctx context.Context) (func(), b
 		return nil, false
 	}
 	// In simple run mode, assume single instance.
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	if s.cfg != nil && (s.cfg.RunMode == config.RunModeSimple || s.cfg.RunMode == config.RunModeRelay) {
 		return nil, true
 	}
 
