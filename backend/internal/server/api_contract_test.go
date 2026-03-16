@@ -493,6 +493,7 @@ func TestAPIContracts(t *testing.T) {
 					"registration_email_suffix_whitelist": [],
 					"promo_code_enabled": true,
 					"password_reset_enabled": false,
+					"frontend_url": "",
 					"totp_enabled": false,
 					"totp_encryption_key_configured": false,
 					"smtp_host": "smtp.example.com",
@@ -1621,6 +1622,14 @@ func (r *stubUsageLogRepo) GetUsageTrendWithFilters(ctx context.Context, startTi
 }
 
 func (r *stubUsageLogRepo) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagestats.ModelStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUpstreamEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error) {
 	return nil, errors.New("not implemented")
 }
 
