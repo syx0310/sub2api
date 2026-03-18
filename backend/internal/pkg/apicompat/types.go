@@ -28,7 +28,7 @@ type AnthropicRequest struct {
 
 // AnthropicOutputConfig controls output generation parameters.
 type AnthropicOutputConfig struct {
-	Effort string `json:"effort,omitempty"` // "low" | "medium" | "high" | "max"
+	Effort string `json:"effort,omitempty"` // "low" | "medium" | "high"
 }
 
 // AnthropicThinking configures extended thinking in the Anthropic API.
@@ -152,8 +152,8 @@ type AnthropicDelta struct {
 // ResponsesRequest is the request body for POST /v1/responses.
 type ResponsesRequest struct {
 	Model           string              `json:"model"`
-	Instructions    string              `json:"instructions,omitempty"`
-	Input           json.RawMessage     `json:"input"` // string or []ResponsesInputItem
+	Input           json.RawMessage     `json:"input"`                      // string or []ResponsesInputItem
+	Instructions    *string             `json:"instructions,omitempty"`     // top-level instructions (Codex OAuth requires this field to exist)
 	MaxOutputTokens *int                `json:"max_output_tokens,omitempty"`
 	Temperature     *float64            `json:"temperature,omitempty"`
 	TopP            *float64            `json:"top_p,omitempty"`
@@ -168,7 +168,7 @@ type ResponsesRequest struct {
 
 // ResponsesReasoning configures reasoning effort in the Responses API.
 type ResponsesReasoning struct {
-	Effort  string `json:"effort"`            // "low" | "medium" | "high" | "xhigh"
+	Effort  string `json:"effort"`            // "low" | "medium" | "high"
 	Summary string `json:"summary,omitempty"` // "auto" | "concise" | "detailed"
 }
 
@@ -338,7 +338,6 @@ type ResponsesStreamEvent struct {
 type ChatCompletionsRequest struct {
 	Model               string             `json:"model"`
 	Messages            []ChatMessage      `json:"messages"`
-	Instructions        string             `json:"instructions,omitempty"` // OpenAI Responses API compat
 	MaxTokens           *int               `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64           `json:"temperature,omitempty"`
@@ -347,7 +346,7 @@ type ChatCompletionsRequest struct {
 	StreamOptions       *ChatStreamOptions `json:"stream_options,omitempty"`
 	Tools               []ChatTool         `json:"tools,omitempty"`
 	ToolChoice          json.RawMessage    `json:"tool_choice,omitempty"`
-	ReasoningEffort     string             `json:"reasoning_effort,omitempty"` // "low" | "medium" | "high" | "xhigh"
+	ReasoningEffort     string             `json:"reasoning_effort,omitempty"` // "low" | "medium" | "high"
 	ServiceTier         string             `json:"service_tier,omitempty"`
 	Stop                json.RawMessage    `json:"stop,omitempty"` // string or []string
 
