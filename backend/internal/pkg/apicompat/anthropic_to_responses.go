@@ -21,13 +21,15 @@ func AnthropicToResponses(req *AnthropicRequest) (*ResponsesRequest, error) {
 		return nil, err
 	}
 
+	emptyInstructions := ""
 	out := &ResponsesRequest{
-		Model:       req.Model,
-		Input:       inputJSON,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stream:      req.Stream,
-		Include:     []string{"reasoning.encrypted_content"},
+		Model:        req.Model,
+		Input:        inputJSON,
+		Instructions: &emptyInstructions,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
+		Stream:       req.Stream,
+		Include:      []string{"reasoning.encrypted_content"},
 	}
 
 	storeFalse := false
