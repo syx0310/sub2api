@@ -26,14 +26,16 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		return nil, err
 	}
 
+	emptyInstructions := ""
 	out := &ResponsesRequest{
-		Model:       req.Model,
-		Input:       inputJSON,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stream:      true, // upstream always streams
-		Include:     []string{"reasoning.encrypted_content"},
-		ServiceTier: req.ServiceTier,
+		Model:        req.Model,
+		Input:        inputJSON,
+		Instructions: &emptyInstructions,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
+		Stream:       true, // upstream always streams
+		Include:      []string{"reasoning.encrypted_content"},
+		ServiceTier:  req.ServiceTier,
 	}
 
 	storeFalse := false
@@ -103,6 +105,8 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "system":
 		return chatSystemToResponses(m)
+	case "developer":
+		return chatDeveloperToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
 	case "assistant":
@@ -127,6 +131,19 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		return nil, err
 	}
 	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+}
+
+// chatDeveloperToResponses converts a developer message, preserving the role.
+func chatDeveloperToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
+	text, err := parseChatContent(m.Content)
+	if err != nil {
+		return nil, err
+	}
+	content, err := json.Marshal(text)
+	if err != nil {
+		return nil, err
+	}
+	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and
