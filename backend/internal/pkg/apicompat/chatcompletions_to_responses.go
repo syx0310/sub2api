@@ -26,10 +26,11 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		return nil, err
 	}
 
+	emptyInstructions := ""
 	out := &ResponsesRequest{
 		Model:        req.Model,
-		Instructions: req.Instructions,
 		Input:        inputJSON,
+		Instructions: &emptyInstructions,
 		Temperature:  req.Temperature,
 		TopP:         req.TopP,
 		Stream:       true, // upstream always streams
@@ -104,6 +105,8 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "system":
 		return chatSystemToResponses(m)
+	case "developer":
+		return chatDeveloperToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
 	case "assistant":
@@ -128,6 +131,19 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		return nil, err
 	}
 	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+}
+
+// chatDeveloperToResponses converts a developer message, preserving the role.
+func chatDeveloperToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
+	parsed, err := parseChatMessageContent(m.Content)
+	if err != nil {
+		return nil, err
+	}
+	content, err := marshalChatInputContent(parsed)
+	if err != nil {
+		return nil, err
+	}
+	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and
