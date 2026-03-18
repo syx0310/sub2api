@@ -1806,11 +1806,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		patchDisabled = true
 	}
 
-	// 非透传模式下，instructions 为空时注入默认指令。
+	// 非透传模式下，instructions 缺失时补空字符串占位。
+	// Codex OAuth upstream 要求字段存在但允许空串，不注入默认文本。
 	if isInstructionsEmpty(reqBody) {
-		reqBody["instructions"] = "You are a helpful coding assistant."
+		reqBody["instructions"] = ""
 		bodyModified = true
-		markPatchSet("instructions", "You are a helpful coding assistant.")
+		markPatchSet("instructions", "")
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
@@ -2325,29 +2326,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	if account != nil && account.Type == AccountTypeOAuth {
-		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
-			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
-			setOpsUpstreamError(c, http.StatusForbidden, rejectMsg, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: http.StatusForbidden,
-				Passthrough:        true,
-				Kind:               "request_error",
-				Message:            rejectMsg,
-				Detail:             rejectReason,
-			})
-			logOpenAIPassthroughInstructionsRejected(ctx, c, account, reqModel, rejectReason, body)
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": gin.H{
-					"type":    "forbidden_error",
-					"message": rejectMsg,
-				},
-			})
-			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
-		}
-
 		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPath(c))
 		if err != nil {
 			return nil, err
@@ -4569,8 +4547,10 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 	return model, stream, promptCacheKey
 }
 
-// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
+// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为 Codex OAuth 兼容行为：
 // 1) store=false 2) 非 compact 保持 stream=true；compact 强制 stream=false
+// 3) 确保 Codex 模型有 instructions 字段（缺失时补空串）
+// 4) 将 input[].role="system" 改为 "developer"（Codex OAuth upstream 拒绝 system）
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -4615,6 +4595,38 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		}
 	}
 
+	// Codex 模型: 确保 instructions 字段存在（上游要求字段存在但允许空串）
+	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(normalized, "model").String()))
+	if strings.Contains(model, "codex") || strings.HasPrefix(model, "gpt-") {
+		if instructions := gjson.GetBytes(normalized, "instructions"); !instructions.Exists() {
+			next, err := sjson.SetBytes(normalized, "instructions", "")
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body instructions: %w", err)
+			}
+			normalized = next
+			changed = true
+		}
+	}
+
+	// Codex OAuth: 将 input[].role="system" 改为 "developer"
+	// 上游拒绝 system role，developer 是正确的系统提示通道
+	inputResult := gjson.GetBytes(normalized, "input")
+	if inputResult.IsArray() {
+		idx := 0
+		inputResult.ForEach(func(_, value gjson.Result) bool {
+			if value.Get("role").String() == "system" {
+				path := fmt.Sprintf("input.%d.role", idx)
+				next, err := sjson.SetBytes(normalized, path, "developer")
+				if err == nil {
+					normalized = next
+					changed = true
+				}
+			}
+			idx++
+			return true
+		})
+	}
+
 	return normalized, changed, nil
 }
 
@@ -4631,9 +4643,7 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	if instructions.Type != gjson.String {
 		return "instructions_not_string"
 	}
-	if strings.TrimSpace(instructions.String()) == "" {
-		return "instructions_empty"
-	}
+	// 上游允许空字符串 instructions，不再拒绝
 	return ""
 }
 

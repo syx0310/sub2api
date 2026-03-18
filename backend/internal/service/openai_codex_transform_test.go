@@ -273,8 +273,8 @@ func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *test
 	_ = result
 }
 
-func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T) {
-	// Codex CLI 场景：无 instructions 时补充默认值
+func TestApplyCodexOAuthTransform_CodexCLI_SuppliesEmptyWhenMissing(t *testing.T) {
+	// Codex CLI 场景：无 instructions 时补空字符串占位（不注入默认文本）
 
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -285,7 +285,7 @@ func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.NotEmpty(t, instructions)
+	require.Equal(t, "", instructions, "should be empty string, not default text")
 	require.True(t, result.Modified)
 }
 
