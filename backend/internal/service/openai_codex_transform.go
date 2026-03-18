@@ -207,6 +207,13 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		result.Modified = true
 	}
 
+	// Codex OAuth upstream 拒绝 input[].role="system"，统一改为 developer
+	if input, ok := reqBody["input"].([]any); ok {
+		if rewriteSystemToDeveloper(input) {
+			result.Modified = true
+		}
+	}
+
 	return result
 }
 
@@ -388,12 +395,16 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 	return true
 }
 
-// applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
+// applyInstructions 确保 instructions 字段存在（Codex OAuth 要求字段必须存在）。
+// 不注入默认文本——上游允许空字符串，代理层不应自行添加高优先级 prompt。
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
-	if !isInstructionsEmpty(reqBody) {
-		return false
+	val, exists := reqBody["instructions"]
+	if exists && val != nil {
+		if _, ok := val.(string); ok {
+			return false
+		}
 	}
-	reqBody["instructions"] = "You are a helpful coding assistant."
+	reqBody["instructions"] = ""
 	return true
 }
 
@@ -581,5 +592,22 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 		reqBody["tools"] = validTools
 	}
 
+	return modified
+}
+
+// rewriteSystemToDeveloper 将 input 中所有 role="system" 改为 role="developer"。
+// Codex OAuth upstream 拒绝 system role，developer 是正确的系统提示通道。
+func rewriteSystemToDeveloper(input []any) bool {
+	modified := false
+	for _, item := range input {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role == "system" {
+			m["role"] = "developer"
+			modified = true
+		}
+	}
 	return modified
 }
