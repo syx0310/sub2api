@@ -172,6 +172,10 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		result.PromptCacheKey = strings.TrimSpace(v)
 	}
 
+	// 注意：不提取 system 到 instructions。基于实测（见 sub2api_codex_oauth_fix_report.md），
+	// Codex OAuth upstream 上 developer > instructions，system 应改为 developer 而非提升到 instructions。
+	// rewriteSystemToDeveloper 在后续步骤中统一处理。
+
 	// instructions 处理逻辑：根据是否是 Codex CLI 分别调用不同方法
 	if applyInstructions(reqBody, isCodexCLI) {
 		result.Modified = true
@@ -306,6 +310,73 @@ func getNormalizedCodexModel(modelID string) string {
 		}
 	}
 	return ""
+}
+
+// extractTextFromContent extracts plain text from a content value that is either
+// a Go string or a []any of content-part maps with type:"text".
+func extractTextFromContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := m["type"].(string); t == "text" {
+				if text, ok := m["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	default:
+		return ""
+	}
+}
+
+// extractSystemMessagesFromInput scans the input array for items with role=="system",
+// removes them, and merges their content into reqBody["instructions"].
+// If instructions is already non-empty, extracted content is prepended with "\n\n".
+// Returns true if any system messages were extracted.
+func extractSystemMessagesFromInput(reqBody map[string]any) bool {
+	input, ok := reqBody["input"].([]any)
+	if !ok || len(input) == 0 {
+		return false
+	}
+
+	var systemTexts []string
+	remaining := make([]any, 0, len(input))
+
+	for _, item := range input {
+		m, ok := item.(map[string]any)
+		if !ok {
+			remaining = append(remaining, item)
+			continue
+		}
+		if role, _ := m["role"].(string); role != "system" {
+			remaining = append(remaining, item)
+			continue
+		}
+		if text := extractTextFromContent(m["content"]); text != "" {
+			systemTexts = append(systemTexts, text)
+		}
+	}
+
+	if len(systemTexts) == 0 {
+		return false
+	}
+
+	extracted := strings.Join(systemTexts, "\n\n")
+	if existing, ok := reqBody["instructions"].(string); ok && strings.TrimSpace(existing) != "" {
+		reqBody["instructions"] = extracted + "\n\n" + existing
+	} else {
+		reqBody["instructions"] = extracted
+	}
+	reqBody["input"] = remaining
+	return true
 }
 
 // applyInstructions 确保 instructions 字段存在（Codex OAuth 要求字段必须存在）。

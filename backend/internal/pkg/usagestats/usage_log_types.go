@@ -90,6 +90,13 @@ type EndpointStat struct {
 	ActualCost  float64 `json:"actual_cost"` // 实际扣除
 }
 
+// GroupUsageSummary represents today's and cumulative cost for a single group.
+type GroupUsageSummary struct {
+	GroupID   int64   `json:"group_id"`
+	TodayCost float64 `json:"today_cost"`
+	TotalCost float64 `json:"total_cost"`
+}
+
 // GroupStat represents usage statistics for a single group
 type GroupStat struct {
 	GroupID     int64   `json:"group_id"`
@@ -127,6 +134,24 @@ type UserSpendingRankingResponse struct {
 	TotalActualCost float64                   `json:"total_actual_cost"`
 	TotalRequests   int64                     `json:"total_requests"`
 	TotalTokens     int64                     `json:"total_tokens"`
+}
+
+// UserBreakdownItem represents per-user usage breakdown within a dimension (group, model, endpoint).
+type UserBreakdownItem struct {
+	UserID      int64   `json:"user_id"`
+	Email       string  `json:"email"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	Cost        float64 `json:"cost"`        // 标准计费
+	ActualCost  float64 `json:"actual_cost"` // 实际扣除
+}
+
+// UserBreakdownDimension specifies the dimension to filter for user breakdown.
+type UserBreakdownDimension struct {
+	GroupID      int64  // filter by group_id (>0 to enable)
+	Model        string // filter by model name (non-empty to enable)
+	Endpoint     string // filter by endpoint value (non-empty to enable)
+	EndpointType string // "inbound", "upstream", or "path"
 }
 
 // APIKeyUsageTrendPoint represents API key usage trend data point

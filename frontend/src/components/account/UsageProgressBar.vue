@@ -2,7 +2,7 @@
   <div>
     <!-- Window stats row (above progress bar) -->
     <div
-      v-if="windowStats"
+      v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
       class="mb-0.5 flex items-center"
     >
       <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
@@ -12,12 +12,13 @@
         <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
           {{ formatTokens }}
         </span>
-        <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+        <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
           A ${{ formatAccountCost }}
         </span>
         <span
           v-if="windowStats?.user_cost != null"
           class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+          :title="t('usage.userBilled')"
         >
           U ${{ formatUserCost }}
         </span>
@@ -47,7 +48,7 @@
       </span>
 
       <!-- Reset time -->
-      <span v-if="resetsAt" class="shrink-0 text-[10px] text-gray-400">
+      <span v-if="shouldShowResetTime" class="shrink-0 text-[10px] text-gray-400">
         {{ formatResetTime }}
       </span>
     </div>
@@ -55,8 +56,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useIntervalFn } from '@vueuse/core'
+import { useI18n } from 'vue-i18n'
 import type { WindowStats } from '@/types'
+import { formatCompactNumber } from '@/utils/format'
 
 const props = defineProps<{
   label: string
@@ -64,7 +68,33 @@ const props = defineProps<{
   resetsAt?: string | null
   color: 'indigo' | 'emerald' | 'purple' | 'amber'
   windowStats?: WindowStats | null
+  showNowWhenIdle?: boolean
 }>()
+
+const { t } = useI18n()
+
+// Reactive clock for countdown — only runs when a reset time is shown,
+// to avoid creating many idle timers across large account lists.
+const now = ref(new Date())
+const { pause: pauseClock, resume: resumeClock } = useIntervalFn(
+  () => {
+    now.value = new Date()
+  },
+  60_000,
+  { immediate: false },
+)
+if (props.resetsAt) resumeClock()
+watch(
+  () => props.resetsAt,
+  (val) => {
+    if (val) {
+      now.value = new Date()
+      resumeClock()
+    } else {
+      pauseClock()
+    }
+  },
+)
 
 // Label background colors
 const labelClass = computed(() => {
@@ -110,12 +140,22 @@ const displayPercent = computed(() => {
   return percent > 999 ? '>999%' : `${percent}%`
 })
 
+const shouldShowResetTime = computed(() => {
+  if (props.resetsAt) return true
+  return Boolean(props.showNowWhenIdle && props.utilization <= 0)
+})
+
 // Format reset time
 const formatResetTime = computed(() => {
+  // For rolling windows, when utilization is 0%, treat as immediately available.
+  if (props.showNowWhenIdle && props.utilization <= 0) {
+    return '现在'
+  }
+
   if (!props.resetsAt) return '-'
+
   const date = new Date(props.resetsAt)
-  const now = new Date()
-  const diffMs = date.getTime() - now.getTime()
+  const diffMs = date.getTime() - now.value.getTime()
 
   if (diffMs <= 0) return '现在'
 
@@ -135,19 +175,12 @@ const formatResetTime = computed(() => {
 // Window stats formatters
 const formatRequests = computed(() => {
   if (!props.windowStats) return ''
-  const r = props.windowStats.requests
-  if (r >= 1000000) return `${(r / 1000000).toFixed(1)}M`
-  if (r >= 1000) return `${(r / 1000).toFixed(1)}K`
-  return r.toString()
+  return formatCompactNumber(props.windowStats.requests, { allowBillions: false })
 })
 
 const formatTokens = computed(() => {
   if (!props.windowStats) return ''
-  const t = props.windowStats.tokens
-  if (t >= 1000000000) return `${(t / 1000000000).toFixed(1)}B`
-  if (t >= 1000000) return `${(t / 1000000).toFixed(1)}M`
-  if (t >= 1000) return `${(t / 1000).toFixed(1)}K`
-  return t.toString()
+  return formatCompactNumber(props.windowStats.tokens)
 })
 
 const formatAccountCost = computed(() => {

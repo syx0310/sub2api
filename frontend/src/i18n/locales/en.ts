@@ -574,7 +574,7 @@ export default {
     groupRequired: 'Please select a group',
     usage: 'Usage',
     today: 'Today',
-    total: 'Total',
+    total: 'Last 30d',
     quota: 'Quota',
     lastUsedAt: 'Last Used',
     useKey: 'Use Key',
@@ -920,6 +920,7 @@ export default {
     lastWeek: 'Last Week',
     thisMonth: 'This Month',
     lastMonth: 'Last Month',
+    last24Hours: 'Last 24 Hours',
     last7Days: 'Last 7 Days',
     last14Days: 'Last 14 Days',
     last30Days: 'Last 30 Days',
@@ -1025,7 +1026,12 @@ export default {
         createBackup: 'Create Backup',
         backing: 'Backing up...',
         backupCreated: 'Backup created successfully',
-        expireDays: 'Expire Days'
+        expireDays: 'Expire Days',
+        alreadyInProgress: 'A backup is already in progress',
+        backupRunning: 'Backup in progress...',
+        backupFailed: 'Backup failed',
+        restoreRunning: 'Restore in progress...',
+        restoreFailed: 'Restore failed',
       },
       columns: {
         status: 'Status',
@@ -1041,6 +1047,11 @@ export default {
         running: 'Running',
         completed: 'Completed',
         failed: 'Failed'
+      },
+      progress: {
+        pending: 'Preparing',
+        dumping: 'Dumping database',
+        uploading: 'Uploading',
       },
       trigger: {
         manual: 'Manual',
@@ -1308,7 +1319,7 @@ export default {
         actions: 'Actions'
       },
       today: 'Today',
-      total: 'Total',
+      total: 'Last 30d',
       noSubscription: 'No subscription',
       daysRemaining: '{days}d',
       expired: 'Expired',
@@ -1494,6 +1505,8 @@ export default {
         rateMultiplier: 'Rate Multiplier',
         type: 'Type',
         accounts: 'Accounts',
+        capacity: 'Capacity',
+        usage: 'Usage',
         status: 'Status',
         actions: 'Actions',
         billingType: 'Billing Type',
@@ -1502,6 +1515,12 @@ export default {
         userNotes: 'Notes',
         userStatus: 'Status'
       },
+      usageToday: 'Today',
+      usageTotal: 'Total',
+      accountsAvailable: 'Avail:',
+      accountsRateLimited: 'Limited:',
+      accountsTotal: 'Total:',
+      accountsUnit: '',
       rateAndAccounts: '{rate}x rate · {count} accounts',
       accountsCount: '{count} accounts',
       form: {
@@ -1683,6 +1702,7 @@ export default {
       revokeSubscription: 'Revoke Subscription',
       allStatus: 'All Status',
       allGroups: 'All Groups',
+      allPlatforms: 'All Platforms',
       daily: 'Daily',
       weekly: 'Weekly',
       monthly: 'Monthly',
@@ -1748,7 +1768,37 @@ export default {
       pleaseSelectGroup: 'Please select a group',
       validityDaysRequired: 'Please enter a valid number of days (at least 1)',
       revokeConfirm:
-        "Are you sure you want to revoke the subscription for '{user}'? This action cannot be undone."
+        "Are you sure you want to revoke the subscription for '{user}'? This action cannot be undone.",
+      guide: {
+        title: 'Subscription Management Guide',
+        subtitle: 'Subscription mode lets you assign time-based usage quotas to users, with daily/weekly/monthly limits. Follow these steps to get started.',
+        showGuide: 'Usage Guide',
+        step1: {
+          title: 'Create a Subscription Group',
+          line1: 'Go to "Group Management" page, click "Create Group"',
+          line2: 'Set billing type to "Subscription", configure daily/weekly/monthly quota limits',
+          line3: 'Save the group and ensure its status is "Active"',
+          link: 'Go to Group Management'
+        },
+        step2: {
+          title: 'Assign Subscription to User',
+          line1: 'Click the "Assign Subscription" button in the top right',
+          line2: 'Search for a user by email and select them',
+          line3: 'Choose a subscription group, set validity days, then click "Assign"'
+        },
+        step3: {
+          title: 'Manage Existing Subscriptions'
+        },
+        actions: {
+          adjust: 'Adjust',
+          adjustDesc: 'Extend or shorten the subscription validity period',
+          resetQuota: 'Reset Quota',
+          resetQuotaDesc: 'Reset daily/weekly/monthly usage to zero',
+          revoke: 'Revoke',
+          revokeDesc: 'Immediately terminate the subscription (irreversible)'
+        },
+        tip: 'Tip: Only groups with billing type "Subscription" and status "Active" appear in the group dropdown. If no options are available, create one in Group Management first.'
+      }
     },
 
     // Accounts

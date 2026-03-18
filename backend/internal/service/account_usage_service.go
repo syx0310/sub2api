@@ -48,6 +48,8 @@ type UsageLogRepository interface {
 	GetEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error)
 	GetUpstreamEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error)
 	GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagestats.GroupStat, error)
+	GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usagestats.UserBreakdownDimension, limit int) ([]usagestats.UserBreakdownItem, error)
+	GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error)
 	GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.APIKeyUsageTrendPoint, error)
 	GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.UserUsageTrendPoint, error)
 	GetUserSpendingRanking(ctx context.Context, startTime, endTime time.Time, limit int) (*usagestats.UserSpendingRankingResponse, error)
@@ -446,23 +448,17 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
-		windowStats := windowStatsFromAccountStats(stats)
-		if hasMeaningfulWindowStats(windowStats) {
-			if usage.FiveHour == nil {
-				usage.FiveHour = &UsageProgress{Utilization: 0}
-			}
-			usage.FiveHour.WindowStats = windowStats
+		if usage.FiveHour == nil {
+			usage.FiveHour = &UsageProgress{Utilization: 0}
 		}
+		usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
 	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
-		windowStats := windowStatsFromAccountStats(stats)
-		if hasMeaningfulWindowStats(windowStats) {
-			if usage.SevenDay == nil {
-				usage.SevenDay = &UsageProgress{Utilization: 0}
-			}
-			usage.SevenDay.WindowStats = windowStats
+		if usage.SevenDay == nil {
+			usage.SevenDay = &UsageProgress{Utilization: 0}
 		}
+		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
 	return usage, nil
@@ -992,13 +988,6 @@ func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 	}
 }
 
-func hasMeaningfulWindowStats(stats *WindowStats) bool {
-	if stats == nil {
-		return false
-	}
-	return stats.Requests > 0 || stats.Tokens > 0 || stats.Cost > 0 || stats.StandardCost > 0 || stats.UserCost > 0
-}
-
 func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now time.Time) *UsageProgress {
 	if len(extra) == 0 {
 		return nil
@@ -1053,6 +1042,11 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 				progress.RemainingSeconds = 0
 			}
 		}
+	}
+
+	// 窗口已过期（resetAt 在 now 之前）→ 额度已重置，归零
+	if progress.ResetsAt != nil && !now.Before(*progress.ResetsAt) {
+		progress.Utilization = 0
 	}
 
 	return progress
