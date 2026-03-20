@@ -218,7 +218,7 @@ export default {
       email: 'Email',
       password: 'Password',
       confirmPassword: 'Confirm Password',
-      passwordPlaceholder: 'Min 6 characters',
+      passwordPlaceholder: 'Min 8 characters',
       confirmPasswordPlaceholder: 'Confirm password',
       passwordMismatch: 'Passwords do not match'
     },
@@ -718,11 +718,14 @@ export default {
     exporting: 'Exporting...',
     preparingExport: 'Preparing export...',
     model: 'Model',
+    requestedModel: 'Requested',
+    upstreamModel: 'Upstream',
     reasoningEffort: 'Reasoning Effort',
     endpoint: 'Endpoint',
     endpointDistribution: 'Endpoint Distribution',
     inbound: 'Inbound',
     upstream: 'Upstream',
+    mapping: 'Mapping',
     path: 'Path',
     inboundEndpoint: 'Inbound Endpoint',
     upstreamEndpoint: 'Upstream Endpoint',
@@ -1286,6 +1289,9 @@ export default {
       searchUsers: 'Search by email, username, notes, or API key...',
       allRoles: 'All Roles',
       allStatus: 'All Status',
+      allGroups: 'All Groups',
+      searchGroups: 'Search groups...',
+      fuzzySearch: 'Fuzzy search',
       admin: 'Admin',
       user: 'User',
       disabled: 'Disabled',
@@ -1310,6 +1316,7 @@ export default {
         username: 'Username',
         notes: 'Notes',
         role: 'Role',
+        groups: 'Groups',
         subscriptions: 'Subscriptions',
         balance: 'Balance',
         usage: 'Usage',
@@ -1321,6 +1328,9 @@ export default {
       today: 'Today',
       total: 'Last 30d',
       noSubscription: 'No subscription',
+      publicGroupCount: '+{count} public',
+      exclusiveLabel: 'exclusive',
+      publicLabel: 'public',
       daysRemaining: '{days}d',
       expired: 'Expired',
       disable: 'Disable',
@@ -1376,6 +1386,14 @@ export default {
       useDefaultRate: 'Use Default',
       customRatePlaceholder: 'Leave empty for default',
       groupConfigUpdated: 'Group configuration updated successfully',
+      replaceGroup: 'Replace Group',
+      clickToReplace: 'Click to replace',
+      replaceGroupTitle: 'Replace Exclusive Group',
+      replaceGroupHint: 'Select a new group to replace "{old}". Keys will be migrated and permissions updated automatically.',
+      replaceGroupConfirm: 'Confirm Replace',
+      replaceGroupSuccess: 'Group replaced successfully, {count} key(s) migrated',
+      selectNewGroup: 'Select target group',
+      noOtherGroups: 'No other exclusive groups available',
       deposit: 'Deposit',
       withdraw: 'Withdraw',
       depositAmount: 'Deposit Amount',
@@ -1880,6 +1898,7 @@ export default {
       allTypes: 'All Types',
       allStatus: 'All Status',
       allGroups: 'All Groups',
+      ungroupedGroup: 'Ungrouped',
       oauthType: 'OAuth',
       setupToken: 'Setup Token',
       apiKey: 'API Key',
@@ -2757,7 +2776,9 @@ export default {
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
         gemini3Image: 'G31FI',
-        claude: 'Claude'
+        claude: 'Claude',
+        passiveSampled: 'Passive',
+        activeQuery: 'Query'
       },
       tier: {
         free: 'Free',
@@ -4113,7 +4134,11 @@ export default {
         minVersion: 'Minimum Version',
         minVersionPlaceholder: 'e.g. 2.1.63',
         minVersionHint:
-          'Reject Claude Code clients below this version (semver format). Leave empty to disable version check.'
+          'Reject Claude Code clients below this version (semver format). Leave empty to disable version check.',
+        maxVersion: 'Maximum Version',
+        maxVersionPlaceholder: 'e.g. 2.5.0',
+        maxVersionHint:
+          'Reject Claude Code clients above this version (semver format). Leave empty to allow any version.'
       },
       scheduling: {
         title: 'Gateway Scheduling Settings',
@@ -4358,6 +4383,16 @@ export default {
           testSuccess: 'Google Drive storage test passed (upload, access, delete all OK)',
           testFailed: 'Google Drive storage test failed'
         }
+      },
+      overloadCooldown: {
+        title: '529 Overload Cooldown',
+        description: 'Configure account scheduling pause strategy when upstream returns 529 (overloaded)',
+        enabled: 'Enable Overload Cooldown',
+        enabledHint: 'Pause account scheduling on 529 errors, auto-recover after cooldown',
+        cooldownMinutes: 'Cooldown Duration (minutes)',
+        cooldownMinutesHint: 'Duration to pause account scheduling (1-120 minutes)',
+        saved: 'Overload cooldown settings saved',
+        saveFailed: 'Failed to save overload cooldown settings'
       },
       streamTimeout: {
         title: 'Stream Timeout Handling',
