@@ -238,6 +238,10 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 		"gpt-5.4-high":              "gpt-5.4",
 		"gpt-5.4-chat-latest":       "gpt-5.4",
 		"gpt 5.4":                   "gpt-5.4",
+		"gpt-5.4-mini":              "gpt-5.4-mini",
+		"gpt 5.4 mini":              "gpt-5.4-mini",
+		"gpt-5.4-nano":              "gpt-5.4-nano",
+		"gpt 5.4 nano":              "gpt-5.4-nano",
 		"gpt-5.3":                   "gpt-5.3-codex",
 		"gpt-5.3-codex":             "gpt-5.3-codex",
 		"gpt-5.3-codex-xhigh":       "gpt-5.3-codex",
@@ -448,10 +452,7 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 	})
 }
 
-func TestApplyCodexOAuthTransform_RewritesSystemToDeveloper(t *testing.T) {
-	// Based on real-world testing (sub2api_codex_oauth_fix_report.md):
-	// Codex OAuth upstream rejects system role, developer is the correct channel.
-	// System messages should be rewritten to developer, not extracted to instructions.
+func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"input": []any{
@@ -466,18 +467,14 @@ func TestApplyCodexOAuthTransform_RewritesSystemToDeveloper(t *testing.T) {
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 2, "system message should stay in input, not be extracted")
-	first, ok := input[0].(map[string]any)
+	require.Len(t, input, 1)
+	msg, ok := input[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "developer", first["role"], "system should be rewritten to developer")
-	second, ok := input[1].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "user", second["role"])
+	require.Equal(t, "user", msg["role"])
 
-	// instructions should be empty placeholder, not system content
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Equal(t, "", instructions)
+	require.Equal(t, "You are a coding assistant.", instructions)
 }
 
 func TestIsInstructionsEmpty(t *testing.T) {

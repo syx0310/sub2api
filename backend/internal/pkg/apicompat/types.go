@@ -152,8 +152,8 @@ type AnthropicDelta struct {
 // ResponsesRequest is the request body for POST /v1/responses.
 type ResponsesRequest struct {
 	Model           string              `json:"model"`
-	Input           json.RawMessage     `json:"input"`                      // string or []ResponsesInputItem
-	Instructions    *string             `json:"instructions,omitempty"`     // top-level instructions (Codex OAuth requires this field to exist)
+	Input           json.RawMessage     `json:"input"`                  // string or []ResponsesInputItem
+	Instructions    *string             `json:"instructions,omitempty"` // top-level instructions (Codex OAuth requires this field to exist)
 	MaxOutputTokens *int                `json:"max_output_tokens,omitempty"`
 	Temperature     *float64            `json:"temperature,omitempty"`
 	TopP            *float64            `json:"top_p,omitempty"`

@@ -7,6 +7,8 @@ import (
 
 var codexModelMap = map[string]string{
 	"gpt-5.4":                    "gpt-5.4",
+	"gpt-5.4-mini":               "gpt-5.4-mini",
+	"gpt-5.4-nano":               "gpt-5.4-nano",
 	"gpt-5.4-none":               "gpt-5.4",
 	"gpt-5.4-low":                "gpt-5.4",
 	"gpt-5.4-medium":             "gpt-5.4",
@@ -172,9 +174,10 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		result.PromptCacheKey = strings.TrimSpace(v)
 	}
 
-	// 注意：不提取 system 到 instructions。基于实测（见 sub2api_codex_oauth_fix_report.md），
-	// Codex OAuth upstream 上 developer > instructions，system 应改为 developer 而非提升到 instructions。
-	// rewriteSystemToDeveloper 在后续步骤中统一处理。
+	// 提取 input 中 role:"system" 消息至 instructions（OAuth 上游不支持 system role）。
+	if extractSystemMessagesFromInput(reqBody) {
+		result.Modified = true
+	}
 
 	// instructions 处理逻辑：根据是否是 Codex CLI 分别调用不同方法
 	if applyInstructions(reqBody, isCodexCLI) {
@@ -231,6 +234,12 @@ func normalizeCodexModel(model string) string {
 
 	normalized := strings.ToLower(modelID)
 
+	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
+		return "gpt-5.4-mini"
+	}
+	if strings.Contains(normalized, "gpt-5.4-nano") || strings.Contains(normalized, "gpt 5.4 nano") {
+		return "gpt-5.4-nano"
+	}
 	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
 		return "gpt-5.4"
 	}
