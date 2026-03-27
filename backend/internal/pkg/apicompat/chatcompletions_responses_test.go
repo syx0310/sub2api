@@ -254,6 +254,32 @@ func TestChatCompletionsToResponses_SystemArrayContent(t *testing.T) {
 	assert.Equal(t, "data:image/png;base64,abc123", userParts[1].ImageURL)
 }
 
+func TestChatCompletionsToResponses_DeveloperArrayContentPreserved(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "developer", Content: json.RawMessage(`[{"type":"text","text":"You are a careful visual assistant."},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc123"}}]`)},
+			{Role: "user", Content: json.RawMessage(`"Hi"`)},
+		},
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 2)
+	assert.Equal(t, "developer", items[0].Role)
+
+	var developerParts []ResponsesContentPart
+	require.NoError(t, json.Unmarshal(items[0].Content, &developerParts))
+	require.Len(t, developerParts, 2)
+	assert.Equal(t, "input_text", developerParts[0].Type)
+	assert.Equal(t, "You are a careful visual assistant.", developerParts[0].Text)
+	assert.Equal(t, "input_image", developerParts[1].Type)
+	assert.Equal(t, "data:image/png;base64,abc123", developerParts[1].ImageURL)
+}
+
 func TestChatCompletionsToResponses_LegacyFunctions(t *testing.T) {
 	req := &ChatCompletionsRequest{
 		Model: "gpt-4o",

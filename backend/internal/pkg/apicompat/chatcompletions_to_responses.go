@@ -135,11 +135,11 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 
 // chatDeveloperToResponses converts a developer message, preserving the role.
 func chatDeveloperToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
-	text, err := parseChatContent(m.Content)
+	parsed, err := parseChatMessageContent(m.Content)
 	if err != nil {
 		return nil, err
 	}
-	content, err := json.Marshal(text)
+	content, err := marshalChatInputContent(parsed)
 	if err != nil {
 		return nil, err
 	}
