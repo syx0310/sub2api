@@ -2294,6 +2294,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editApiKey.value = ''
 }
 
+async function loadTLSProfiles() {
+  try {
+    const profiles = await adminAPI.tlsFingerprintProfiles.list()
+    tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name }))
+  } catch {
+    tlsFingerprintProfiles.value = []
+  }
+}
+
 watch(
   [() => props.show, () => props.account],
   ([show, newAccount], [wasShow, previousAccount]) => {
@@ -2307,15 +2316,6 @@ watch(
   },
   { immediate: true }
 )
-
-const loadTLSProfiles = async () => {
-  try {
-    const profiles = await adminAPI.tlsFingerprintProfiles.list()
-    tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name }))
-  } catch {
-    tlsFingerprintProfiles.value = []
-  }
-}
 
 // Model mapping helpers
 const addModelMapping = () => {
