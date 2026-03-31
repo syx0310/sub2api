@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -254,6 +255,27 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 	for input, expected := range cases {
 		require.Equal(t, expected, normalizeCodexModel(input))
 	}
+}
+
+func TestApplyCodexOAuthTransform_Gpt53CodexSparkToggle(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
+
+	reqBodyDefault := map[string]any{
+		"model": "gpt-5.3-codex-spark",
+		"input": []any{},
+	}
+	resultDefault := applyCodexOAuthTransform(reqBodyDefault, false, false)
+	require.Equal(t, "gpt-5.3-codex", reqBodyDefault["model"])
+	require.Equal(t, "gpt-5.3-codex", resultDefault.NormalizedModel)
+
+	reqBodyDisabled := map[string]any{
+		"model": "gpt-5.3-codex-spark",
+		"input": []any{},
+	}
+	resultDisabled := applyCodexOAuthTransform(reqBodyDisabled, false, false, cfg)
+	require.Equal(t, "gpt-5.3-codex-spark", reqBodyDisabled["model"])
+	require.Equal(t, "gpt-5.3-codex-spark", resultDisabled.NormalizedModel)
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *testing.T) {

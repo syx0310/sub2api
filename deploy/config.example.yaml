@@ -205,6 +205,10 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # OpenAI 兼容链路是否将 gpt-5.3-codex-spark* 请求改写为 gpt-5.3-codex
+  # 仅影响请求路径，不影响 pricing/billing fallback。
+  openai_compat:
+    rewrite_gpt_5_3_codex_spark: true
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
     # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。
