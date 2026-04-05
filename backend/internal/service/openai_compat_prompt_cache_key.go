@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
 const compatPromptCacheKeyPrefix = "compat_cc_"
 
-func shouldAutoInjectPromptCacheKeyForCompat(model string, cfgs ...*config.Config) bool {
-	switch normalizeCodexRequestModel(strings.TrimSpace(model), cfgs...) {
+func shouldAutoInjectPromptCacheKeyForCompat(model string) bool {
+	switch normalizeCodexModel(strings.TrimSpace(model)) {
 	case "gpt-5.4", "gpt-5.3-codex":
 		return true
 	default:
@@ -19,14 +18,14 @@ func shouldAutoInjectPromptCacheKeyForCompat(model string, cfgs ...*config.Confi
 	}
 }
 
-func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedModel string, cfgs ...*config.Config) string {
+func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedModel string) string {
 	if req == nil {
 		return ""
 	}
 
-	normalizedModel := normalizeCodexRequestModel(strings.TrimSpace(mappedModel), cfgs...)
+	normalizedModel := normalizeCodexModel(strings.TrimSpace(mappedModel))
 	if normalizedModel == "" {
-		normalizedModel = normalizeCodexRequestModel(strings.TrimSpace(req.Model), cfgs...)
+		normalizedModel = normalizeCodexModel(strings.TrimSpace(req.Model))
 	}
 	if normalizedModel == "" {
 		normalizedModel = strings.TrimSpace(req.Model)

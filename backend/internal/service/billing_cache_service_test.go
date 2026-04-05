@@ -110,7 +110,7 @@ func TestRelayModeSkipsBalanceCheck(t *testing.T) {
 	t.Cleanup(svc.Stop)
 
 	user := &User{ID: 1, Balance: 0} // zero balance
-	apiKey := &APIKey{ID: 1}         // no rate limits
+	apiKey := &APIKey{ID: 1}          // no rate limits
 
 	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil)
 	require.NoError(t, err, "relay mode should skip balance check")

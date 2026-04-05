@@ -380,7 +380,7 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 
-  expect(getUsage).toHaveBeenCalledWith(2002, undefined)
+	expect(getUsage).toHaveBeenCalledWith(2002, undefined)
 	expect(wrapper.text()).toContain('5h|0|27700')
 	expect(wrapper.text()).toContain('7d|0|27700')
   })

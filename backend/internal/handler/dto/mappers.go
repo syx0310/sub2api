@@ -181,6 +181,8 @@ func groupFromServiceBase(g *service.Group) Group {
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
 		SoraStorageQuotaBytes:           g.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
+		RequireOAuthOnly:                g.RequireOAuthOnly,
+		RequirePrivacySet:               g.RequirePrivacySet,
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}
@@ -575,6 +577,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		MediaType:             l.MediaType,
 		UserAgent:             l.UserAgent,
 		CacheTTLOverridden:    l.CacheTTLOverridden,
+		BillingMode:           l.BillingMode,
 		CreatedAt:             l.CreatedAt,
 		User:                  UserFromServiceShallow(l.User),
 		APIKey:                APIKeyFromService(l.APIKey),
@@ -602,6 +605,9 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	return &AdminUsageLog{
 		UsageLog:              usageLogFromServiceUser(l),
 		UpstreamModel:         l.UpstreamModel,
+		ChannelID:             l.ChannelID,
+		ModelMappingChain:     l.ModelMappingChain,
+		BillingTier:           l.BillingTier,
 		AccountRateMultiplier: l.AccountRateMultiplier,
 		IPAddress:             l.IPAddress,
 		Account:               AccountSummaryFromService(l.Account),
