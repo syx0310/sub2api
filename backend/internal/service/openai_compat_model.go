@@ -3,23 +3,24 @@ package service
 import (
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
-func NormalizeOpenAICompatRequestedModel(model string) string {
+func NormalizeOpenAICompatRequestedModel(model string, cfgs ...*config.Config) string {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return ""
 	}
 
-	normalized, _, ok := splitOpenAICompatReasoningModel(trimmed)
+	normalized, _, ok := splitOpenAICompatReasoningModel(trimmed, cfgs...)
 	if !ok || normalized == "" {
 		return trimmed
 	}
 	return normalized
 }
 
-func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
+func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest, cfgs ...*config.Config) {
 	if req == nil {
 		return
 	}
@@ -29,7 +30,7 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 		return
 	}
 
-	normalizedModel, derivedEffort, hasReasoningSuffix := splitOpenAICompatReasoningModel(originalModel)
+	normalizedModel, derivedEffort, hasReasoningSuffix := splitOpenAICompatReasoningModel(originalModel, cfgs...)
 	if hasReasoningSuffix && normalizedModel != "" {
 		req.Model = normalizedModel
 	}
@@ -49,10 +50,25 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 	req.OutputConfig.Effort = claudeEffort
 }
 
-func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reasoningEffort string, ok bool) {
+func splitOpenAICompatReasoningModel(model string, cfgs ...*config.Config) (normalizedModel string, reasoningEffort string, ok bool) {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return "", "", false
+	}
+	cfg := firstOpenAICompatConfig(cfgs...)
+	if !rewriteGPT53CodexSparkEnabled(cfg) {
+		if base, suffix, isSpark := splitGPT53CodexSparkRequestModel(trimmed); isSpark {
+			switch suffix {
+			case "none", "minimal":
+				return base, "", true
+			case "low", "medium", "high", "xhigh":
+				return base, suffix, true
+			case "":
+				return trimmed, "", false
+			default:
+				return trimmed, "", false
+			}
+		}
 	}
 
 	modelID := trimmed
@@ -88,7 +104,7 @@ func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reas
 		return trimmed, "", false
 	}
 
-	return normalizeCodexModel(modelID), reasoningEffort, true
+	return normalizeCodexRequestModel(modelID, cfg), reasoningEffort, true
 }
 
 func openAIReasoningEffortToClaudeOutputEffort(effort string) string {

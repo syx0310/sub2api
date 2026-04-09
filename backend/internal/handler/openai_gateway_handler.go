@@ -550,7 +550,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
-	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
+	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel, h.cfg)
 	reqStream := gjson.GetBytes(body, "stream").Bool()
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))

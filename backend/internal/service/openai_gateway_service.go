@@ -1940,7 +1940,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// 针对所有 OpenAI 账号执行 Codex 模型名规范化，确保上游识别一致。
 	if model, ok := reqBody["model"].(string); ok {
-		upstreamModel = normalizeCodexModel(model)
+		upstreamModel = normalizeCodexRequestModel(model, s.cfg)
 		if upstreamModel != "" && upstreamModel != model {
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Upstream model resolved: %s -> %s (account: %s, type: %s, isCodexCLI: %v)",
 				model, upstreamModel, account.Name, account.Type, isCodexCLI)
@@ -1969,7 +1969,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if account.Type == AccountTypeOAuth {
-		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c))
+		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c), s.cfg)
 		if codexResult.Modified {
 			bodyModified = true
 			disablePatch()

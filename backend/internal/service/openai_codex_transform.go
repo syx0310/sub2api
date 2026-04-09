@@ -3,6 +3,8 @@ package service
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 var codexModelMap = map[string]string{
@@ -76,7 +78,7 @@ type codexTransformResult struct {
 	PromptCacheKey  string
 }
 
-func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool) codexTransformResult {
+func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool, cfgs ...*config.Config) codexTransformResult {
 	result := codexTransformResult{}
 	// 工具续链需求会影响存储策略与 input 过滤逻辑。
 	needsToolContinuation := NeedsToolContinuation(reqBody)
@@ -85,7 +87,7 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 	if v, ok := reqBody["model"].(string); ok {
 		model = v
 	}
-	normalizedModel := strings.TrimSpace(model)
+	normalizedModel := normalizeCodexRequestModel(model, cfgs...)
 	if normalizedModel != "" {
 		if model != normalizedModel {
 			reqBody["model"] = normalizedModel
