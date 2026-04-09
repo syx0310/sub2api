@@ -284,6 +284,13 @@ func normalizeCodexModel(model string) string {
 	return "gpt-5.1"
 }
 
+func normalizeOpenAIModelForUpstream(account *Account, model string, cfgs ...*config.Config) string {
+	if account == nil || account.Type == AccountTypeOAuth {
+		return normalizeCodexRequestModel(model, cfgs...)
+	}
+	return strings.TrimSpace(model)
+}
+
 func SupportsVerbosity(model string) bool {
 	if !strings.HasPrefix(model, "gpt-") {
 		return true

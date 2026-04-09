@@ -169,7 +169,7 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('OpenAI API Key 批量编辑不显示 WS mode 入口', () => {
+  it('OpenAI API Key 批量编辑不显示 OAuth 专属 WS mode 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['apikey']

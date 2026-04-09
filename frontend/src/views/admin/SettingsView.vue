@@ -630,6 +630,108 @@
                     {{ t('admin.settings.betaPolicy.errorMessageHint') }}
                   </p>
                 </div>
+
+                <!-- Quick Presets (only for tokens with presets) -->
+                <div v-if="betaPresets[rule.beta_token]?.length" class="mt-3">
+                  <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    {{ t('admin.settings.betaPolicy.quickPresets') }}
+                  </label>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      v-for="preset in betaPresets[rule.beta_token]"
+                      :key="preset.label"
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded-md border border-primary-200 bg-primary-50 px-2.5 py-1 text-xs font-medium text-primary-700 transition-colors hover:bg-primary-100 dark:border-primary-800 dark:bg-primary-900/30 dark:text-primary-300 dark:hover:bg-primary-900/50"
+                      @click="applyBetaPreset(rule, preset)"
+                      :title="preset.description"
+                    >
+                      {{ preset.label }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Model Whitelist -->
+                <div class="mt-3">
+                  <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    {{ t('admin.settings.betaPolicy.modelWhitelist') }}
+                  </label>
+                  <p class="mb-2 text-xs text-gray-400 dark:text-gray-500">
+                    {{ t('admin.settings.betaPolicy.modelWhitelistHint') }}
+                  </p>
+                  <!-- Existing patterns -->
+                  <div
+                    v-for="(_, index) in (rule.model_whitelist || [])"
+                    :key="index"
+                    class="mb-1.5 flex items-center gap-2"
+                  >
+                    <input
+                      v-model="rule.model_whitelist![index]"
+                      type="text"
+                      class="input input-sm flex-1"
+                      :placeholder="t('admin.settings.betaPolicy.modelPatternPlaceholder')"
+                    />
+                    <button
+                      type="button"
+                      @click="rule.model_whitelist!.splice(index, 1)"
+                      class="shrink-0 rounded p-1 text-red-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                    >
+                      <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <!-- Add pattern button -->
+                  <button
+                    type="button"
+                    @click="if (!rule.model_whitelist) rule.model_whitelist = []; rule.model_whitelist.push('')"
+                    class="mb-2 inline-flex items-center gap-1 text-xs text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                  >
+                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    {{ t('admin.settings.betaPolicy.addModelPattern') }}
+                  </button>
+                  <!-- Common pattern chips -->
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="text-xs text-gray-400 dark:text-gray-500">{{ t('admin.settings.betaPolicy.commonPatterns') }}:</span>
+                    <button
+                      v-for="pattern in commonModelPatterns"
+                      :key="pattern"
+                      type="button"
+                      class="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700 dark:border-dark-600 dark:text-gray-400 dark:hover:border-primary-700 dark:hover:bg-primary-900/30 dark:hover:text-primary-300"
+                      @click="addQuickPattern(rule, pattern)"
+                    >
+                      {{ pattern }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Fallback Action (only when model_whitelist is non-empty) -->
+                <div v-if="rule.model_whitelist && rule.model_whitelist.length > 0" class="mt-3">
+                  <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    {{ t('admin.settings.betaPolicy.fallbackAction') }}
+                  </label>
+                  <Select
+                    :modelValue="rule.fallback_action || 'pass'"
+                    @update:modelValue="rule.fallback_action = $event as any"
+                    :options="betaPolicyActionOptions"
+                  />
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                    {{ t('admin.settings.betaPolicy.fallbackActionHint') }}
+                  </p>
+                  <!-- Fallback Error Message (only when fallback_action=block) -->
+                  <div v-if="rule.fallback_action === 'block'" class="mt-2">
+                    <input
+                      v-model="rule.fallback_error_message"
+                      type="text"
+                      class="input"
+                      :placeholder="t('admin.settings.betaPolicy.fallbackErrorMessagePlaceholder')"
+                    />
+                    <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      {{ t('admin.settings.betaPolicy.errorMessageHint') }}
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <!-- Save Button -->
@@ -1274,6 +1376,19 @@
               </div>
               <Toggle v-model="form.enable_metadata_passthrough" />
             </div>
+
+            <!-- CCH Signing -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.cchSigning') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.cchSigningHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_cch_signing" />
+            </div>
           </div>
         </div>
         </div><!-- /Tab: Gateway — Claude Code, Scheduling -->
@@ -1573,31 +1688,6 @@
               <span class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.settings.purchase.integrationDocHint') }}
               </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sora Client Toggle -->
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.settings.soraClient.title') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.settings.soraClient.description') }}
-            </p>
-          </div>
-          <div class="space-y-6 p-6">
-            <div class="flex items-center justify-between">
-              <div>
-                <label class="font-medium text-gray-900 dark:text-white">{{
-                  t('admin.settings.soraClient.enabled')
-                }}</label>
-                <p class="text-sm text-gray-500 dark:text-gray-400">
-                  {{ t('admin.settings.soraClient.enabledHint') }}
-                </p>
-              </div>
-              <Toggle v-model="form.sora_client_enabled" />
             </div>
           </div>
         </div>
@@ -1956,13 +2046,8 @@
           <BackupSettings />
         </div>
 
-        <!-- Tab: Data Management -->
-        <div v-show="activeTab === 'data'">
-          <DataManagementSettings />
-        </div>
-
         <!-- Save Button -->
-        <div v-show="activeTab !== 'backup' && activeTab !== 'data'" class="flex justify-end">
+        <div v-show="activeTab !== 'backup'" class="flex justify-end">
           <button type="submit" :disabled="saving || loadFailed" class="btn btn-primary">
             <svg v-if="saving" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
               <circle
@@ -2005,7 +2090,6 @@ import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import ImageUpload from '@/components/common/ImageUpload.vue'
 import BackupSettings from '@/views/admin/BackupView.vue'
-import DataManagementSettings from '@/views/admin/DataManagementView.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore } from '@/stores'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
@@ -2020,7 +2104,7 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const adminSettingsStore = useAdminSettingsStore()
 
-type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'email' | 'backup' | 'data'
+type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'email' | 'backup'
 const activeTab = ref<SettingsTab>('general')
 const settingsTabs = [
   { key: 'general'  as SettingsTab, icon: 'home'   as const },
@@ -2029,7 +2113,6 @@ const settingsTabs = [
   { key: 'gateway'  as SettingsTab, icon: 'server' as const },
   { key: 'email'    as SettingsTab, icon: 'mail'   as const },
   { key: 'backup'   as SettingsTab, icon: 'database' as const },
-  { key: 'data'     as SettingsTab, icon: 'cube'     as const },
 ]
 const { copyToClipboard } = useClipboard()
 
@@ -2090,6 +2173,9 @@ const betaPolicyForm = reactive({
     action: 'pass' | 'filter' | 'block'
     scope: 'all' | 'oauth' | 'apikey' | 'bedrock'
     error_message?: string
+    model_whitelist?: string[]
+    fallback_action?: 'pass' | 'filter' | 'block'
+    fallback_error_message?: string
   }>
 })
 
@@ -2132,7 +2218,6 @@ const form = reactive<SettingsForm>({
   hide_ccs_import_button: false,
   purchase_subscription_enabled: false,
   purchase_subscription_url: '',
-  sora_client_enabled: false,
   custom_menu_items: [] as Array<{id: string; label: string; icon_svg: string; url: string; visibility: 'user' | 'admin'; sort_order: number}>,
   custom_endpoints: [] as Array<{name: string; endpoint: string; description: string}>,
   frontend_url: '',
@@ -2176,7 +2261,8 @@ const form = reactive<SettingsForm>({
   allow_ungrouped_key_scheduling: false,
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
-  enable_metadata_passthrough: false
+  enable_metadata_passthrough: false,
+  enable_cch_signing: false
 })
 
 const defaultSubscriptionGroupOptions = computed<DefaultSubscriptionGroupOption[]>(() =>
@@ -2456,7 +2542,6 @@ async function saveSettings() {
       hide_ccs_import_button: form.hide_ccs_import_button,
       purchase_subscription_enabled: form.purchase_subscription_enabled,
       purchase_subscription_url: form.purchase_subscription_url,
-      sora_client_enabled: form.sora_client_enabled,
       custom_menu_items: form.custom_menu_items,
       custom_endpoints: form.custom_endpoints,
       frontend_url: form.frontend_url,
@@ -2485,7 +2570,8 @@ async function saveSettings() {
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
-      enable_metadata_passthrough: form.enable_metadata_passthrough
+      enable_metadata_passthrough: form.enable_metadata_passthrough,
+      enable_cch_signing: form.enable_cch_signing
     }
     const updated = await adminAPI.settings.updateSettings(payload)
     Object.assign(form, updated)
@@ -2750,8 +2836,46 @@ const betaDisplayNames: Record<string, string> = {
   'context-1m-2025-08-07': 'Context 1M'
 }
 
+// 快捷预设：按 beta_token 定义预设方案
+const betaPresets: Record<string, Array<{
+  label: string
+  description: string
+  action: 'pass' | 'filter' | 'block'
+  model_whitelist: string[]
+  fallback_action: 'pass' | 'filter' | 'block'
+}>> = {
+  'context-1m-2025-08-07': [
+    {
+      label: t('admin.settings.betaPolicy.presetOpusOnly'),
+      description: t('admin.settings.betaPolicy.presetOpusOnlyDesc'),
+      action: 'pass',
+      model_whitelist: ['claude-opus-4-6'],
+      fallback_action: 'filter',
+    },
+  ],
+}
+
+// 常用模型模式（具体 ID + 通配符示例）
+const commonModelPatterns = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-*', 'claude-sonnet-*']
+
 function getBetaDisplayName(token: string): string {
   return betaDisplayNames[token] || token
+}
+
+function applyBetaPreset(
+  rule: (typeof betaPolicyForm.rules)[number],
+  preset: { action: 'pass' | 'filter' | 'block'; model_whitelist: string[]; fallback_action: 'pass' | 'filter' | 'block' }
+) {
+  rule.action = preset.action
+  rule.model_whitelist = [...preset.model_whitelist]
+  rule.fallback_action = preset.fallback_action
+}
+
+function addQuickPattern(rule: (typeof betaPolicyForm.rules)[number], pattern: string) {
+  if (!rule.model_whitelist) rule.model_whitelist = []
+  if (!rule.model_whitelist.includes(pattern)) {
+    rule.model_whitelist.push(pattern)
+  }
 }
 
 async function loadBetaPolicySettings() {
@@ -2769,8 +2893,22 @@ async function loadBetaPolicySettings() {
 async function saveBetaPolicySettings() {
   betaPolicySaving.value = true
   try {
+    // Clean up empty patterns before saving
+    const cleanedRules = betaPolicyForm.rules.map(rule => {
+      const whitelist = rule.model_whitelist?.filter(p => p.trim() !== '')
+      const hasWhitelist = whitelist && whitelist.length > 0
+      return {
+        beta_token: rule.beta_token,
+        action: rule.action,
+        scope: rule.scope,
+        error_message: rule.error_message,
+        model_whitelist: hasWhitelist ? whitelist : undefined,
+        fallback_action: hasWhitelist ? (rule.fallback_action || 'pass') : undefined,
+        fallback_error_message: hasWhitelist && rule.fallback_action === 'block' ? rule.fallback_error_message : undefined,
+      }
+    })
     const updated = await adminAPI.settings.updateBetaPolicySettings({
-      rules: betaPolicyForm.rules
+      rules: cleanedRules
     })
     betaPolicyForm.rules = updated.rules
     appStore.showSuccess(t('admin.settings.betaPolicy.saved'))
