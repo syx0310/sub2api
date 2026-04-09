@@ -4995,6 +4995,7 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	// 上游允许空字符串 instructions，不再拒绝
 	return ""
 }
+
 func extractOpenAIReasoningEffortFromBody(body []byte, requestedModel string) *string {
 	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if reasoningEffort == "" {
