@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -257,32 +258,25 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 	}
 }
 
-func TestApplyCodexOAuthTransform_PreservesBareSparkModel(t *testing.T) {
-	reqBody := map[string]any{
+func TestApplyCodexOAuthTransform_Gpt53CodexSparkToggle(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
+
+	reqBodyDefault := map[string]any{
 		"model": "gpt-5.3-codex-spark",
 		"input": []any{},
 	}
+	resultDefault := applyCodexOAuthTransform(reqBodyDefault, false, false)
+	require.Equal(t, "gpt-5.3-codex", reqBodyDefault["model"])
+	require.Equal(t, "gpt-5.3-codex", resultDefault.NormalizedModel)
 
-	result := applyCodexOAuthTransform(reqBody, false, false)
-
-	require.Equal(t, "gpt-5.3-codex-spark", reqBody["model"])
-	require.Equal(t, "gpt-5.3-codex-spark", result.NormalizedModel)
-	store, ok := reqBody["store"].(bool)
-	require.True(t, ok)
-	require.False(t, store)
-}
-
-func TestApplyCodexOAuthTransform_TrimmedModelWithoutPolicyRewrite(t *testing.T) {
-	reqBody := map[string]any{
-		"model": "  gpt-5.3-codex-spark  ",
+	reqBodyDisabled := map[string]any{
+		"model": "gpt-5.3-codex-spark",
 		"input": []any{},
 	}
-
-	result := applyCodexOAuthTransform(reqBody, false, false)
-
-	require.Equal(t, "gpt-5.3-codex-spark", reqBody["model"])
-	require.Equal(t, "gpt-5.3-codex-spark", result.NormalizedModel)
-	require.True(t, result.Modified)
+	resultDisabled := applyCodexOAuthTransform(reqBodyDisabled, false, false, cfg)
+	require.Equal(t, "gpt-5.3-codex-spark", reqBodyDisabled["model"])
+	require.Equal(t, "gpt-5.3-codex-spark", resultDisabled.NormalizedModel)
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *testing.T) {
