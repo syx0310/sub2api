@@ -161,6 +161,33 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultOpenAICompatConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark {
+		t.Fatalf("Gateway.OpenAICompat.RewriteGPT53CodexSpark = false, want true")
+	}
+}
+
+func TestLoadOpenAICompatConfigFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_COMPAT_REWRITE_GPT_5_3_CODEX_SPARK", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark {
+		t.Fatalf("Gateway.OpenAICompat.RewriteGPT53CodexSpark = true, want false")
+	}
+}
+
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_STICKY_RESPONSE_ID_TTL_SECONDS", "0")
