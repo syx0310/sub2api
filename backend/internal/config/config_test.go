@@ -159,6 +159,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.IngressModeDefault != "ctx_pool" {
 		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "ctx_pool")
 	}
+	if cfg.Gateway.OpenAIWS.AllowImplicitSessionContinuation {
+		t.Fatalf("Gateway.OpenAIWS.AllowImplicitSessionContinuation = true, want false")
+	}
 }
 
 func TestLoadDefaultOpenAICompatConfig(t *testing.T) {
@@ -200,6 +203,20 @@ func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 
 	if cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds != 7200 {
 		t.Fatalf("StickyResponseIDTTLSeconds = %d, want 7200", cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
+	}
+}
+
+func TestLoadOpenAIWSAllowImplicitSessionContinuationFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_WS_ALLOW_IMPLICIT_SESSION_CONTINUATION", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Gateway.OpenAIWS.AllowImplicitSessionContinuation {
+		t.Fatalf("Gateway.OpenAIWS.AllowImplicitSessionContinuation = false, want true")
 	}
 }
 

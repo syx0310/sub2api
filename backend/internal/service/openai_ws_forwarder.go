@@ -1294,6 +1294,46 @@ func (s *OpenAIGatewayService) openAIWSStoreDisabledConnMode() string {
 	}
 }
 
+func (s *OpenAIGatewayService) openAIWSAllowImplicitSessionContinuation() bool {
+	return s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.AllowImplicitSessionContinuation
+}
+
+type openAIWSContinuationPolicy struct {
+	preserveTurnState       bool
+	allowSessionStateReplay bool
+}
+
+func resolveOpenAIWSContinuationPolicy(
+	hasResponseContinuation bool,
+	hasTurnStateSignal bool,
+	allowImplicitSessionContinuation bool,
+) openAIWSContinuationPolicy {
+	allowSessionStateReplay := allowImplicitSessionContinuation || hasResponseContinuation
+	return openAIWSContinuationPolicy{
+		preserveTurnState:       hasTurnStateSignal || allowSessionStateReplay,
+		allowSessionStateReplay: allowSessionStateReplay,
+	}
+}
+
+func openAIWSHasExplicitResponseContinuationRaw(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	if strings.TrimSpace(openAIWSPayloadStringFromRaw(payload, "previous_response_id")) != "" {
+		return true
+	}
+	return gjson.GetBytes(payload, `input.#(type=="function_call_output")`).Exists()
+}
+
+func clearOpenAIWSSessionHiddenState(stateStore OpenAIWSStateStore, groupID int64, sessionHash string) {
+	sessionHash = strings.TrimSpace(sessionHash)
+	if stateStore == nil || sessionHash == "" {
+		return
+	}
+	stateStore.DeleteSessionTurnState(groupID, sessionHash)
+	stateStore.DeleteSessionConn(groupID, sessionHash)
+}
+
 func shouldForceNewConnOnStoreDisabled(mode, lastFailureReason string) bool {
 	switch mode {
 	case openAIWSStoreDisabledConnModeOff:
@@ -1766,13 +1806,26 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
-	sessionHash := s.GenerateSessionHash(c, nil)
+	sessionHash := s.GenerateSessionHash(c, payloadAsJSONBytes(payload))
 	if sessionHash == "" {
 		var legacySessionHash string
 		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
 	}
-	if turnState == "" && stateStore != nil && sessionHash != "" {
+	hasTurnStateSignal := strings.TrimSpace(turnState) != ""
+	hasExplicitContinuation := HasExplicitResponseContinuation(payload)
+	allowImplicitSessionContinuation := s.openAIWSAllowImplicitSessionContinuation()
+	continuationPolicy := resolveOpenAIWSContinuationPolicy(
+		hasExplicitContinuation,
+		hasTurnStateSignal,
+		allowImplicitSessionContinuation,
+	)
+	if !continuationPolicy.allowSessionStateReplay {
+		clearOpenAIWSSessionHiddenState(stateStore, groupID, sessionHash)
+	}
+	if !continuationPolicy.preserveTurnState {
+		turnState = ""
+	} else if turnState == "" && continuationPolicy.allowSessionStateReplay && stateStore != nil && sessionHash != "" {
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 			turnState = savedTurnState
 		}
@@ -1784,14 +1837,20 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequest(reqBody, account)
-	if stateStore != nil && storeDisabled && previousResponseID == "" && sessionHash != "" {
+	if stateStore != nil && storeDisabled && previousResponseID == "" && sessionHash != "" && continuationPolicy.allowSessionStateReplay {
 		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
 			preferredConnID = connID
 		}
 	}
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
-	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
+	forceFreshContext := storeDisabled && !continuationPolicy.allowSessionStateReplay
+	forceNewConn := false
+	if forceNewConnByPolicy && storeDisabled && sessionHash != "" && preferredConnID == "" {
+		// 新默认语义：无 response continuation 时，即使显式保留 turn_state，也应切 fresh context。
+		// 兼容旧语义：开启 allow_implicit_session_continuation 时，保持 store=false 的 session 隔离建连策略。
+		forceNewConn = forceFreshContext || (allowImplicitSessionContinuation && !hasExplicitContinuation)
+	}
 	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
@@ -1931,7 +1990,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		len(handshakeTurnState),
 	)
 	if handshakeTurnState != "" {
-		if stateStore != nil && sessionHash != "" {
+		if stateStore != nil && sessionHash != "" && continuationPolicy.allowSessionStateReplay {
 			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
 		}
 		if c != nil {
@@ -2298,7 +2357,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
 	}
-	if stateStore != nil && storeDisabled && sessionHash != "" {
+	if stateStore != nil && storeDisabled && sessionHash != "" && continuationPolicy.allowSessionStateReplay {
 		stateStore.BindSessionConn(groupID, sessionHash, lease.ConnID(), s.openAIWSSessionStickyTTL())
 	}
 	firstTokenMsValue := -1
@@ -2539,11 +2598,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return err
 	}
 
-	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+	initialTurnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+	turnState := initialTurnState
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
 	sessionHash := s.GenerateSessionHash(c, firstPayload.rawForHash)
-	if turnState == "" && stateStore != nil && sessionHash != "" {
+		firstHasTurnStateSignal := strings.TrimSpace(initialTurnState) != ""
+	firstHasExplicitContinuation := openAIWSHasExplicitResponseContinuationRaw(firstPayload.payloadRaw)
+	allowImplicitSessionContinuation := s.openAIWSAllowImplicitSessionContinuation()
+	firstTurnContinuationPolicy := resolveOpenAIWSContinuationPolicy(
+		firstHasExplicitContinuation,
+		firstHasTurnStateSignal,
+		allowImplicitSessionContinuation,
+	)
+	if !firstTurnContinuationPolicy.allowSessionStateReplay {
+		clearOpenAIWSSessionHiddenState(stateStore, groupID, sessionHash)
+	}
+	if !firstTurnContinuationPolicy.preserveTurnState {
+		turnState = ""
+	} else if turnState == "" && firstTurnContinuationPolicy.allowSessionStateReplay && stateStore != nil && sessionHash != "" {
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 			turnState = savedTurnState
 		}
@@ -2558,7 +2631,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(firstPayload.payloadRaw, account)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
-	if stateStore != nil && storeDisabled && firstPayload.previousResponseID == "" && sessionHash != "" {
+	if stateStore != nil && storeDisabled && firstPayload.previousResponseID == "" && sessionHash != "" && firstTurnContinuationPolicy.allowSessionStateReplay {
 		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
 			preferredConnID = connID
 		}
@@ -2633,12 +2706,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		acquireTimeout = 30 * time.Second
 	}
 
-	acquireTurnLease := func(turn int, preferred string, forcePreferredConn bool) (*openAIWSConnLease, error) {
+	acquireTurnLease := func(
+		turn int,
+		preferred string,
+		forcePreferredConn bool,
+		forceFreshContext bool,
+		allowSessionStateReplay bool,
+	) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
 		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
-		req.ForceNewConn = dedicatedMode
+		req.ForceNewConn = dedicatedMode || forceFreshContext
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
@@ -2687,7 +2766,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		connID := strings.TrimSpace(lease.ConnID())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			turnState = handshakeTurnState
-			if stateStore != nil && sessionHash != "" {
+			if stateStore != nil && sessionHash != "" && allowSessionStateReplay {
 				stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
 			}
 			updatedHeaders := cloneHeader(baseAcquireReq.Headers)
@@ -3268,14 +3347,53 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						currentPreviousResponseID = ""
 					}
 				}
+		}
+	}
+	hasExplicitContinuation := openAIWSHasExplicitResponseContinuationRaw(currentPayload)
+		hasTurnStateSignal := (turn == 1 && strings.TrimSpace(initialTurnState) != "") ||
+			(turnRetry > 0 && strings.TrimSpace(turnState) != "")
+	turnContinuationPolicy := resolveOpenAIWSContinuationPolicy(
+		hasExplicitContinuation,
+		hasTurnStateSignal,
+		allowImplicitSessionContinuation,
+	)
+	if !turnContinuationPolicy.allowSessionStateReplay {
+		clearOpenAIWSSessionHiddenState(stateStore, groupID, sessionHash)
+		preferredConnID = ""
+		if sessionLease != nil {
+			resetSessionLease(false)
+		}
+	}
+	if !turnContinuationPolicy.preserveTurnState {
+		turnState = ""
+	} else {
+		if turnState == "" && turnContinuationPolicy.allowSessionStateReplay && stateStore != nil && sessionHash != "" {
+			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+				turnState = savedTurnState
 			}
 		}
-		forcePreferredConn := isStrictAffinityTurn(currentPayload)
-		if sessionLease == nil {
-			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
-			if acquireErr != nil {
-				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
+		if preferredConnID == "" && turnContinuationPolicy.allowSessionStateReplay && stateStore != nil && storeDisabled && currentPreviousResponseID == "" && sessionHash != "" {
+			if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+				preferredConnID = connID
 			}
+		}
+	}
+	currentPromptCacheKey := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "prompt_cache_key"))
+	updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), currentPromptCacheKey)
+	baseAcquireReq.Headers = updatedHeaders
+	forcePreferredConn := isStrictAffinityTurn(currentPayload)
+	forceFreshTurnContext := !turnContinuationPolicy.allowSessionStateReplay
+	if sessionLease == nil {
+		acquiredLease, acquireErr := acquireTurnLease(
+			turn,
+			preferredConnID,
+			forcePreferredConn,
+			forceFreshTurnContext,
+			turnContinuationPolicy.allowSessionStateReplay,
+		)
+		if acquireErr != nil {
+			return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
+		}
 			sessionLease = acquiredLease
 			sessionConnID = strings.TrimSpace(sessionLease.ConnID())
 			if storeDisabled {
@@ -3356,7 +3474,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				resetSessionLease(true)
 
-				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
+				acquiredLease, acquireErr := acquireTurnLease(
+					turn,
+					preferredConnID,
+					forcePreferredConn,
+					forceFreshTurnContext,
+					turnContinuationPolicy.allowSessionStateReplay,
+				)
 				if acquireErr != nil {
 					return fmt.Errorf("acquire upstream websocket after preflight ping fail: %w", acquireErr)
 				}
@@ -3443,7 +3567,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 			stateStore.BindResponseConn(responseID, connID, ttl)
 		}
-		if stateStore != nil && storeDisabled && sessionHash != "" {
+		if stateStore != nil && storeDisabled && sessionHash != "" && turnContinuationPolicy.allowSessionStateReplay {
 			stateStore.BindSessionConn(groupID, sessionHash, connID, s.openAIWSSessionStickyTTL())
 		}
 		if connID != "" {
@@ -3469,12 +3593,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		nextPayload, parseErr := parseClientPayload(nextClientMessage)
 		if parseErr != nil {
 			return parseErr
-		}
-		if nextPayload.promptCacheKey != "" {
-			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
-			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
-			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
-			baseAcquireReq.Headers = updatedHeaders
 		}
 		if nextPayload.previousResponseID != "" {
 			expectedPrev := strings.TrimSpace(lastTurnResponseID)

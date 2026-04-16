@@ -45,6 +45,22 @@ func TestHasFunctionCallOutput(t *testing.T) {
 	}))
 }
 
+func TestHasExplicitResponseContinuation(t *testing.T) {
+	require.False(t, HasExplicitResponseContinuation(nil))
+	require.True(t, HasExplicitResponseContinuation(map[string]any{
+		"previous_response_id": "resp_1",
+	}))
+	require.True(t, HasExplicitResponseContinuation(map[string]any{
+		"input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1"}},
+	}))
+	require.False(t, HasExplicitResponseContinuation(map[string]any{
+		"input": []any{map[string]any{"type": "item_reference", "id": "call_1"}},
+	}))
+	require.False(t, HasExplicitResponseContinuation(map[string]any{
+		"tools": []any{map[string]any{"type": "function"}},
+	}))
+}
+
 func TestHasToolCallContext(t *testing.T) {
 	// tool_call/function_call 必须包含 call_id，才能作为可关联上下文。
 	require.False(t, HasToolCallContext(nil))

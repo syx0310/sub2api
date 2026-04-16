@@ -53,6 +53,19 @@ func NeedsToolContinuation(reqBody map[string]any) bool {
 	return false
 }
 
+// HasExplicitResponseContinuation 判断请求是否携带显式续链锚点。
+// 当前仅 previous_response_id 和 function_call_output 视为显式续链；
+// tools、tool_choice、item_reference 不会触发 session 级隐藏状态恢复。
+func HasExplicitResponseContinuation(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	if hasNonEmptyString(reqBody["previous_response_id"]) {
+		return true
+	}
+	return AnalyzeToolContinuationSignals(reqBody).HasFunctionCallOutput
+}
+
 // AnalyzeToolContinuationSignals 单次遍历 input，提取 function_call_output/tool_call/item_reference 相关信号。
 func AnalyzeToolContinuationSignals(reqBody map[string]any) ToolContinuationSignals {
 	signals := ToolContinuationSignals{}

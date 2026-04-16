@@ -225,6 +225,9 @@ gateway:
     force_http: false
     # 允许在 WSv2 下按策略恢复 store=true（默认 false）
     allow_store_recovery: false
+    # 允许在无显式 previous_response_id/function_call_output 时仍恢复 session 级隐藏状态（默认 false）
+    # 紧急回滚兼容旧行为时可设为 true。
+    allow_implicit_session_continuation: false
     # ingress 模式收到 previous_response_not_found 时，自动去掉 previous_response_id 重试一次（默认 true）
     ingress_previous_response_recovery_enabled: true
     # store=false 且无可复用会话连接时的策略：
