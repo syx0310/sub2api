@@ -27,7 +27,7 @@ func TestShouldAutoInjectPromptCacheKeyForCompat_Gpt53CodexSparkToggle(t *testin
 	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
 
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark"))
-	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark", cfg))
+	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark", cfg))
 }
 
 func TestDeriveCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {

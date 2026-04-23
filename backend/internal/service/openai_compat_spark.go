@@ -24,7 +24,11 @@ func rewriteGPT53CodexSparkEnabled(cfg *config.Config) bool {
 
 func normalizeCodexRequestModel(model string, cfgs ...*config.Config) string {
 	cfg := firstOpenAICompatConfig(cfgs...)
-	if !rewriteGPT53CodexSparkEnabled(cfg) {
+	if rewriteGPT53CodexSparkEnabled(cfg) {
+		if rewritten, ok := rewrittenGPT53CodexSparkRequestModel(model); ok {
+			return rewritten
+		}
+	} else {
 		if canonical, ok := canonicalGPT53CodexSparkRequestModel(model); ok {
 			return canonical
 		}
@@ -74,6 +78,14 @@ func splitGPT53CodexSparkRequestModel(model string) (base string, suffix string,
 	default:
 		return "", "", false
 	}
+}
+
+func rewrittenGPT53CodexSparkRequestModel(model string) (string, bool) {
+	_, _, ok := splitGPT53CodexSparkRequestModel(model)
+	if !ok {
+		return "", false
+	}
+	return "gpt-5.3-codex", true
 }
 
 func canonicalGPT53CodexSparkRequestModel(model string) (string, bool) {
