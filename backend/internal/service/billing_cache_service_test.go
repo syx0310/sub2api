@@ -70,7 +70,7 @@ func (b *billingCacheWorkerStub) InvalidateAPIKeyRateLimit(ctx context.Context, 
 
 func TestBillingCacheServiceQueueHighLoad(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
-	svc := NewBillingCacheService(cache, nil, nil, nil, &config.Config{})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{})
 	t.Cleanup(svc.Stop)
 
 	start := time.Now()
@@ -92,7 +92,7 @@ func TestBillingCacheServiceQueueHighLoad(t *testing.T) {
 
 func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
-	svc := NewBillingCacheService(cache, nil, nil, nil, &config.Config{})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{})
 	svc.Stop()
 
 	enqueued := svc.enqueueCacheWrite(cacheWriteTask{
@@ -106,7 +106,7 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 func TestRelayModeSkipsBalanceCheck(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
 	cfg := &config.Config{RunMode: config.RunModeRelay}
-	svc := NewBillingCacheService(cache, nil, nil, nil, cfg)
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg)
 	t.Cleanup(svc.Stop)
 
 	user := &User{ID: 1, Balance: 0} // zero balance
@@ -124,7 +124,7 @@ func TestRelayModeEnforcesAPIKeyRateLimits(t *testing.T) {
 	rateLimitCache := &rateLimitCacheStub{data: rateLimitData}
 
 	cfg := &config.Config{RunMode: config.RunModeRelay}
-	svc := NewBillingCacheService(rateLimitCache, nil, nil, nil, cfg)
+	svc := NewBillingCacheService(rateLimitCache, nil, nil, nil, nil, nil, cfg)
 	t.Cleanup(svc.Stop)
 
 	user := &User{ID: 1, Balance: 0}
