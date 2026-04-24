@@ -189,11 +189,11 @@ func (m *mockChannelAuthCacheInvalidator) InvalidateAuthCacheByGroupID(_ context
 // ---------------------------------------------------------------------------
 
 func newTestChannelService(repo *mockChannelRepository) *ChannelService {
-	return NewChannelService(repo, nil)
+	return NewChannelService(repo, nil, nil, nil)
 }
 
 func newTestChannelServiceWithAuth(repo *mockChannelRepository, auth *mockChannelAuthCacheInvalidator) *ChannelService {
-	return NewChannelService(repo, auth)
+	return NewChannelService(repo, nil, auth, nil)
 }
 
 // makeStandardRepo returns a repo that serves one active channel with anthropic pricing
@@ -2244,6 +2244,32 @@ func TestToUsageFields_WithUpstreamDifference(t *testing.T) {
 	require.Equal(t, "my-alias", fields.OriginalModel)
 	require.Equal(t, "claude-sonnet-4", fields.ChannelMappedModel)
 	require.Equal(t, "my-alias→claude-sonnet-4→claude-sonnet-4-20250514", fields.ModelMappingChain)
+}
+
+func TestToUsageFieldsWithRequestedModel_PrependsCompactRewrite(t *testing.T) {
+	r := ChannelMappingResult{
+		MappedModel:        "gpt-5.4",
+		ChannelID:          7,
+		Mapped:             false,
+		BillingModelSource: BillingModelSourceRequested,
+	}
+	fields := r.ToUsageFieldsWithRequestedModel("gpt-5.5", "gpt-5.4", "gpt-5.4")
+	require.Equal(t, "gpt-5.5", fields.OriginalModel)
+	require.Equal(t, "gpt-5.4", fields.ChannelMappedModel)
+	require.Equal(t, "gpt-5.5→gpt-5.4", fields.ModelMappingChain)
+}
+
+func TestToUsageFieldsWithRequestedModel_PrependsCompactRewriteBeforeChannelMapping(t *testing.T) {
+	r := ChannelMappingResult{
+		MappedModel:        "gpt-4.1",
+		ChannelID:          8,
+		Mapped:             true,
+		BillingModelSource: BillingModelSourceChannelMapped,
+	}
+	fields := r.ToUsageFieldsWithRequestedModel("gpt-5.5", "gpt-5.4", "gpt-4.1")
+	require.Equal(t, "gpt-5.5", fields.OriginalModel)
+	require.Equal(t, "gpt-4.1", fields.ChannelMappedModel)
+	require.Equal(t, "gpt-5.5→gpt-5.4→gpt-4.1", fields.ModelMappingChain)
 }
 
 // ---------------------------------------------------------------------------
