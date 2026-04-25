@@ -684,6 +684,9 @@ type GatewayOpenAICompatConfig struct {
 	// RewriteGPT53CodexSpark: 是否将 gpt-5.3-codex-spark* 请求改写为 gpt-5.3-codex（默认 true）。
 	// 仅影响请求路径，不影响 pricing/billing fallback。
 	RewriteGPT53CodexSpark bool `mapstructure:"rewrite_gpt_5_3_codex_spark"`
+	// RewriteGPT55CompactToGPT54: 是否仅在 /responses/compact 上将 gpt-5.5 请求改写为 gpt-5.4（默认 false）。
+	// 仅影响 compact 路由选择和上游请求；普通 /responses 不受影响。
+	RewriteGPT55CompactToGPT54 bool `mapstructure:"rewrite_gpt_5_5_compact_to_gpt_5_4"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1637,6 +1640,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compat.rewrite_gpt_5_3_codex_spark", true)
+	viper.SetDefault("gateway.openai_compat.rewrite_gpt_5_5_compact_to_gpt_5_4", false)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)

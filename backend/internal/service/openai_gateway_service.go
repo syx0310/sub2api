@@ -40,7 +40,7 @@ const (
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	codexCLIUserAgent      = "codex_cli_rs/0.124.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -54,7 +54,7 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
-	codexCLIVersion                    = "0.104.0"
+	codexCLIVersion                    = "0.124.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 )
@@ -65,6 +65,7 @@ var openaiAllowedHeaders = map[string]bool{
 	"content-type":          true,
 	"conversation_id":       true,
 	"user-agent":            true,
+	"version":               true,
 	"originator":            true,
 	"session_id":            true,
 	"x-codex-turn-state":    true,
@@ -80,6 +81,7 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	"conversation_id":       true,
 	"openai-beta":           true,
 	"user-agent":            true,
+	"version":               true,
 	"originator":            true,
 	"session_id":            true,
 	"x-codex-turn-state":    true,
@@ -93,6 +95,7 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"Accept",
 	"Accept-Language",
 	"OpenAI-Beta",
+	"Version",
 	"Originator",
 	"Session_ID",
 	"Conversation_ID",
@@ -1936,10 +1939,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("instructions", "")
 	}
 
+	if isCodexCLI && ensureOpenAIResponsesImageGenerationTool(reqBody) {
+		bodyModified = true
+		disablePatch()
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
+	}
+
 	if normalizeOpenAIResponsesImageGenerationTools(reqBody) {
 		bodyModified = true
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image_generation tool payload")
+	}
+	if isCodexCLI && applyCodexImageGenerationBridgeInstructions(reqBody) {
+		bodyModified = true
+		disablePatch()
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
@@ -1951,6 +1965,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("model", billingModel)
 	}
 	upstreamModel := billingModel
+	if normalizeOpenAIResponsesImageOnlyModel(reqBody) {
+		bodyModified = true
+		disablePatch()
+		if model, ok := reqBody["model"].(string); ok {
+			upstreamModel = strings.TrimSpace(model)
+		}
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[OpenAI] Normalized /responses image-only model request inbound_model=%s image_model=%s upstream_model=%s",
+			reqModel,
+			billingModel,
+			upstreamModel,
+		)
+	}
 	if err := validateOpenAIResponsesImageModel(reqBody, upstreamModel); err != nil {
 		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -4096,11 +4124,16 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 // Returns (nil, false) if no content was found in deltas.
 func reconstructResponseOutputFromSSE(bodyText string) ([]byte, bool) {
 	acc := apicompat.NewBufferedResponseAccumulator()
+	imageOutputs := make([]json.RawMessage, 0, 1)
+	seenImages := make(map[string]struct{})
 	lines := strings.Split(bodyText, "\n")
 	for _, line := range lines {
 		data, ok := extractOpenAISSEDataLine(line)
 		if !ok || data == "" || data == "[DONE]" {
 			continue
+		}
+		if imageOutput, ok := extractImageGenerationOutputFromSSEData([]byte(data), seenImages); ok {
+			imageOutputs = append(imageOutputs, imageOutput)
 		}
 		var event apicompat.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -4108,15 +4141,54 @@ func reconstructResponseOutputFromSSE(bodyText string) ([]byte, bool) {
 		}
 		acc.ProcessEvent(&event)
 	}
-	if !acc.HasContent() {
+	if !acc.HasContent() && len(imageOutputs) == 0 {
 		return nil, false
 	}
-	output := acc.BuildOutput()
+
+	var output []json.RawMessage
+	if acc.HasContent() {
+		outputJSON, err := json.Marshal(acc.BuildOutput())
+		if err == nil {
+			_ = json.Unmarshal(outputJSON, &output)
+		}
+	}
+	output = append(output, imageOutputs...)
+	if len(output) == 0 {
+		return nil, false
+	}
+
 	outputJSON, err := json.Marshal(output)
 	if err != nil {
 		return nil, false
 	}
 	return outputJSON, true
+}
+
+func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct{}) (json.RawMessage, bool) {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return nil, false
+	}
+	if gjson.GetBytes(data, "type").String() != "response.output_item.done" {
+		return nil, false
+	}
+	item := gjson.GetBytes(data, "item")
+	if !item.Exists() || !item.IsObject() || item.Get("type").String() != "image_generation_call" {
+		return nil, false
+	}
+	if strings.TrimSpace(item.Get("result").String()) == "" {
+		return nil, false
+	}
+	key := strings.TrimSpace(item.Get("id").String())
+	if key == "" {
+		key = strings.TrimSpace(item.Get("output_format").String()) + "|" + strings.TrimSpace(item.Get("result").String())
+	}
+	if key != "" && seen != nil {
+		if _, exists := seen[key]; exists {
+			return nil, false
+		}
+		seen[key] = struct{}{}
+	}
+	return json.RawMessage(item.Raw), true
 }
 
 func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
@@ -4283,8 +4355,12 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	return inputItem, true, true
 }
 
-func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
+func IsOpenAIResponsesCompactPath(c *gin.Context) bool {
 	return isOpenAIResponsesCompactPath(c)
+}
+
+func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
+	return IsOpenAIResponsesCompactPath(c)
 }
 
 func OpenAICompactSessionSeedKeyForTest() string {
@@ -4305,23 +4381,9 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 		return body, false, nil
 	}
 
-	normalized := []byte(`{}`)
-	for _, field := range []string{"model", "input", "instructions", "previous_response_id"} {
-		value := gjson.GetBytes(body, field)
-		if !value.Exists() {
-			continue
-		}
-		next, err := sjson.SetRawBytes(normalized, field, []byte(value.Raw))
-		if err != nil {
-			return body, false, fmt.Errorf("normalize compact body %s: %w", field, err)
-		}
-		normalized = next
-	}
-
-	if bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(normalized)) {
-		return body, false, nil
-	}
-	return normalized, true, nil
+	// Compact 请求体需要保留与 /responses 一致的字段形状，后续分支再做最小兼容改写。
+	// 这里如果预裁掉 tools/reasoning/text 等字段，会同时破坏 passthrough 与非 passthrough。
+	return body, false, nil
 }
 
 func resolveOpenAICompactSessionID(c *gin.Context) string {
