@@ -174,15 +174,11 @@ func TestLoadDefaultOpenAICompatConfig(t *testing.T) {
 	if !cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark {
 		t.Fatalf("Gateway.OpenAICompat.RewriteGPT53CodexSpark = false, want true")
 	}
-	if cfg.Gateway.OpenAICompat.RewriteGPT55CompactToGPT54 {
-		t.Fatalf("Gateway.OpenAICompat.RewriteGPT55CompactToGPT54 = true, want false")
-	}
 }
 
 func TestLoadOpenAICompatConfigFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_COMPAT_REWRITE_GPT_5_3_CODEX_SPARK", "false")
-	t.Setenv("GATEWAY_OPENAI_COMPAT_REWRITE_GPT_5_5_COMPACT_TO_GPT_5_4", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -191,9 +187,6 @@ func TestLoadOpenAICompatConfigFromEnv(t *testing.T) {
 
 	if cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark {
 		t.Fatalf("Gateway.OpenAICompat.RewriteGPT53CodexSpark = true, want false")
-	}
-	if !cfg.Gateway.OpenAICompat.RewriteGPT55CompactToGPT54 {
-		t.Fatalf("Gateway.OpenAICompat.RewriteGPT55CompactToGPT54 = false, want true")
 	}
 }
 

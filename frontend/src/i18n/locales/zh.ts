@@ -346,6 +346,7 @@ export default {
     apiKeys: 'API 密钥',
     usage: '使用记录',
     redeem: '兑换',
+    affiliate: '邀请返利',
     profile: '个人资料',
     users: '用户管理',
     groups: '分组管理',
@@ -973,6 +974,47 @@ export default {
       intervals: '阶梯定价',
       unitPerMillion: '/ 1M token',
       unitPerRequest: '/ 次'
+    }
+  },
+
+  affiliate: {
+    title: '邀请返利',
+    description: '邀请新用户注册，并将返利额度转入账户余额',
+    yourCode: '我的邀请码',
+    inviteLink: '邀请链接',
+    copyCode: '复制邀请码',
+    copyLink: '复制链接',
+    codeCopied: '邀请码已复制',
+    linkCopied: '邀请链接已复制',
+    loadFailed: '加载邀请返利数据失败',
+    transferFailed: '转入余额失败',
+    stats: {
+      invitedUsers: '邀请人数',
+      availableQuota: '可转返利额度',
+      totalQuota: '历史返利额度'
+    },
+    transfer: {
+      title: '返利额度转余额',
+      description: '将当前可用返利额度一键转入账户余额',
+      button: '转入余额',
+      transferring: '转入中...',
+      empty: '当前没有可转入额度',
+      success: '已转入余额：{amount}'
+    },
+    invitees: {
+      title: '已邀请用户',
+      empty: '暂无邀请记录',
+      columns: {
+        email: '邮箱',
+        username: '用户名',
+        joinedAt: '注册时间'
+      }
+    },
+    tips: {
+      title: '使用说明',
+      line1: '将邀请码或邀请链接分享给新用户。',
+      line2: '被邀请用户充值后，你可获得对应比例的返利额度。',
+      line3: '返利额度可随时转入账户余额。'
     }
   },
 
@@ -2951,6 +2993,22 @@ export default {
         responsesWebsocketsV2PassthroughHint: '当前已开启自动透传：仅影响 HTTP 透传链路，不影响 WS mode。',
         codexCLIOnly: '仅允许 Codex 官方客户端',
         codexCLIOnlyDesc: '仅对 OpenAI OAuth 生效。开启后仅允许 Codex 官方客户端家族访问；关闭后完全绕过并保持原逻辑。',
+        compactMode: 'Compact 模式',
+        compactModeDesc:
+          '控制本账号在 /responses/compact 调度中的参与方式。Auto 跟随探测结果，Force On 强制允许，Force Off 强制排除。',
+        compactModeAuto: '自动',
+        compactModeForceOn: '强制开启',
+        compactModeForceOff: '强制关闭',
+        compactModelMapping: 'Compact 专属模型映射',
+        compactModelMappingDesc:
+          '仅在 /responses/compact 请求中生效。当上游 compact 端点需要特殊 compact 模型时使用。',
+        compactSupported: '支持 Compact',
+        compactUnsupported: '不支持 Compact',
+        compactUnknown: 'Compact 未知',
+        compactLastChecked: '最近探测',
+        testMode: '测试模式',
+        testModeDefault: '常规请求',
+        testModeCompact: 'Compact 探测',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       anthropic: {
@@ -5000,6 +5058,8 @@ export default {
         description: '新用户的默认值',
         defaultBalance: '默认余额',
         defaultBalanceHint: '新用户的初始余额',
+        affiliateRebateRate: '邀请返利比例',
+        affiliateRebateRateHint: '充值后返给邀请人的比例（0-100%，例如填写 10 表示返利 10%）',
         defaultConcurrency: '默认并发数',
         defaultConcurrencyHint: '新用户的最大并发请求数',
         defaultUserRpmLimit: '默认用户 RPM 限制',

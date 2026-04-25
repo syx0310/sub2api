@@ -235,9 +235,6 @@ gateway:
   # 仅影响请求路径，不影响 pricing/billing fallback。
   openai_compat:
     rewrite_gpt_5_3_codex_spark: true
-    # 是否仅在 /responses/compact 上将 gpt-5.5 请求改写为 gpt-5.4
-    # 默认 false：普通 /responses 不受影响，usage 中仍可记录完整映射链。
-    rewrite_gpt_5_5_compact_to_gpt_5_4: false
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
     # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。
