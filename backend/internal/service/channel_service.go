@@ -132,31 +132,6 @@ func (r ChannelMappingResult) ToUsageFields(reqModel, upstreamModel string) Chan
 	}
 }
 
-// ToUsageFieldsWithRequestedModel allows callers to preserve an original
-// requested model while routing and channel mapping are performed on a
-// normalized/intermediate model.
-func (r ChannelMappingResult) ToUsageFieldsWithRequestedModel(requestedModel, routedModel, upstreamModel string) ChannelUsageFields {
-	fields := r.ToUsageFields(routedModel, upstreamModel)
-	requestedModel = strings.TrimSpace(requestedModel)
-	routedModel = strings.TrimSpace(routedModel)
-	if requestedModel == "" || routedModel == "" || requestedModel == routedModel {
-		return fields
-	}
-
-	fields.OriginalModel = requestedModel
-	chain := strings.TrimSpace(fields.ModelMappingChain)
-	if chain == "" {
-		fields.ModelMappingChain = requestedModel + "→" + routedModel
-		return fields
-	}
-	if chain == routedModel || strings.HasPrefix(chain, routedModel+"→") {
-		fields.ModelMappingChain = requestedModel + "→" + chain
-		return fields
-	}
-	fields.ModelMappingChain = requestedModel + "→" + routedModel + "→" + chain
-	return fields
-}
-
 const (
 	channelCacheTTL       = 10 * time.Minute
 	channelErrorTTL       = 5 * time.Second // DB 错误时的短缓存
