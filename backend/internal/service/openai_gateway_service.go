@@ -238,6 +238,7 @@ type OpenAIForwardResult struct {
 	FirstTokenMs    *int
 	ImageCount      int
 	ImageSize       string
+	HasToolCall     bool
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
