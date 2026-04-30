@@ -55,6 +55,23 @@ const (
 	codexSparkImageUnsupportedText   = codexSparkImageUnsupportedMarker + "\nThe current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark.\n</sub2api-codex-spark-image-unsupported>"
 )
 
+var openAIChatGPTInternalUnsupportedFields = []string{
+	"user",
+	"metadata",
+	"prompt_cache_retention",
+	"safety_identifier",
+	"stream_options",
+}
+
+var openAICodexOAuthUnsupportedFields = append([]string{
+	"max_output_tokens",
+	"max_completion_tokens",
+	"temperature",
+	"top_p",
+	"frequency_penalty",
+	"presence_penalty",
+}, openAIChatGPTInternalUnsupportedFields...)
+
 func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool, cfgs ...*config.Config) codexTransformResult {
 	result := codexTransformResult{}
 	// 工具续链需求会影响存储策略与 input 过滤逻辑。
@@ -66,9 +83,10 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 	}
 	normalizedModel := normalizeCodexRequestModel(model, cfgs...)
 	if isCompact {
-		if compactMappedModel, ok := preserveCompactMappedCodexModel(model); ok {
-			normalizedModel = compactMappedModel
-		}
+		// Compact mapping is resolved in the gateway layer. Keep transform-layer
+		// model handling identical to upstream so mapped compact IDs are not
+		// rewritten a second time.
+		normalizedModel = strings.TrimSpace(model)
 	}
 	if normalizedModel != "" {
 		if model != normalizedModel {
@@ -100,23 +118,8 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		}
 	}
 
-	// Strip parameters unsupported by codex models via the Responses API.
-	for _, key := range []string{
-		"max_output_tokens",
-		"max_completion_tokens",
-		"temperature",
-		"top_p",
-		"frequency_penalty",
-		"presence_penalty",
-		// prompt_cache_retention is a newer Responses API parameter (cache TTL).
-		// The ChatGPT internal Codex endpoint rejects it with
-		// "Unsupported parameter: prompt_cache_retention". Defense-in-depth
-		// for any OAuth path that reaches this transform — the Cursor
-		// Responses-shape short-circuit in ForwardAsChatCompletions strips
-		// it earlier too, but we keep this line so other OAuth callers are
-		// equally protected.
-		"prompt_cache_retention",
-	} {
+	// Strip parameters unsupported by ChatGPT internal Codex endpoint.
+	for _, key := range openAICodexOAuthUnsupportedFields {
 		if _, ok := reqBody[key]; ok {
 			delete(reqBody, key)
 			result.Modified = true
@@ -398,31 +401,6 @@ func stringifyCodexContentText(value any) string {
 		}
 		return fmt.Sprint(v)
 	}
-}
-
-func preserveCompactMappedCodexModel(model string) (string, bool) {
-	trimmed := strings.TrimSpace(model)
-	if trimmed == "" {
-		return "", false
-	}
-	modelID := trimmed
-	if strings.Contains(modelID, "/") {
-		parts := strings.Split(modelID, "/")
-		modelID = parts[len(parts)-1]
-	}
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
-		return "", false
-	}
-	lower := strings.ToLower(modelID)
-	if !strings.HasSuffix(lower, "-openai-compact") {
-		return "", false
-	}
-	base := strings.TrimSuffix(lower, "-openai-compact")
-	if getNormalizedCodexModel(base) == "" && !strings.HasPrefix(base, "gpt-") {
-		return "", false
-	}
-	return modelID, true
 }
 
 func normalizeCodexModel(model string) string {
@@ -895,6 +873,14 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 			continue
 		}
 		typ, _ := m["type"].(string)
+
+		// chatgpt.com codex backend (OAuth path) does not persist reasoning
+		// items because applyCodexOAuthTransform forces store=false. Any rs_*
+		// reference replayed in input is guaranteed to 404 upstream
+		// ("Item with id 'rs_...' not found"). Drop reasoning items entirely.
+		if typ == "reasoning" {
+			continue
+		}
 
 		// 仅修正真正的 tool/function call 标识，避免误改普通 message/reasoning id；
 		// 若 item_reference 指向 legacy call_* 标识，则仅修正该引用本身。

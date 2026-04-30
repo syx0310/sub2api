@@ -20,9 +20,15 @@ const (
 
 // Affiliate rebate settings
 const (
-	AffiliateRebateRateDefault = 20.0
-	AffiliateRebateRateMin     = 0.0
-	AffiliateRebateRateMax     = 100.0
+	AffiliateRebateRateDefault          = 20.0
+	AffiliateRebateRateMin              = 0.0
+	AffiliateRebateRateMax              = 100.0
+	AffiliateEnabledDefault             = false // 邀请返利总开关默认关闭
+	AffiliateRebateFreezeHoursDefault   = 0     // 0 = 不冻结（向后兼容）
+	AffiliateRebateFreezeHoursMax       = 720   // 最大 30 天
+	AffiliateRebateDurationDaysDefault  = 0     // 0 = 永久有效
+	AffiliateRebateDurationDaysMax      = 3650  // ~10 年
+	AffiliateRebatePerInviteeCapDefault = 0.0   // 0 = 无上限
 )
 
 // Platform constants
@@ -35,11 +41,12 @@ const (
 
 // Account type constants
 const (
-	AccountTypeOAuth      = domain.AccountTypeOAuth      // OAuth类型账号（full scope: profile + inference）
-	AccountTypeSetupToken = domain.AccountTypeSetupToken // Setup Token类型账号（inference only scope）
-	AccountTypeAPIKey     = domain.AccountTypeAPIKey     // API Key类型账号
-	AccountTypeUpstream   = domain.AccountTypeUpstream   // 上游透传类型账号（通过 Base URL + API Key 连接上游）
-	AccountTypeBedrock    = domain.AccountTypeBedrock    // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
+	AccountTypeOAuth          = domain.AccountTypeOAuth          // OAuth类型账号（full scope: profile + inference）
+	AccountTypeSetupToken     = domain.AccountTypeSetupToken     // Setup Token类型账号（inference only scope）
+	AccountTypeAPIKey         = domain.AccountTypeAPIKey         // API Key类型账号
+	AccountTypeUpstream       = domain.AccountTypeUpstream       // 上游透传类型账号（通过 Base URL + API Key 连接上游）
+	AccountTypeBedrock        = domain.AccountTypeBedrock        // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
+	AccountTypeServiceAccount = domain.AccountTypeServiceAccount // Google Service Account 类型账号（用于 Vertex AI）
 )
 
 // Redeem type constants
@@ -94,7 +101,11 @@ const (
 	SettingKeyPasswordResetEnabled             = "password_reset_enabled"              // 是否启用忘记密码功能（需要先开启邮件验证）
 	SettingKeyFrontendURL                      = "frontend_url"                        // 前端基础URL，用于生成邮件中的重置密码链接
 	SettingKeyInvitationCodeEnabled            = "invitation_code_enabled"             // 是否启用邀请码注册
+	SettingKeyAffiliateEnabled                 = "affiliate_enabled"                   // 邀请返利功能总开关
 	SettingKeyAffiliateRebateRate              = "affiliate_rebate_rate"               // 邀请返利比例（百分比，0-100）
+	SettingKeyAffiliateRebateFreezeHours       = "affiliate_rebate_freeze_hours"       // 返利冻结期（小时，0=不冻结）
+	SettingKeyAffiliateRebateDurationDays      = "affiliate_rebate_duration_days"      // 返利有效期（天，0=永久）
+	SettingKeyAffiliateRebatePerInviteeCap     = "affiliate_rebate_per_invitee_cap"    // 单人返利上限（0=无上限）
 
 	// 邮件服务设置
 	SettingKeySMTPHost     = "smtp_host"      // SMTP服务器地址
@@ -295,6 +306,12 @@ const (
 
 	// SettingKeyBetaPolicySettings stores JSON config for beta policy rules.
 	SettingKeyBetaPolicySettings = "beta_policy_settings"
+
+	// SettingKeyOpenAIFastPolicySettings stores JSON config for OpenAI
+	// service_tier (fast/flex) policy rules. Mirrors BetaPolicySettings but
+	// targets OpenAI's body-level service_tier field instead of Claude's
+	// anthropic-beta header.
+	SettingKeyOpenAIFastPolicySettings = "openai_fast_policy_settings"
 
 	// =========================
 	// Claude Code Version Check
