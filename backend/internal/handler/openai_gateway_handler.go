@@ -1234,6 +1234,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	)
 
 	hooks := &service.OpenAIWSIngressHooks{
+		InitialRequestModel: reqModel,
 		BeforeTurn: func(turn int) error {
 			if turn == 1 {
 				return nil
