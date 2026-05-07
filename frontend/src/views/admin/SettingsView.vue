@@ -291,6 +291,113 @@
             </div>
           </div>
 
+          <!-- Rate Limit Cooldown (429) Settings -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.rateLimit429Cooldown.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.rateLimit429Cooldown.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div
+                v-if="rateLimit429CooldownLoading"
+                class="flex items-center gap-2 text-gray-500"
+              >
+                <div
+                  class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"
+                ></div>
+                {{ t("common.loading") }}
+              </div>
+
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t("admin.settings.rateLimit429Cooldown.enabled")
+                    }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.rateLimit429Cooldown.enabledHint") }}
+                    </p>
+                  </div>
+                  <Toggle v-model="rateLimit429CooldownForm.enabled" />
+                </div>
+
+                <div
+                  v-if="rateLimit429CooldownForm.enabled"
+                  class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+                >
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t(
+                          "admin.settings.rateLimit429Cooldown.cooldownSeconds",
+                        )
+                      }}
+                    </label>
+                    <input
+                      v-model.number="rateLimit429CooldownForm.cooldown_seconds"
+                      type="number"
+                      min="1"
+                      max="7200"
+                      class="input w-32"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t(
+                          "admin.settings.rateLimit429Cooldown.cooldownSecondsHint",
+                        )
+                      }}
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700"
+                >
+                  <button
+                    type="button"
+                    @click="saveRateLimit429CooldownSettings"
+                    :disabled="rateLimit429CooldownSaving"
+                    class="btn btn-primary btn-sm"
+                  >
+                    <svg
+                      v-if="rateLimit429CooldownSaving"
+                      class="mr-1 h-4 w-4 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      ></circle>
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    {{
+                      rateLimit429CooldownSaving
+                        ? t("common.saving")
+                        : t("common.save")
+                    }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Stream Timeout Settings -->
           <div class="card">
             <div
@@ -1639,6 +1746,232 @@
                     <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                       {{ t("admin.settings.linuxdo.redirectUrlHint") }}
                     </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- GitHub / Google 邮箱快捷登录 -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ localText("邮箱快捷登录", "Email OAuth Sign-in") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{
+                  localText(
+                    "开启 GitHub 或 Google 邮箱授权登录后，系统会读取已验证邮箱，存在则直接登录，不存在则自动注册。",
+                    "After GitHub or Google email OAuth is enabled, the system reads a verified email, signs in matching users, and auto-registers missing users.",
+                  )
+                }}
+              </p>
+            </div>
+            <div class="space-y-6 p-6">
+              <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 class="font-medium text-gray-900 dark:text-white">
+                        GitHub
+                      </h3>
+                      <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                        {{
+                          localText(
+                            "GitHub OAuth App 需要 read:user user:email 权限，回调地址填写下方后端地址。",
+                            "GitHub OAuth App needs read:user user:email scopes. Use the backend callback URL below.",
+                          )
+                        }}
+                      </p>
+                    </div>
+                    <Toggle v-model="form.github_oauth_enabled" />
+                  </div>
+
+                  <div v-if="form.github_oauth_enabled" class="mt-4 space-y-4">
+                    <div class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300">
+                      <template v-if="isZhLocale">
+                        开通引导：GitHub Settings → Developer settings →
+                        <a
+                          data-testid="github-oauth-apps-guide-link"
+                          href="https://github.com/settings/developers"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="font-medium text-primary-600 hover:underline dark:text-primary-400"
+                        >OAuth Apps</a>
+                        → New OAuth App；Homepage URL 填站点域名，Authorization callback URL 填下面的后端回调地址。
+                      </template>
+                      <template v-else>
+                        Setup guide: GitHub Settings → Developer settings →
+                        <a
+                          data-testid="github-oauth-apps-guide-link"
+                          href="https://github.com/settings/developers"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="font-medium text-primary-600 hover:underline dark:text-primary-400"
+                        >OAuth Apps</a>
+                        → New OAuth App. Use your site origin as Homepage URL and the backend callback URL below as Authorization callback URL.
+                      </template>
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <div>
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Client ID</label>
+                        <input
+                          v-model="form.github_oauth_client_id"
+                          type="text"
+                          class="input font-mono text-sm"
+                          placeholder="GitHub OAuth Client ID"
+                        />
+                      </div>
+                      <div>
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Client Secret</label>
+                        <input
+                          v-model="form.github_oauth_client_secret"
+                          type="password"
+                          class="input font-mono text-sm"
+                          :placeholder="
+                            form.github_oauth_client_secret_configured
+                              ? localText('密钥已配置，留空以保留当前值。', 'Secret configured. Leave empty to keep the current value.')
+                              : 'GitHub OAuth Client Secret'
+                          "
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {{ localText("后端回调地址", "Backend Callback URL") }}
+                      </label>
+                      <input
+                        v-model="form.github_oauth_redirect_url"
+                        type="url"
+                        class="input font-mono text-sm"
+                        placeholder="https://your-domain.com/api/v1/auth/oauth/github/callback"
+                      />
+                      <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        <button
+                          type="button"
+                          class="btn btn-secondary btn-sm w-fit"
+                          @click="setAndCopyEmailOAuthRedirectUrl('github')"
+                        >
+                          {{ localText("生成并复制", "Generate and copy") }}
+                        </button>
+                        <code
+                          v-if="githubOAuthRedirectUrlSuggestion"
+                          class="select-all break-all rounded bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300"
+                        >
+                          {{ githubOAuthRedirectUrlSuggestion }}
+                        </code>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {{ localText("前端回跳地址", "Frontend Callback URL") }}
+                      </label>
+                      <input
+                        v-model="form.github_oauth_frontend_redirect_url"
+                        type="text"
+                        class="input font-mono text-sm"
+                        placeholder="/auth/oauth/callback"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 class="font-medium text-gray-900 dark:text-white">
+                        Google
+                      </h3>
+                      <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                        {{
+                          localText(
+                            "Google OAuth 客户端需要 openid email profile 范围，并在凭据里登记后端回调地址。",
+                            "Google OAuth client needs openid email profile scopes and the backend callback URL registered in credentials.",
+                          )
+                        }}
+                      </p>
+                    </div>
+                    <Toggle v-model="form.google_oauth_enabled" />
+                  </div>
+
+                  <div v-if="form.google_oauth_enabled" class="mt-4 space-y-4">
+                    <div class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300">
+                      {{
+                        localText(
+                          "开通引导：Google Cloud Console → APIs & Services → OAuth consent screen 完成同意屏幕；Credentials → Create Credentials → OAuth client ID，类型选择 Web application，并把下面地址加入 Authorized redirect URIs。",
+                          "Setup guide: Google Cloud Console → APIs & Services → OAuth consent screen, then Credentials → Create Credentials → OAuth client ID, choose Web application, and add the URL below to Authorized redirect URIs.",
+                        )
+                      }}
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <div>
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Client ID</label>
+                        <input
+                          v-model="form.google_oauth_client_id"
+                          type="text"
+                          class="input font-mono text-sm"
+                          placeholder="Google OAuth Client ID"
+                        />
+                      </div>
+                      <div>
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Client Secret</label>
+                        <input
+                          v-model="form.google_oauth_client_secret"
+                          type="password"
+                          class="input font-mono text-sm"
+                          :placeholder="
+                            form.google_oauth_client_secret_configured
+                              ? localText('密钥已配置，留空以保留当前值。', 'Secret configured. Leave empty to keep the current value.')
+                              : 'Google OAuth Client Secret'
+                          "
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {{ localText("后端回调地址", "Backend Callback URL") }}
+                      </label>
+                      <input
+                        v-model="form.google_oauth_redirect_url"
+                        type="url"
+                        class="input font-mono text-sm"
+                        placeholder="https://your-domain.com/api/v1/auth/oauth/google/callback"
+                      />
+                      <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        <button
+                          type="button"
+                          class="btn btn-secondary btn-sm w-fit"
+                          @click="setAndCopyEmailOAuthRedirectUrl('google')"
+                        >
+                          {{ localText("生成并复制", "Generate and copy") }}
+                        </button>
+                        <code
+                          v-if="googleOAuthRedirectUrlSuggestion"
+                          class="select-all break-all rounded bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300"
+                        >
+                          {{ googleOAuthRedirectUrlSuggestion }}
+                        </code>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {{ localText("前端回跳地址", "Frontend Callback URL") }}
+                      </label>
+                      <input
+                        v-model="form.google_oauth_frontend_redirect_url"
+                        type="text"
+                        class="input font-mono text-sm"
+                        placeholder="/auth/oauth/callback"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4157,6 +4490,39 @@
           </div>
         </div>
 
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.riskControl.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.riskControl.description') }}
+            </p>
+            <p class="mt-1.5 text-xs">
+              <router-link
+                to="/admin/risk-control"
+                class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
+              >
+                {{ t('admin.settings.features.riskControl.configureLink') }}
+                <span aria-hidden="true">→</span>
+              </router-link>
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.riskControl.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.riskControl.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.risk_control_enabled" />
+            </div>
+          </div>
+        </div>
+
         <!-- Affiliate (邀请返利) feature card -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -5539,9 +5905,10 @@ import {
 const { t, locale } = useI18n();
 const appStore = useAppStore();
 const adminSettingsStore = useAdminSettingsStore();
+const isZhLocale = computed(() => locale.value.startsWith("zh"));
 
 function localText(zh: string, en: string): string {
-  return locale.value.startsWith("zh") ? zh : en;
+  return isZhLocale.value ? zh : en;
 }
 
 const paymentGuideHref = computed(() =>
@@ -5603,6 +5970,14 @@ const overloadCooldownSaving = ref(false);
 const overloadCooldownForm = reactive({
   enabled: true,
   cooldown_minutes: 10,
+});
+
+// Rate Limit Cooldown (429) 状态
+const rateLimit429CooldownLoading = ref(true);
+const rateLimit429CooldownSaving = ref(false);
+const rateLimit429CooldownForm = reactive({
+  enabled: true,
+  cooldown_seconds: 5,
 });
 
 // Stream Timeout 状态
@@ -5681,6 +6056,8 @@ type SettingsForm = Omit<
   wechat_connect_mp_enabled: boolean;
   wechat_connect_mobile_enabled: boolean;
   oidc_connect_client_secret: string;
+  github_oauth_client_secret: string;
+  google_oauth_client_secret: string;
   force_email_on_third_party_signup: boolean;
   openai_advanced_scheduler_enabled: boolean;
 };
@@ -5713,6 +6090,7 @@ const form = reactive<SettingsForm>({
   backend_mode_enabled: false,
   hide_ccs_import_button: false,
   payment_enabled: false,
+  risk_control_enabled: false,
   payment_min_amount: 1,
   payment_max_amount: 10000,
   payment_daily_limit: 50000,
@@ -5811,6 +6189,19 @@ const form = reactive<SettingsForm>({
   oidc_connect_userinfo_email_path: "",
   oidc_connect_userinfo_id_path: "",
   oidc_connect_userinfo_username_path: "",
+  // GitHub / Google 邮箱快捷登录
+  github_oauth_enabled: false,
+  github_oauth_client_id: "",
+  github_oauth_client_secret: "",
+  github_oauth_client_secret_configured: false,
+  github_oauth_redirect_url: "",
+  github_oauth_frontend_redirect_url: "/auth/oauth/callback",
+  google_oauth_enabled: false,
+  google_oauth_client_id: "",
+  google_oauth_client_secret: "",
+  google_oauth_client_secret_configured: false,
+  google_oauth_redirect_url: "",
+  google_oauth_frontend_redirect_url: "/auth/oauth/callback",
   // Model fallback
   enable_model_fallback: false,
   fallback_model_anthropic: "claude-3-5-sonnet-20241022",
@@ -5875,6 +6266,22 @@ const authSourceDefaultsMeta = computed(() => [
     source: "wechat" as AuthSourceType,
     title: t("admin.settings.authSourceDefaults.sources.wechat.title"),
     description: t("admin.settings.authSourceDefaults.sources.wechat.description"),
+  },
+  {
+    source: "github" as AuthSourceType,
+    title: "GitHub",
+    description: localText(
+      "通过 GitHub 已验证邮箱首次注册或首次绑定时应用。",
+      "Applied on first signup or first bind through a verified GitHub email.",
+    ),
+  },
+  {
+    source: "google" as AuthSourceType,
+    title: "Google",
+    description: localText(
+      "通过 Google 已验证邮箱首次注册或首次绑定时应用。",
+      "Applied on first signup or first bind through a verified Google email.",
+    ),
   },
 ]);
 
@@ -6183,6 +6590,42 @@ async function setAndCopyLinuxdoRedirectUrl() {
   );
 }
 
+type EmailOAuthProvider = "github" | "google";
+
+const githubOAuthRedirectUrlSuggestion = computed(() => {
+  if (typeof window === "undefined") return "";
+  const origin =
+    window.location.origin ||
+    `${window.location.protocol}//${window.location.host}`;
+  return `${origin}/api/v1/auth/oauth/github/callback`;
+});
+
+const googleOAuthRedirectUrlSuggestion = computed(() => {
+  if (typeof window === "undefined") return "";
+  const origin =
+    window.location.origin ||
+    `${window.location.protocol}//${window.location.host}`;
+  return `${origin}/api/v1/auth/oauth/google/callback`;
+});
+
+async function setAndCopyEmailOAuthRedirectUrl(provider: EmailOAuthProvider) {
+  const url =
+    provider === "github"
+      ? githubOAuthRedirectUrlSuggestion.value
+      : googleOAuthRedirectUrlSuggestion.value;
+  if (!url) return;
+
+  if (provider === "github") {
+    form.github_oauth_redirect_url = url;
+  } else {
+    form.google_oauth_redirect_url = url;
+  }
+  await copyToClipboard(
+    url,
+    localText("回调地址已写入并复制。", "Callback URL set and copied."),
+  );
+}
+
 const wechatRedirectUrlSuggestion = computed(() => {
   if (typeof window === "undefined") return "";
   const origin =
@@ -6373,6 +6816,8 @@ async function loadSettings() {
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.linuxdo_connect_client_secret = "";
+    form.github_oauth_client_secret = "";
+    form.google_oauth_client_secret = "";
     form.wechat_connect_app_secret = "";
     form.wechat_connect_open_app_secret = "";
     form.wechat_connect_mp_app_secret = "";
@@ -6731,6 +7176,20 @@ async function saveSettings() {
       oidc_connect_userinfo_id_path: form.oidc_connect_userinfo_id_path,
       oidc_connect_userinfo_username_path:
         form.oidc_connect_userinfo_username_path,
+      github_oauth_enabled: form.github_oauth_enabled,
+      github_oauth_client_id: form.github_oauth_client_id,
+      github_oauth_client_secret:
+        form.github_oauth_client_secret || undefined,
+      github_oauth_redirect_url: form.github_oauth_redirect_url,
+      github_oauth_frontend_redirect_url:
+        form.github_oauth_frontend_redirect_url,
+      google_oauth_enabled: form.google_oauth_enabled,
+      google_oauth_client_id: form.google_oauth_client_id,
+      google_oauth_client_secret:
+        form.google_oauth_client_secret || undefined,
+      google_oauth_redirect_url: form.google_oauth_redirect_url,
+      google_oauth_frontend_redirect_url:
+        form.google_oauth_frontend_redirect_url,
       enable_model_fallback: form.enable_model_fallback,
       fallback_model_anthropic: form.fallback_model_anthropic,
       fallback_model_openai: form.fallback_model_openai,
@@ -6748,6 +7207,7 @@ async function saveSettings() {
         form.enable_anthropic_cache_ttl_1h_injection,
       // Payment configuration
       payment_enabled: form.payment_enabled,
+      risk_control_enabled: form.risk_control_enabled,
       payment_min_amount: Number(form.payment_min_amount) || 0,
       payment_max_amount: Number(form.payment_max_amount) || 0,
       payment_daily_limit: Number(form.payment_daily_limit) || 0,
@@ -6845,6 +7305,8 @@ async function saveSettings() {
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.linuxdo_connect_client_secret = "";
+    form.github_oauth_client_secret = "";
+    form.google_oauth_client_secret = "";
     form.wechat_connect_app_secret = "";
     form.wechat_connect_open_app_secret = "";
     form.wechat_connect_mp_app_secret = "";
@@ -7051,6 +7513,40 @@ async function saveOverloadCooldownSettings() {
     );
   } finally {
     overloadCooldownSaving.value = false;
+  }
+}
+
+// Rate Limit Cooldown (429) 方法
+async function loadRateLimit429CooldownSettings() {
+  rateLimit429CooldownLoading.value = true;
+  try {
+    const settings = await adminAPI.settings.getRateLimit429CooldownSettings();
+    Object.assign(rateLimit429CooldownForm, settings);
+  } catch (_error: unknown) {
+    // Silent fail - settings will use defaults
+  } finally {
+    rateLimit429CooldownLoading.value = false;
+  }
+}
+
+async function saveRateLimit429CooldownSettings() {
+  rateLimit429CooldownSaving.value = true;
+  try {
+    const updated = await adminAPI.settings.updateRateLimit429CooldownSettings({
+      enabled: rateLimit429CooldownForm.enabled,
+      cooldown_seconds: rateLimit429CooldownForm.cooldown_seconds,
+    });
+    Object.assign(rateLimit429CooldownForm, updated);
+    appStore.showSuccess(t("admin.settings.rateLimit429Cooldown.saved"));
+  } catch (error: unknown) {
+    appStore.showError(
+      extractApiErrorMessage(
+        error,
+        t("admin.settings.rateLimit429Cooldown.saveFailed"),
+      ),
+    );
+  } finally {
+    rateLimit429CooldownSaving.value = false;
   }
 }
 
@@ -7665,6 +8161,7 @@ onMounted(() => {
   loadSubscriptionGroups();
   loadAdminApiKey();
   loadOverloadCooldownSettings();
+  loadRateLimit429CooldownSettings();
   loadStreamTimeoutSettings();
   loadRectifierSettings();
   loadBetaPolicySettings();

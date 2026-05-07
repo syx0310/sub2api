@@ -126,6 +126,16 @@ describe("admin settings auth source defaults helpers", () => {
       auth_source_default_wechat_subscriptions: [],
       auth_source_default_wechat_grant_on_signup: false,
       auth_source_default_wechat_grant_on_first_bind: false,
+      auth_source_default_github_balance: 0,
+      auth_source_default_github_concurrency: 5,
+      auth_source_default_github_subscriptions: [],
+      auth_source_default_github_grant_on_signup: false,
+      auth_source_default_github_grant_on_first_bind: false,
+      auth_source_default_google_balance: 0,
+      auth_source_default_google_concurrency: 5,
+      auth_source_default_google_subscriptions: [],
+      auth_source_default_google_grant_on_signup: false,
+      auth_source_default_google_grant_on_first_bind: false,
     });
   });
 });
