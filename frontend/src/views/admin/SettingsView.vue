@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-4xl space-y-6">
+    <div class="mx-auto max-w-6xl space-y-6">
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center py-12">
         <div
@@ -11,23 +11,36 @@
       <!-- Settings Form -->
       <form v-else @submit.prevent="saveSettings" class="space-y-6" novalidate>
         <!-- Tab Navigation -->
-        <div class="sticky top-0 z-10 overflow-x-auto settings-tabs-scroll">
-          <nav class="settings-tabs">
-            <button
-              v-for="tab in settingsTabs"
-              :key="tab.key"
-              type="button"
-              :class="[
-                'settings-tab',
-                activeTab === tab.key && 'settings-tab-active',
-              ]"
-              @click="activeTab = tab.key"
-            >
-              <span class="settings-tab-icon">
-                <Icon :name="tab.icon" size="sm" />
-              </span>
-              <span>{{ t(`admin.settings.tabs.${tab.key}`) }}</span>
-            </button>
+        <div class="settings-tabs-shell">
+          <nav
+            class="settings-tabs-scroll"
+            role="tablist"
+            :aria-label="t('admin.settings.title')"
+          >
+            <div class="settings-tabs">
+              <button
+                v-for="tab in settingsTabs"
+                :key="tab.key"
+                :id="`settings-tab-${tab.key}`"
+                type="button"
+                role="tab"
+                :aria-selected="activeTab === tab.key"
+                :tabindex="activeTab === tab.key ? 0 : -1"
+                :class="[
+                  'settings-tab',
+                  activeTab === tab.key && 'settings-tab-active',
+                ]"
+                @click="selectSettingsTab(tab.key)"
+                @keydown="handleSettingsTabKeydown($event, tab.key)"
+              >
+                <span class="settings-tab-icon">
+                  <Icon :name="tab.icon" size="sm" />
+                </span>
+                <span class="settings-tab-label">{{
+                  t(`admin.settings.tabs.${tab.key}`)
+                }}</span>
+              </button>
+            </div>
           </nav>
         </div>
 
@@ -3415,6 +3428,59 @@
                   v-model="form.enable_anthropic_cache_ttl_1h_injection"
                 />
               </div>
+
+              <!-- messages cache_control 改写 -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{
+                      t(
+                        "admin.settings.gatewayForwarding.rewriteMessageCacheControl",
+                      )
+                    }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.gatewayForwarding.rewriteMessageCacheControlHint",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle v-model="form.rewrite_message_cache_control" />
+              </div>
+
+              <!-- Antigravity UA 版本 -->
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{
+                    t(
+                      "admin.settings.gatewayForwarding.antigravityUserAgentVersion",
+                    )
+                  }}
+                </label>
+                <input
+                  v-model="form.antigravity_user_agent_version"
+                  type="text"
+                  class="input max-w-xs font-mono text-sm"
+                  :placeholder="
+                    t(
+                      'admin.settings.gatewayForwarding.antigravityUserAgentVersionPlaceholder',
+                    )
+                  "
+                />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{
+                    t(
+                      "admin.settings.gatewayForwarding.antigravityUserAgentVersionHint",
+                    )
+                  }}
+                </p>
+              </div>
             </div>
           </div>
           <!-- Web Search Emulation -->
@@ -3881,11 +3947,11 @@
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     {{ t("admin.settings.site.backendModeDescription") }}
                   </p>
-                </div>
-                <Toggle v-model="form.backend_mode_enabled" />
-              </div>
+	                </div>
+	                <Toggle v-model="form.backend_mode_enabled" />
+	              </div>
 
-              <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
+	              <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
                 <div>
                   <label
                     class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
@@ -4401,10 +4467,212 @@
               </button>
             </div>
           </div>
-        </div>
-        <!-- /Tab: General -->
+	        </div>
+	        <!-- /Tab: General -->
 
-        <!-- Tab: Features (功能开关) -->
+	        <!-- Tab: Login Agreement -->
+	        <div v-show="activeTab === 'agreement'" class="space-y-6">
+	          <div class="card">
+	            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+	              <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+	                <div>
+	                  <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+	                    {{ localText("登录条款确认", "Login agreement") }}
+	                  </h2>
+	                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+	                    {{
+	                      localText(
+	                        "控制登录页是否要求用户先阅读并同意服务条款、隐私政策或其他 Markdown 文档。",
+	                        "Control whether the login page requires users to accept Markdown policy documents first.",
+	                      )
+	                    }}
+	                  </p>
+	                </div>
+	                <div class="flex items-center gap-3">
+	                  <span class="text-sm text-gray-600 dark:text-gray-300">
+	                    {{ form.login_agreement_enabled ? localText("已启用", "Enabled") : localText("未启用", "Disabled") }}
+	                  </span>
+	                  <Toggle v-model="form.login_agreement_enabled" />
+	                </div>
+	              </div>
+	            </div>
+
+	            <div class="space-y-6 p-6">
+	              <div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_220px]">
+	                <div>
+	                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+	                    {{ localText("展示形式", "Display mode") }}
+	                  </label>
+	                  <div class="grid grid-cols-2 gap-2 rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+                    <button
+                      type="button"
+                      class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
+                      :class="
+                        form.login_agreement_mode === 'modal'
+                          ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
+                          : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
+                      "
+                      @click="form.login_agreement_mode = 'modal'"
+                    >
+                      <Icon name="shield" size="sm" />
+                      {{ localText("弹窗", "Modal") }}
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
+                      :class="
+                        form.login_agreement_mode === 'checkbox'
+                          ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
+                          : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
+                      "
+                      @click="form.login_agreement_mode = 'checkbox'"
+                    >
+                      <Icon name="checkCircle" size="sm" />
+                      {{ localText("复选框", "Checkbox") }}
+                    </button>
+                  </div>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      form.login_agreement_mode === "checkbox"
+                        ? localText("复选框会显示在登录按钮下方，未勾选前所有登录入口禁用。", "The checkbox appears below the login button and gates all login actions.")
+                        : localText("弹窗会在登录页打开，用户拒绝后所有登录入口保持禁用。", "The modal opens on the login page and gates all login actions until accepted.")
+                    }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ localText("条款更新日期", "Updated date") }}
+                  </label>
+                  <input
+                    v-model="form.login_agreement_updated_at"
+                    type="date"
+                    class="input"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ localText("日期或文档内容变化后，用户需要重新同意。", "Changing the date or content requires fresh consent.") }}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      {{ localText("协议文档", "Agreement documents") }}
+                    </h3>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "文档名称可自定义，内容按 Markdown 保存。可参考：服务条款、使用政策、支持的国家和地区、服务特定条款。",
+                          "Document titles are customizable and content is saved as Markdown.",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm inline-flex items-center gap-1.5"
+                    @click="addLoginAgreementDocument"
+                  >
+                    <Icon name="plus" size="sm" />
+                    {{ localText("添加文档", "Add document") }}
+                  </button>
+                </div>
+
+                <div class="mt-4 space-y-3">
+                  <div
+                    v-for="(doc, index) in form.login_agreement_documents"
+                    :key="doc.id || index"
+                    class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800/60"
+                  >
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                      <div class="flex min-w-0 items-center gap-3">
+                        <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-dark-200">
+                          <Icon
+                            :name="
+                              index === 1
+                                ? 'shield'
+                                : index === 2
+                                  ? 'globe'
+                                  : index === 3
+                                    ? 'cog'
+                                    : 'document'
+                            "
+                            size="sm"
+                          />
+                        </span>
+                        <div class="min-w-0">
+                          <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                            {{ doc.title || localText("未命名文档", "Untitled document") }}
+                          </p>
+                          <p class="truncate text-xs text-gray-500 dark:text-gray-400">
+                            {{ loginAgreementRoutePath(doc, index) }}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        class="rounded-md p-2 text-red-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-900/20"
+                        :disabled="
+                          form.login_agreement_enabled &&
+                          form.login_agreement_documents.length <= 1
+                        "
+                        @click="removeLoginAgreementDocument(index)"
+                      >
+                        <Icon name="trash" size="sm" />
+                      </button>
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("文档名称", "Document title") }}
+                        </label>
+                        <input
+                          v-model="doc.title"
+                          type="text"
+                          class="input text-sm"
+                          :placeholder="localText('例如：服务条款', 'Example: Terms of Service')"
+                        />
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("路由标识", "Route slug") }}
+                        </label>
+                        <div class="flex overflow-hidden rounded-lg border border-gray-300 bg-white focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500 dark:border-dark-600 dark:bg-dark-900">
+                          <span class="inline-flex flex-shrink-0 items-center border-r border-gray-200 bg-gray-50 px-3 text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-400">
+                            /legal/
+                          </span>
+                          <input
+                            v-model="doc.id"
+                            type="text"
+                            class="min-w-0 flex-1 border-0 bg-transparent px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:ring-0 dark:text-white dark:placeholder:text-dark-500"
+                            placeholder="usage-policy"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div class="mt-3">
+                      <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ localText("Markdown 内容", "Markdown content") }}
+                      </label>
+                        <textarea
+                          v-model="doc.content_md"
+                          rows="8"
+                          class="input font-mono text-sm"
+                          :placeholder="localText('在这里填写正式 Markdown 内容。', 'Write the final Markdown content here.')"
+                        ></textarea>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- /Tab: Login Agreement -->
+
+	        <!-- Tab: Features (功能开关) -->
         <div v-show="activeTab === 'features'" class="space-y-6">
 
         <div class="card">
@@ -5875,7 +6143,12 @@ import type {
   WebSearchProviderConfig,
   WebSearchTestResult,
 } from "@/api/admin/settings";
-import type { AdminGroup, Proxy, NotifyEmailEntry } from "@/types";
+import type {
+  AdminGroup,
+  LoginAgreementDocument,
+  NotifyEmailEntry,
+  Proxy,
+} from "@/types";
 import type { ProviderInstance } from "@/types/payment";
 import AppLayout from "@/components/layout/AppLayout.vue";
 import Icon from "@/components/icons/Icon.vue";
@@ -5925,6 +6198,7 @@ const paymentMethodsHref = computed(() =>
 
 type SettingsTab =
   | "general"
+  | "agreement"
   | "features"
   | "security"
   | "users"
@@ -5935,6 +6209,7 @@ type SettingsTab =
 const activeTab = ref<SettingsTab>("general");
 const settingsTabs = [
   { key: "general" as SettingsTab, icon: "home" as const },
+  { key: "agreement" as SettingsTab, icon: "document" as const },
   { key: "features" as SettingsTab, icon: "bolt" as const },
   { key: "security" as SettingsTab, icon: "shield" as const },
   { key: "users" as SettingsTab, icon: "user" as const },
@@ -5943,6 +6218,57 @@ const settingsTabs = [
   { key: "email" as SettingsTab, icon: "mail" as const },
   { key: "backup" as SettingsTab, icon: "database" as const },
 ];
+
+const settingsTabKeyboardActions = {
+  ArrowLeft: -1,
+  ArrowUp: -1,
+  ArrowRight: 1,
+  ArrowDown: 1,
+  Home: "first",
+  End: "last",
+} as const;
+
+function selectSettingsTab(tab: SettingsTab): void {
+  activeTab.value = tab;
+}
+
+function focusSettingsTab(tab: SettingsTab): void {
+  window.requestAnimationFrame(() => {
+    document.getElementById(`settings-tab-${tab}`)?.focus();
+  });
+}
+
+function handleSettingsTabKeydown(event: KeyboardEvent, tab: SettingsTab): void {
+  const action =
+    settingsTabKeyboardActions[
+      event.key as keyof typeof settingsTabKeyboardActions
+    ];
+  if (action === undefined) {
+    return;
+  }
+
+  event.preventDefault();
+  const currentIndex = settingsTabs.findIndex((item) => item.key === tab);
+  let nextIndex = currentIndex < 0 ? 0 : currentIndex;
+
+  if (action === "first") {
+    nextIndex = 0;
+  } else if (action === "last") {
+    nextIndex = settingsTabs.length - 1;
+  } else {
+    nextIndex =
+      (nextIndex + action + settingsTabs.length) % settingsTabs.length;
+  }
+
+  const nextTab = settingsTabs[nextIndex]?.key;
+  if (!nextTab) {
+    return;
+  }
+
+  selectSettingsTab(nextTab);
+  focusSettingsTab(nextTab);
+}
+
 const { copyToClipboard } = useClipboard();
 
 const loading = ref(true);
@@ -6029,6 +6355,49 @@ const tablePageSizeMin = 5;
 const tablePageSizeMax = 1000;
 const tablePageSizeDefault = 20;
 
+function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {
+  return [
+    {
+      id: "terms",
+      title: "服务条款",
+      content_md: "",
+    },
+    {
+      id: "usage-policy",
+      title: "使用政策",
+      content_md: "",
+    },
+    {
+      id: "supported-regions",
+      title: "支持的国家和地区",
+      content_md: "",
+    },
+    {
+      id: "service-specific-terms",
+      title: "服务特定条款",
+      content_md: "",
+    },
+  ];
+}
+
+function normalizeLoginAgreementDocumentId(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/[-_]{2,}/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+}
+
+function loginAgreementRoutePath(
+  doc: LoginAgreementDocument,
+  index: number,
+): string {
+  const id =
+    normalizeLoginAgreementDocumentId(doc.id || doc.title) || `doc-${index + 1}`;
+  return `/legal/${id}`;
+}
+
 interface DefaultSubscriptionGroupOption {
   value: number;
   label: string;
@@ -6071,6 +6440,10 @@ const form = reactive<SettingsForm>({
   password_reset_enabled: false,
   totp_enabled: false,
   totp_encryption_key_configured: false,
+  login_agreement_enabled: false,
+  login_agreement_mode: "modal",
+  login_agreement_updated_at: "2026-03-31",
+  login_agreement_documents: defaultLoginAgreementDocuments(),
   default_balance: 0,
   affiliate_rebate_rate: 20,
   affiliate_rebate_freeze_hours: 0,
@@ -6227,6 +6600,8 @@ const form = reactive<SettingsForm>({
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
   enable_anthropic_cache_ttl_1h_injection: false,
+  rewrite_message_cache_control: false,
+  antigravity_user_agent_version: "",
   // Balance & quota notification
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
@@ -6753,6 +7128,43 @@ function removeEndpoint(index: number) {
   form.custom_endpoints.splice(index, 1);
 }
 
+function addLoginAgreementDocument() {
+  form.login_agreement_documents.push({
+    id: `custom-${Date.now().toString(36)}`,
+    title: "",
+    content_md: "",
+  });
+}
+
+function removeLoginAgreementDocument(index: number) {
+  form.login_agreement_documents.splice(index, 1);
+}
+
+function normalizeLoginAgreementDocumentsForSave(): LoginAgreementDocument[] {
+  return form.login_agreement_documents
+    .map((doc, index) => ({
+      id:
+        normalizeLoginAgreementDocumentId(doc.id || doc.title) ||
+        `doc-${index + 1}`,
+      title: doc.title.trim(),
+      content_md: doc.content_md.trim(),
+    }))
+    .filter((doc) => doc.title || doc.content_md);
+}
+
+function findDuplicateLoginAgreementDocumentId(
+  documents: LoginAgreementDocument[],
+): string | null {
+  const seen = new Set<string>();
+  for (const doc of documents) {
+    if (seen.has(doc.id)) {
+      return doc.id;
+    }
+    seen.add(doc.id);
+  }
+  return null;
+}
+
 function formatTablePageSizeOptions(options: number[]): string {
   return options.join(", ");
 }
@@ -6797,6 +7209,19 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.login_agreement_mode =
+      settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
+    form.login_agreement_updated_at =
+      settings.login_agreement_updated_at || "2026-03-31";
+    form.login_agreement_documents =
+      Array.isArray(settings.login_agreement_documents) &&
+      settings.login_agreement_documents.length > 0
+        ? settings.login_agreement_documents.map((doc) => ({
+            id: doc.id || "",
+            title: doc.title || "",
+            content_md: doc.content_md || "",
+          }))
+        : defaultLoginAgreementDocuments();
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(settings));
     form.backend_mode_enabled = settings.backend_mode_enabled;
     form.default_subscriptions = normalizeDefaultSubscriptionSettings(
@@ -7008,6 +7433,44 @@ async function saveSettings() {
     form.table_default_page_size = normalizedTableDefaultPageSize;
     form.table_page_size_options = normalizedTablePageSizeOptions;
 
+    const normalizedLoginAgreementDocuments =
+      normalizeLoginAgreementDocumentsForSave();
+    if (form.login_agreement_enabled && normalizedLoginAgreementDocuments.length === 0) {
+      appStore.showError(
+        localText(
+          "启用登录条款确认时，至少需要保留一份文档。",
+          "At least one document is required when login agreement is enabled.",
+        ),
+      );
+      return;
+    }
+    const emptyTitleDocument = normalizedLoginAgreementDocuments.find(
+      (doc) => !doc.title,
+    );
+    if (emptyTitleDocument) {
+      appStore.showError(
+        localText(
+          "登录条款文档名称不能为空。",
+          "Login agreement document title cannot be empty.",
+        ),
+      );
+      return;
+    }
+    const duplicateLoginAgreementDocumentId =
+      findDuplicateLoginAgreementDocumentId(normalizedLoginAgreementDocuments);
+    if (duplicateLoginAgreementDocumentId) {
+      appStore.showError(
+        localText(
+          `登录条款文档路由不能重复：/legal/${duplicateLoginAgreementDocumentId}`,
+          `Login agreement document routes cannot be duplicated: /legal/${duplicateLoginAgreementDocumentId}`,
+        ),
+      );
+      return;
+    }
+    form.login_agreement_mode =
+      form.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
+    form.login_agreement_documents = normalizedLoginAgreementDocuments;
+
     const normalizedDefaultSubscriptions = normalizeDefaultSubscriptionSettings(
       form.default_subscriptions,
     );
@@ -7085,6 +7548,10 @@ async function saveSettings() {
       invitation_code_enabled: form.invitation_code_enabled,
       password_reset_enabled: form.password_reset_enabled,
       totp_enabled: form.totp_enabled,
+      login_agreement_enabled: form.login_agreement_enabled,
+      login_agreement_mode: form.login_agreement_mode,
+      login_agreement_updated_at: form.login_agreement_updated_at,
+      login_agreement_documents: form.login_agreement_documents,
       default_balance: form.default_balance,
       affiliate_rebate_rate: Math.min(
         100,
@@ -7205,6 +7672,9 @@ async function saveSettings() {
       enable_cch_signing: form.enable_cch_signing,
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
+      rewrite_message_cache_control: form.rewrite_message_cache_control,
+      antigravity_user_agent_version:
+        form.antigravity_user_agent_version?.trim() || "",
       // Payment configuration
       payment_enabled: form.payment_enabled,
       risk_control_enabled: form.risk_control_enabled,
@@ -7816,6 +8286,7 @@ const allPaymentTypes = computed(() => [
   { value: "alipay", label: t("payment.methods.alipay") },
   { value: "wxpay", label: t("payment.methods.wxpay") },
   { value: "stripe", label: t("payment.methods.stripe") },
+  { value: "airwallex", label: t("payment.methods.airwallex") },
 ]);
 
 function isPaymentTypeEnabled(type: string): boolean {
@@ -7872,6 +8343,7 @@ const providerKeyOptions = computed(() => [
   { value: "alipay", label: t("admin.settings.payment.providerAlipay") },
   { value: "wxpay", label: t("admin.settings.payment.providerWxpay") },
   { value: "stripe", label: t("admin.settings.payment.providerStripe") },
+  { value: "airwallex", label: t("admin.settings.payment.providerAirwallex") },
 ]);
 
 const enabledProviderKeyOptions = computed(() => {
@@ -8531,94 +9003,116 @@ watch(
   @apply h-[42px];
 }
 
-/* ============ Settings Tab Navigation ============ */
+/* ============ 系统设置 Tab 导航 ============ */
+.settings-tabs-shell {
+  @apply sticky z-20 -mx-1 rounded-2xl border border-white/80 bg-white/90 p-1.5 backdrop-blur-xl;
+  top: 4.75rem;
+  box-shadow:
+    0 12px 28px rgb(15 23 42 / 0.07),
+    0 1px 0 rgb(255 255 255 / 0.9) inset;
+}
 
-/* Scroll container: thin scrollbar on PC, auto-hide on mobile */
+:global(.dark) .settings-tabs-shell {
+  border-color: rgb(51 65 85 / 0.65);
+  background: rgb(15 23 42 / 0.86);
+  box-shadow:
+    0 16px 36px rgb(0 0 0 / 0.28),
+    0 1px 0 rgb(255 255 255 / 0.06) inset;
+}
+
 .settings-tabs-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  @apply overflow-x-auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
-.settings-tabs-scroll:hover {
-  scrollbar-color: rgb(0 0 0 / 0.15) transparent;
-}
-:root.dark .settings-tabs-scroll:hover {
-  scrollbar-color: rgb(255 255 255 / 0.2) transparent;
-}
+
 .settings-tabs-scroll::-webkit-scrollbar {
-  height: 3px;
-}
-.settings-tabs-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.settings-tabs-scroll::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-}
-.settings-tabs-scroll:hover::-webkit-scrollbar-thumb {
-  background: rgb(0 0 0 / 0.15);
-}
-:root.dark .settings-tabs-scroll:hover::-webkit-scrollbar-thumb {
-  background: rgb(255 255 255 / 0.2);
+  display: none;
 }
 
 .settings-tabs {
-  @apply inline-flex min-w-full gap-0.5 rounded-2xl
-         border border-gray-100 bg-white/80 p-1 backdrop-blur-sm
-         dark:border-dark-700/50 dark:bg-dark-800/80;
-  box-shadow:
-    0 1px 3px rgb(0 0 0 / 0.04),
-    0 1px 2px rgb(0 0 0 / 0.02);
-}
-
-@media (min-width: 640px) {
-  .settings-tabs {
-    @apply flex;
-  }
+  @apply flex min-w-max items-center gap-1;
 }
 
 .settings-tab {
-  @apply relative flex flex-1 items-center justify-center gap-1.5
-         whitespace-nowrap rounded-xl px-2.5 py-2
-         text-sm font-medium
-         text-gray-500 dark:text-dark-400
-         transition-all duration-200 ease-out;
+  @apply relative isolate flex h-10 min-w-[6.75rem] shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-transparent px-3 text-sm font-medium text-gray-600 outline-none transition-colors duration-200 ease-out dark:text-gray-300;
 }
 
-.settings-tab:hover:not(.settings-tab-active) {
-  @apply text-gray-700 dark:text-gray-300;
-  background: rgb(0 0 0 / 0.03);
+@media (min-width: 768px) {
+  .settings-tabs {
+    @apply min-w-full;
+  }
+
+  .settings-tab {
+    @apply min-w-0 flex-1 basis-0 overflow-hidden px-2 text-[13px];
+  }
+
+  .settings-tab-icon {
+    @apply h-6 w-6;
+  }
 }
 
-:root.dark .settings-tab:hover:not(.settings-tab-active) {
-  background: rgb(255 255 255 / 0.04);
+.settings-tab::before {
+  @apply absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-200;
+  content: "";
+  background: linear-gradient(135deg, rgb(248 250 252 / 0.95), rgb(241 245 249 / 0.8));
+}
+
+.settings-tab:hover::before,
+.settings-tab:focus-visible::before {
+  opacity: 1;
+}
+
+:global(.dark) .settings-tab::before {
+  background: linear-gradient(135deg, rgb(30 41 59 / 0.9), rgb(51 65 85 / 0.62));
+}
+
+.settings-tab:focus-visible {
+  @apply ring-2 ring-primary-500/40 ring-offset-2 ring-offset-white dark:ring-offset-dark-900;
 }
 
 .settings-tab-active {
-  @apply text-primary-600 dark:text-primary-400;
-  background: linear-gradient(
-    135deg,
-    rgba(20, 184, 166, 0.08),
-    rgba(20, 184, 166, 0.03)
-  );
-  box-shadow: 0 1px 2px rgba(20, 184, 166, 0.1);
+  @apply border-primary-200/80 bg-white text-primary-700 shadow-sm dark:border-primary-400/30 dark:bg-dark-700/95 dark:text-primary-200;
+  box-shadow:
+    0 8px 18px rgb(15 23 42 / 0.08),
+    0 1px 0 rgb(255 255 255 / 0.92) inset;
 }
 
-:root.dark .settings-tab-active {
-  background: linear-gradient(
-    135deg,
-    rgba(45, 212, 191, 0.12),
-    rgba(45, 212, 191, 0.05)
-  );
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+:global(.dark) .settings-tab-active {
+  box-shadow:
+    0 12px 26px rgb(0 0 0 / 0.22),
+    0 1px 0 rgb(255 255 255 / 0.08) inset;
+}
+
+.settings-tab-active::before {
+  opacity: 0;
+}
+
+.settings-tab-active::after {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.25rem;
+  left: 0.75rem;
+  height: 2px;
+  border-radius: 9999px;
+  content: "";
+  background: linear-gradient(90deg, #14b8a6, #0ea5e9);
 }
 
 .settings-tab-icon {
-  @apply flex h-6 w-6 items-center justify-center rounded-lg
-         transition-all duration-200;
+  @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-gray-500 transition-colors duration-200 dark:text-gray-400;
+}
+
+.settings-tab:hover .settings-tab-icon,
+.settings-tab:focus-visible .settings-tab-icon {
+  @apply text-gray-700 dark:text-gray-200;
 }
 
 .settings-tab-active .settings-tab-icon {
-  @apply bg-primary-500/15 text-primary-600
-         dark:bg-primary-400/15 dark:text-primary-400;
+  @apply bg-primary-50 text-primary-600 dark:bg-primary-400/10 dark:text-primary-300;
+}
+
+.settings-tab-label {
+  @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap leading-none;
 }
 </style>

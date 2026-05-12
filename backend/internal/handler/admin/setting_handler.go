@@ -117,6 +117,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		InvitationCodeEnabled:                  settings.InvitationCodeEnabled,
 		TotpEnabled:                            settings.TotpEnabled,
 		TotpEncryptionKeyConfigured:            h.settingService.IsTotpEncryptionKeyConfigured(),
+		LoginAgreementEnabled:                  settings.LoginAgreementEnabled,
+		LoginAgreementMode:                     settings.LoginAgreementMode,
+		LoginAgreementUpdatedAt:                settings.LoginAgreementUpdatedAt,
+		LoginAgreementDocuments:                loginAgreementDocumentsToDTO(settings.LoginAgreementDocuments),
 		SMTPHost:                               settings.SMTPHost,
 		SMTPPort:                               settings.SMTPPort,
 		SMTPUsername:                           settings.SMTPUsername,
@@ -221,6 +225,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		EnableMetadataPassthrough:              settings.EnableMetadataPassthrough,
 		EnableCCHSigning:                       settings.EnableCCHSigning,
 		EnableAnthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
+		RewriteMessageCacheControl:             settings.RewriteMessageCacheControl,
+		AntigravityUserAgentVersion:            settings.AntigravityUserAgentVersion,
 		WebSearchEmulationEnabled:              settings.WebSearchEmulationEnabled,
 		PaymentVisibleMethodAlipaySource:       settings.PaymentVisibleMethodAlipaySource,
 		PaymentVisibleMethodWxpaySource:        settings.PaymentVisibleMethodWxpaySource,
@@ -305,17 +311,50 @@ func openaiFastPolicySettingsFromDTO(s *dto.OpenAIFastPolicySettings) *service.O
 	return &service.OpenAIFastPolicySettings{Rules: rules}
 }
 
+func loginAgreementDocumentsToDTO(items []service.LoginAgreementDocument) []dto.LoginAgreementDocument {
+	result := make([]dto.LoginAgreementDocument, 0, len(items))
+	for _, item := range items {
+		result = append(result, dto.LoginAgreementDocument{
+			ID:        item.ID,
+			Title:     item.Title,
+			ContentMD: item.ContentMD,
+		})
+	}
+	return result
+}
+
+func loginAgreementDocumentsToService(items []dto.LoginAgreementDocument) []service.LoginAgreementDocument {
+	result := make([]service.LoginAgreementDocument, 0, len(items))
+	for _, item := range items {
+		title := strings.TrimSpace(item.Title)
+		content := strings.TrimSpace(item.ContentMD)
+		if title == "" && content == "" {
+			continue
+		}
+		result = append(result, service.LoginAgreementDocument{
+			ID:        strings.TrimSpace(item.ID),
+			Title:     title,
+			ContentMD: content,
+		})
+	}
+	return result
+}
+
 // UpdateSettingsRequest 更新设置请求
 type UpdateSettingsRequest struct {
 	// 注册设置
-	RegistrationEnabled              bool     `json:"registration_enabled"`
-	EmailVerifyEnabled               bool     `json:"email_verify_enabled"`
-	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
-	PromoCodeEnabled                 bool     `json:"promo_code_enabled"`
-	PasswordResetEnabled             bool     `json:"password_reset_enabled"`
-	FrontendURL                      string   `json:"frontend_url"`
-	InvitationCodeEnabled            bool     `json:"invitation_code_enabled"`
-	TotpEnabled                      bool     `json:"totp_enabled"` // TOTP 双因素认证
+	RegistrationEnabled              bool                         `json:"registration_enabled"`
+	EmailVerifyEnabled               bool                         `json:"email_verify_enabled"`
+	RegistrationEmailSuffixWhitelist []string                     `json:"registration_email_suffix_whitelist"`
+	PromoCodeEnabled                 bool                         `json:"promo_code_enabled"`
+	PasswordResetEnabled             bool                         `json:"password_reset_enabled"`
+	FrontendURL                      string                       `json:"frontend_url"`
+	InvitationCodeEnabled            bool                         `json:"invitation_code_enabled"`
+	TotpEnabled                      bool                         `json:"totp_enabled"` // TOTP 双因素认证
+	LoginAgreementEnabled            bool                         `json:"login_agreement_enabled"`
+	LoginAgreementMode               string                       `json:"login_agreement_mode"`
+	LoginAgreementUpdatedAt          string                       `json:"login_agreement_updated_at"`
+	LoginAgreementDocuments          []dto.LoginAgreementDocument `json:"login_agreement_documents"`
 
 	// 邮件服务设置
 	SMTPHost     string `json:"smtp_host"`
@@ -474,10 +513,12 @@ type UpdateSettingsRequest struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
-	EnableFingerprintUnification       *bool `json:"enable_fingerprint_unification"`
-	EnableMetadataPassthrough          *bool `json:"enable_metadata_passthrough"`
-	EnableCCHSigning                   *bool `json:"enable_cch_signing"`
-	EnableAnthropicCacheTTL1hInjection *bool `json:"enable_anthropic_cache_ttl_1h_injection"`
+	EnableFingerprintUnification       *bool   `json:"enable_fingerprint_unification"`
+	EnableMetadataPassthrough          *bool   `json:"enable_metadata_passthrough"`
+	EnableCCHSigning                   *bool   `json:"enable_cch_signing"`
+	EnableAnthropicCacheTTL1hInjection *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
+	RewriteMessageCacheControl         *bool   `json:"rewrite_message_cache_control"`
+	AntigravityUserAgentVersion        *string `json:"antigravity_user_agent_version"`
 
 	// Payment visible method routing
 	PaymentVisibleMethodAlipaySource  *string `json:"payment_visible_method_alipay_source"`
@@ -667,6 +708,44 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			response.BadRequest(c, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
 			return
 		}
+	}
+	loginAgreementMode := strings.ToLower(strings.TrimSpace(req.LoginAgreementMode))
+	if loginAgreementMode == "" {
+		loginAgreementMode = strings.ToLower(strings.TrimSpace(previousSettings.LoginAgreementMode))
+	}
+	switch loginAgreementMode {
+	case "", "modal":
+		loginAgreementMode = "modal"
+	case "checkbox":
+	default:
+		response.BadRequest(c, "Login agreement mode must be modal or checkbox")
+		return
+	}
+	loginAgreementUpdatedAt := strings.TrimSpace(req.LoginAgreementUpdatedAt)
+	if loginAgreementUpdatedAt == "" {
+		loginAgreementUpdatedAt = strings.TrimSpace(previousSettings.LoginAgreementUpdatedAt)
+	}
+	loginAgreementDocuments := loginAgreementDocumentsToService(req.LoginAgreementDocuments)
+	if len(loginAgreementDocuments) == 0 {
+		loginAgreementDocuments = previousSettings.LoginAgreementDocuments
+	}
+	for _, doc := range loginAgreementDocuments {
+		if strings.TrimSpace(doc.Title) == "" {
+			response.BadRequest(c, "Login agreement document title is required")
+			return
+		}
+		if len(doc.Title) > 80 {
+			response.BadRequest(c, "Login agreement document title is too long (max 80 characters)")
+			return
+		}
+		if len(doc.ContentMD) > 200*1024 {
+			response.BadRequest(c, "Login agreement document content is too large (max 200KB)")
+			return
+		}
+	}
+	if req.LoginAgreementEnabled && len(loginAgreementDocuments) == 0 {
+		response.BadRequest(c, "Login agreement documents are required when enabled")
+		return
 	}
 
 	// LinuxDo Connect 参数验证
@@ -1175,6 +1254,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	if req.AntigravityUserAgentVersion != nil {
+		normalized := strings.TrimSpace(*req.AntigravityUserAgentVersion)
+		req.AntigravityUserAgentVersion = &normalized
+		if normalized != "" && !semverPattern.MatchString(normalized) {
+			response.Error(c, http.StatusBadRequest, "antigravity_user_agent_version must be empty or a valid semver (e.g. 1.23.2)")
+			return
+		}
+	}
 
 	// 交叉验证：如果同时设置了最低和最高版本号，最高版本号必须 >= 最低版本号
 	if req.MinClaudeCodeVersion != "" && req.MaxClaudeCodeVersion != "" {
@@ -1193,6 +1280,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		FrontendURL:                      req.FrontendURL,
 		InvitationCodeEnabled:            req.InvitationCodeEnabled,
 		TotpEnabled:                      req.TotpEnabled,
+		LoginAgreementEnabled:            req.LoginAgreementEnabled,
+		LoginAgreementMode:               loginAgreementMode,
+		LoginAgreementUpdatedAt:          loginAgreementUpdatedAt,
+		LoginAgreementDocuments:          loginAgreementDocuments,
 		SMTPHost:                         req.SMTPHost,
 		SMTPPort:                         req.SMTPPort,
 		SMTPUsername:                     req.SMTPUsername,
@@ -1335,6 +1426,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.EnableAnthropicCacheTTL1hInjection
 			}
 			return previousSettings.EnableAnthropicCacheTTL1hInjection
+		}(),
+		RewriteMessageCacheControl: func() bool {
+			if req.RewriteMessageCacheControl != nil {
+				return *req.RewriteMessageCacheControl
+			}
+			return previousSettings.RewriteMessageCacheControl
+		}(),
+		AntigravityUserAgentVersion: func() string {
+			if req.AntigravityUserAgentVersion != nil {
+				return *req.AntigravityUserAgentVersion
+			}
+			return previousSettings.AntigravityUserAgentVersion
 		}(),
 		PaymentVisibleMethodAlipaySource: func() string {
 			if req.PaymentVisibleMethodAlipaySource != nil {
@@ -1561,6 +1664,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		InvitationCodeEnabled:                  updatedSettings.InvitationCodeEnabled,
 		TotpEnabled:                            updatedSettings.TotpEnabled,
 		TotpEncryptionKeyConfigured:            h.settingService.IsTotpEncryptionKeyConfigured(),
+		LoginAgreementEnabled:                  updatedSettings.LoginAgreementEnabled,
+		LoginAgreementMode:                     updatedSettings.LoginAgreementMode,
+		LoginAgreementUpdatedAt:                updatedSettings.LoginAgreementUpdatedAt,
+		LoginAgreementDocuments:                loginAgreementDocumentsToDTO(updatedSettings.LoginAgreementDocuments),
 		SMTPHost:                               updatedSettings.SMTPHost,
 		SMTPPort:                               updatedSettings.SMTPPort,
 		SMTPUsername:                           updatedSettings.SMTPUsername,
@@ -1664,6 +1771,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableMetadataPassthrough:              updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                       updatedSettings.EnableCCHSigning,
 		EnableAnthropicCacheTTL1hInjection:     updatedSettings.EnableAnthropicCacheTTL1hInjection,
+		RewriteMessageCacheControl:             updatedSettings.RewriteMessageCacheControl,
+		AntigravityUserAgentVersion:            updatedSettings.AntigravityUserAgentVersion,
 		PaymentVisibleMethodAlipaySource:       updatedSettings.PaymentVisibleMethodAlipaySource,
 		PaymentVisibleMethodWxpaySource:        updatedSettings.PaymentVisibleMethodWxpaySource,
 		PaymentVisibleMethodAlipayEnabled:      updatedSettings.PaymentVisibleMethodAlipayEnabled,
@@ -1771,6 +1880,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.TotpEnabled != after.TotpEnabled {
 		changed = append(changed, "totp_enabled")
+	}
+	if before.LoginAgreementEnabled != after.LoginAgreementEnabled {
+		changed = append(changed, "login_agreement_enabled")
+	}
+	if before.LoginAgreementMode != after.LoginAgreementMode {
+		changed = append(changed, "login_agreement_mode")
+	}
+	if before.LoginAgreementUpdatedAt != after.LoginAgreementUpdatedAt {
+		changed = append(changed, "login_agreement_updated_at")
+	}
+	if !equalLoginAgreementDocuments(before.LoginAgreementDocuments, after.LoginAgreementDocuments) {
+		changed = append(changed, "login_agreement_documents")
 	}
 	if before.SMTPHost != after.SMTPHost {
 		changed = append(changed, "smtp_host")
@@ -2048,6 +2169,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.EnableAnthropicCacheTTL1hInjection != after.EnableAnthropicCacheTTL1hInjection {
 		changed = append(changed, "enable_anthropic_cache_ttl_1h_injection")
 	}
+	if before.RewriteMessageCacheControl != after.RewriteMessageCacheControl {
+		changed = append(changed, "rewrite_message_cache_control")
+	}
+	if before.AntigravityUserAgentVersion != after.AntigravityUserAgentVersion {
+		changed = append(changed, "antigravity_user_agent_version")
+	}
 	if before.PaymentVisibleMethodAlipaySource != after.PaymentVisibleMethodAlipaySource {
 		changed = append(changed, "payment_visible_method_alipay_source")
 	}
@@ -2266,6 +2393,18 @@ func equalDefaultSubscriptions(a, b []service.DefaultSubscriptionSetting) bool {
 	}
 	for i := range a {
 		if a[i].GroupID != b[i].GroupID || a[i].ValidityDays != b[i].ValidityDays {
+			return false
+		}
+	}
+	return true
+}
+
+func equalLoginAgreementDocuments(a, b []service.LoginAgreementDocument) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Title != b[i].Title || a[i].ContentMD != b[i].ContentMD {
 			return false
 		}
 	}
