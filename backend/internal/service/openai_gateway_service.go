@@ -2248,7 +2248,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// 以兼容自定义 base_url 的 OpenAI-compatible 上游。
 	if model, ok := reqBody["model"].(string); ok {
 		if !compactMapped {
-			upstreamModel = normalizeOpenAIModelForUpstream(account, model, s.cfg)
+			upstreamModel = normalizeOpenAIModelForUpstream(account, model)
 			if upstreamModel != "" && upstreamModel != model {
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Upstream model resolved: %s -> %s (account: %s, type: %s, isCodexCLI: %v)",
 					model, upstreamModel, account.Name, account.Type, isCodexCLI)
@@ -2285,13 +2285,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				IsCompact:               isCompactRequest,
 				SkipDefaultInstructions: true,
 				PreserveToolCallIDs:     true,
-				Configs:                 []*config.Config{s.cfg},
 			})
 			ensureCodexOAuthInstructionsField(reqBody)
 			bodyModified = true
 			disablePatch()
 		} else {
-			codexResult = applyCodexOAuthTransform(reqBody, isCodexCLI, isCompactRequest, s.cfg)
+			codexResult = applyCodexOAuthTransform(reqBody, isCodexCLI, isCompactRequest)
 		}
 		if codexResult.Modified {
 			bodyModified = true

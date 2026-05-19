@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/stretchr/testify/require"
 )
@@ -24,14 +23,6 @@ func TestShouldAutoInjectPromptCacheKeyForCompat(t *testing.T) {
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex"))
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark"))
 	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-4o"))
-}
-
-func TestShouldAutoInjectPromptCacheKeyForCompat_Gpt53CodexSparkToggle(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
-
-	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark"))
-	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark", cfg))
 }
 
 func TestDeriveCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {
@@ -89,25 +80,6 @@ func TestDeriveCompatPromptCacheKey_UsesResolvedSparkFamily(t *testing.T) {
 	k2 := deriveCompatPromptCacheKey(req, " openai/gpt-5.3-codex-spark ")
 	require.NotEmpty(t, k1)
 	require.Equal(t, k1, k2, "resolved spark family should derive a stable compat cache key")
-}
-
-func TestDeriveCompatPromptCacheKey_Gpt53CodexSparkToggle(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
-
-	req := &apicompat.ChatCompletionsRequest{
-		Model: "gpt-5.3-codex-spark",
-		Messages: []apicompat.ChatMessage{
-			{Role: "user", Content: mustRawJSON(t, `"Question A"`)},
-		},
-	}
-
-	keyDefault := deriveCompatPromptCacheKey(req, "gpt-5.3-codex-spark")
-	keyDisabled := deriveCompatPromptCacheKey(req, "gpt-5.3-codex-spark", cfg)
-
-	require.NotEmpty(t, keyDefault)
-	require.NotEmpty(t, keyDisabled)
-	require.NotEqual(t, keyDefault, keyDisabled)
 }
 
 func TestDeriveAnthropicCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {

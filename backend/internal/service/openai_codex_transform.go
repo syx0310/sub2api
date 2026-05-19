@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 var codexModelMap = map[string]string{
@@ -77,7 +75,6 @@ type codexOAuthTransformOptions struct {
 	IsCompact               bool
 	SkipDefaultInstructions bool
 	PreserveToolCallIDs     bool
-	Configs                 []*config.Config
 }
 
 const (
@@ -104,11 +101,10 @@ var openAICodexOAuthUnsupportedFields = append([]string{
 	"presence_penalty",
 }, openAIChatGPTInternalUnsupportedFields...)
 
-func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool, cfgs ...*config.Config) codexTransformResult {
+func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool) codexTransformResult {
 	return applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
 		IsCodexCLI: isCodexCLI,
 		IsCompact:  isCompact,
-		Configs:    cfgs,
 	})
 }
 
@@ -121,13 +117,7 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if v, ok := reqBody["model"].(string); ok {
 		model = v
 	}
-	normalizedModel := normalizeCodexRequestModel(model, opts.Configs...)
-	if opts.IsCompact {
-		// Compact mapping is resolved in the gateway layer. Keep transform-layer
-		// model handling identical to upstream so mapped compact IDs are not
-		// rewritten a second time.
-		normalizedModel = strings.TrimSpace(model)
-	}
+	normalizedModel := strings.TrimSpace(model)
 	if normalizedModel != "" {
 		if model != normalizedModel {
 			reqBody["model"] = normalizedModel
@@ -796,9 +786,9 @@ func normalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any) bool {
 	return modified
 }
 
-func normalizeOpenAIModelForUpstream(account *Account, model string, cfgs ...*config.Config) string {
+func normalizeOpenAIModelForUpstream(account *Account, model string) string {
 	if account == nil || account.Type == AccountTypeOAuth {
-		return normalizeCodexRequestModel(model, cfgs...)
+		return normalizeCodexModel(model)
 	}
 	return strings.TrimSpace(model)
 }

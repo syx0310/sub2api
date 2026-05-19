@@ -6,31 +6,30 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
 const compatPromptCacheKeyPrefix = "compat_cc_"
 
-func shouldAutoInjectPromptCacheKeyForCompat(model string, cfgs ...*config.Config) bool {
+func shouldAutoInjectPromptCacheKeyForCompat(model string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(model))
-	// 仅对 Codex OAuth 路径支持的 GPT-5 族开启自动注入，避免归一化兜底把
-	// 任意模型（如 gpt-4o、claude-*）误判为 gpt-5.4。
+	// 仅对 Codex OAuth 路径支持的 GPT-5 族开启自动注入，避免 normalizeCodexModel
+	// 的默认兜底把任意模型（如 gpt-4o、claude-*）误判为 gpt-5.4。
 	if !strings.Contains(trimmed, "gpt-5") && !strings.Contains(trimmed, "codex") {
 		return false
 	}
-	normalized := strings.TrimSpace(strings.ToLower(normalizeCodexRequestModel(trimmed, cfgs...)))
+	normalized := strings.TrimSpace(strings.ToLower(normalizeCodexModel(trimmed)))
 	return strings.HasPrefix(normalized, "gpt-5") || strings.Contains(normalized, "codex")
 }
 
-func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedModel string, cfgs ...*config.Config) string {
+func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedModel string) string {
 	if req == nil {
 		return ""
 	}
 
-	normalizedModel := normalizeCodexRequestModel(strings.TrimSpace(mappedModel), cfgs...)
+	normalizedModel := normalizeCodexModel(strings.TrimSpace(mappedModel))
 	if normalizedModel == "" {
-		normalizedModel = normalizeCodexRequestModel(strings.TrimSpace(req.Model), cfgs...)
+		normalizedModel = normalizeCodexModel(strings.TrimSpace(req.Model))
 	}
 	if normalizedModel == "" {
 		normalizedModel = strings.TrimSpace(req.Model)

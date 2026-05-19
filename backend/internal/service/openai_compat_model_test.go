@@ -88,16 +88,6 @@ func TestNormalizeOpenAICompatRequestedModel(t *testing.T) {
 	}
 }
 
-func TestNormalizeOpenAICompatRequestedModel_Gpt53CodexSparkToggle(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
-
-	require.Equal(t, "gpt-5.3-codex", NormalizeOpenAICompatRequestedModel("gpt-5.3-codex-spark-high"))
-	require.Equal(t, "gpt-5.3-codex-spark", NormalizeOpenAICompatRequestedModel("gpt-5.3-codex-spark-high", cfg))
-}
-
 func TestApplyOpenAICompatModelNormalization(t *testing.T) {
 	t.Parallel()
 
@@ -131,33 +121,6 @@ func TestApplyOpenAICompatModelNormalization(t *testing.T) {
 
 		require.Equal(t, "claude-opus-4-6", req.Model)
 		require.Nil(t, req.OutputConfig)
-	})
-}
-
-func TestApplyOpenAICompatModelNormalization_Gpt53CodexSparkToggle(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAICompat.RewriteGPT53CodexSpark = false
-
-	t.Run("default rewrite keeps codex family", func(t *testing.T) {
-		req := &apicompat.AnthropicRequest{Model: "gpt-5.3-codex-spark-high"}
-
-		applyOpenAICompatModelNormalization(req)
-
-		require.Equal(t, "gpt-5.3-codex", req.Model)
-		require.NotNil(t, req.OutputConfig)
-		require.Equal(t, "high", req.OutputConfig.Effort)
-	})
-
-	t.Run("disabled rewrite keeps spark family and derived effort", func(t *testing.T) {
-		req := &apicompat.AnthropicRequest{Model: "gpt-5.3-codex-spark-high"}
-
-		applyOpenAICompatModelNormalization(req, cfg)
-
-		require.Equal(t, "gpt-5.3-codex-spark", req.Model)
-		require.NotNil(t, req.OutputConfig)
-		require.Equal(t, "high", req.OutputConfig.Effort)
 	})
 }
 
