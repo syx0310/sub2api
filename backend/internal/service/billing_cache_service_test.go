@@ -68,9 +68,25 @@ func (b *billingCacheWorkerStub) InvalidateAPIKeyRateLimit(ctx context.Context, 
 	return nil
 }
 
+func (b *billingCacheWorkerStub) GetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) (*UserPlatformQuotaCacheEntry, bool, error) {
+	return nil, false, nil
+}
+
+func (b *billingCacheWorkerStub) SetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string, entry *UserPlatformQuotaCacheEntry, ttl time.Duration) error {
+	return nil
+}
+
+func (b *billingCacheWorkerStub) DeleteUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) error {
+	return nil
+}
+
+func (b *billingCacheWorkerStub) IncrUserPlatformQuotaUsageCache(ctx context.Context, userID int64, platform string, cost float64, ttl time.Duration) error {
+	return nil
+}
+
 func TestBillingCacheServiceQueueHighLoad(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
-	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{}, nil)
 	t.Cleanup(svc.Stop)
 
 	start := time.Now()
@@ -92,7 +108,7 @@ func TestBillingCacheServiceQueueHighLoad(t *testing.T) {
 
 func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
-	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{}, nil)
 	svc.Stop()
 
 	enqueued := svc.enqueueCacheWrite(cacheWriteTask{
@@ -106,13 +122,13 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 func TestRelayModeSkipsBalanceCheck(t *testing.T) {
 	cache := &billingCacheWorkerStub{}
 	cfg := &config.Config{RunMode: config.RunModeRelay}
-	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg)
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(svc.Stop)
 
 	user := &User{ID: 1, Balance: 0} // zero balance
 	apiKey := &APIKey{ID: 1}         // no rate limits
 
-	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil)
+	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil, "")
 	require.NoError(t, err, "relay mode should skip balance check")
 }
 
@@ -124,7 +140,7 @@ func TestRelayModeEnforcesAPIKeyRateLimits(t *testing.T) {
 	rateLimitCache := &rateLimitCacheStub{data: rateLimitData}
 
 	cfg := &config.Config{RunMode: config.RunModeRelay}
-	svc := NewBillingCacheService(rateLimitCache, nil, nil, nil, nil, nil, cfg)
+	svc := NewBillingCacheService(rateLimitCache, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(svc.Stop)
 
 	user := &User{ID: 1, Balance: 0}
@@ -133,7 +149,7 @@ func TestRelayModeEnforcesAPIKeyRateLimits(t *testing.T) {
 		RateLimit1d: 5.0, // limit is 5, usage is 10 → should be rejected
 	}
 
-	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil)
+	err := svc.CheckBillingEligibility(context.Background(), user, apiKey, nil, nil, "")
 	require.Error(t, err, "relay mode should enforce API key rate limits")
 }
 
