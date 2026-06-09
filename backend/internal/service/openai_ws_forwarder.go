@@ -1592,6 +1592,158 @@ func openAIWSRawItemsHaveToolCallContextForOutputs(items []json.RawMessage) bool
 	return true
 }
 
+func openAIWSToolOutputCallTypes(outputType string) []string {
+	switch outputType {
+	case "function_call_output":
+		return []string{"function_call", "local_shell_call"}
+	case "tool_search_output":
+		return []string{"tool_search_call"}
+	case "custom_tool_call_output":
+		return []string{"custom_tool_call"}
+	case "mcp_tool_call_output":
+		return []string{"mcp_tool_call"}
+	default:
+		return nil
+	}
+}
+
+func openAIWSToolOutputTypeForCallType(callType string) string {
+	switch callType {
+	case "function_call", "local_shell_call":
+		return "function_call_output"
+	case "tool_search_call":
+		return "tool_search_output"
+	case "custom_tool_call":
+		return "custom_tool_call_output"
+	case "mcp_tool_call":
+		return "mcp_tool_call_output"
+	default:
+		return ""
+	}
+}
+
+func openAIWSToolReplayKey(outputType, callID string) string {
+	return outputType + "\x00" + callID
+}
+
+func openAIWSRawItemsToolReplaySelfContained(items []json.RawMessage) (bool, string) {
+	if len(items) == 0 {
+		return false, "empty_input"
+	}
+	pendingCalls := make(map[string]struct{})
+	completedCalls := make(map[string]struct{})
+	hasToolOutput := false
+
+	for _, item := range items {
+		itemType := gjson.GetBytes(item, "type").String()
+		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+
+		if outputType := openAIWSToolOutputTypeForCallType(itemType); outputType != "" {
+			if callID == "" {
+				return false, "tool_call_missing_call_id"
+			}
+			pendingCalls[openAIWSToolReplayKey(outputType, callID)] = struct{}{}
+			continue
+		}
+
+		if !isCodexToolCallOutputItemType(itemType) {
+			continue
+		}
+
+		hasToolOutput = true
+		if callID == "" {
+			return false, "tool_output_missing_call_id"
+		}
+		expectedCallTypes := openAIWSToolOutputCallTypes(itemType)
+		if len(expectedCallTypes) == 0 {
+			return false, "unsupported_tool_output_type"
+		}
+		matched := false
+		for _, expectedCallType := range expectedCallTypes {
+			expectedOutputType := openAIWSToolOutputTypeForCallType(expectedCallType)
+			if expectedOutputType == "" {
+				continue
+			}
+			key := openAIWSToolReplayKey(expectedOutputType, callID)
+			if _, ok := pendingCalls[key]; ok {
+				completedCalls[key] = struct{}{}
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, "missing_tool_call_context"
+		}
+	}
+
+	if !hasToolOutput {
+		return false, "missing_tool_output"
+	}
+	for key := range pendingCalls {
+		if _, ok := completedCalls[key]; !ok {
+			return false, "missing_tool_output_for_call"
+		}
+	}
+	return true, "self_contained"
+}
+
+func openAIWSPayloadToolReplaySelfContained(payload []byte) (bool, string) {
+	items, exists, err := openAIWSExtractNormalizedInputSequence(payload)
+	if err != nil {
+		return false, "invalid_input"
+	}
+	if !exists {
+		return false, "missing_input"
+	}
+	return openAIWSRawItemsToolReplaySelfContained(items)
+}
+
+// OpenAIWSPayloadToolReplaySelfContained reports whether a Responses WS payload
+// can replay tool outputs without relying on previous_response_id state.
+func OpenAIWSPayloadToolReplaySelfContained(payload []byte) (bool, string) {
+	return openAIWSPayloadToolReplaySelfContained(payload)
+}
+
+// DropOpenAIWSPreviousResponseIDFromRawPayload removes previous_response_id from
+// a raw Responses WS payload while handling duplicate keys defensively.
+func DropOpenAIWSPreviousResponseIDFromRawPayload(payload []byte) ([]byte, bool, error) {
+	return dropPreviousResponseIDFromRawPayload(payload)
+}
+
+func openAIWSReqBodyToolReplaySelfContained(reqBody map[string]any) (bool, string) {
+	if reqBody == nil {
+		return false, "missing_body"
+	}
+	rawInput, exists := reqBody["input"]
+	if !exists {
+		return false, "missing_input"
+	}
+	inputItems, ok := rawInput.([]any)
+	if !ok {
+		rawInputBytes, err := json.Marshal(rawInput)
+		if err != nil {
+			return false, "invalid_input"
+		}
+		rawInputItems, exists, err := openAIWSExtractNormalizedInputSequence([]byte(`{"input":` + string(rawInputBytes) + `}`))
+		if err != nil {
+			return false, "invalid_input"
+		}
+		if !exists {
+			return false, "missing_input"
+		}
+		return openAIWSRawItemsToolReplaySelfContained(rawInputItems)
+	}
+	items := make([]json.RawMessage, 0, len(inputItems))
+	for _, item := range inputItems {
+		rawItem, err := json.Marshal(item)
+		if err != nil {
+			return false, "invalid_input_item"
+		}
+		items = append(items, rawItem)
+	}
+	return openAIWSRawItemsToolReplaySelfContained(items)
+}
+
 func openAIWSRawPayloadHasToolCallOutput(payload []byte) bool {
 	if len(payload) == 0 {
 		return false
@@ -3406,11 +3558,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if turnPrevRecoveryTried || !s.openAIWSIngressPreviousResponseRecoveryEnabled() {
 			return false
 		}
-		// 携带 function_call_output 的请求不能丢弃 previous_response_id：
-		// 上游 API 需要 response chain 来匹配 tool_result 与之前的 tool_use，
-		// 丢弃后会导致 "No tool call found for function call output" 400 错误。
 		if hasCurrentOrReplayFunctionCallOutput(currentPayload) {
-			return false
+			if !currentTurnReplayInputExists {
+				return false
+			}
+			selfContained, reason := openAIWSRawItemsToolReplaySelfContained(currentTurnReplayInput)
+			if !selfContained {
+				logOpenAIWSModeInfo(
+					"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=tool_replay_not_self_contained tool_replay_reason=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					normalizeOpenAIWSLogValue(reason),
+				)
+				return false
+			}
 		}
 		if isStrictAffinityTurn(currentPayload) {
 			// Layer 2：严格亲和链路命中 previous_response_not_found 时，降级为“去掉 previous_response_id 后重放一次”。
@@ -3686,15 +3848,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					truncateOpenAIWSLogValue(pingErr.Error(), openAIWSLogValueMaxLen),
 				)
 				if forcePreferredConn {
-					// 携带 function_call_output 的请求不能丢弃 previous_response_id：
-					// 上游 API 需要 response chain 来匹配 tool_result 与之前的 tool_use。
 					hasFCOutput := hasFunctionCallOutput
-					hasReplayToolContext := hasFCOutput &&
-						currentTurnReplayInputExists &&
-						openAIWSRawItemsHaveToolCallContextForOutputs(currentTurnReplayInput)
-					hasInlineToolContext := hasFCOutput &&
-						openAIWSRawPayloadHasInlineToolCallContextForOutputs(currentPayload)
-					if !turnPrevRecoveryTried && currentPreviousResponseID != "" && (!hasFCOutput || (hasReplayToolContext && !hasInlineToolContext)) {
+					toolReplaySelfContained := false
+					toolReplayReason := "missing_tool_output"
+					if hasFCOutput && currentTurnReplayInputExists {
+						toolReplaySelfContained, toolReplayReason = openAIWSRawItemsToolReplaySelfContained(currentTurnReplayInput)
+					}
+					canDropPreviousResponseID := !hasFCOutput || toolReplaySelfContained
+					if !turnPrevRecoveryTried && currentPreviousResponseID != "" && canDropPreviousResponseID {
 						updatedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
 						if dropErr != nil || !removed {
 							reason := "not_removed"
@@ -3726,13 +3887,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 								)
 							} else {
 								logOpenAIWSModeInfo(
-									"ingress_ws_preflight_ping_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_retry previous_response_id=%s has_function_call_output=%v has_replay_tool_context=%v",
+									"ingress_ws_preflight_ping_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_retry previous_response_id=%s has_function_call_output=%v tool_replay_self_contained=%v tool_replay_reason=%s",
 									account.ID,
 									turn,
 									truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
 									truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
 									hasFCOutput,
-									hasReplayToolContext,
+									toolReplaySelfContained,
+									normalizeOpenAIWSLogValue(toolReplayReason),
 								)
 								turnPrevRecoveryTried = true
 								currentPayload = updatedWithInput
@@ -3744,20 +3906,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						}
 					}
 					if hasFCOutput && currentPreviousResponseID != "" {
-						reason := "function_call_output_missing_replay_context"
-						if hasInlineToolContext {
-							reason = "function_call_output_inline_context_requires_previous_response_id"
-						} else if hasReplayToolContext {
-							reason = "function_call_output_replay_not_applied"
-						}
 						logOpenAIWSModeInfo(
-							"ingress_ws_preflight_ping_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s action=fail_close previous_response_id=%s has_replay_tool_context=%v",
+							"ingress_ws_preflight_ping_recovery_skip account_id=%d turn=%d conn_id=%s reason=tool_replay_not_self_contained action=fail_close previous_response_id=%s tool_replay_reason=%s",
 							account.ID,
 							turn,
 							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
-							reason,
 							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
-							hasReplayToolContext,
+							normalizeOpenAIWSLogValue(toolReplayReason),
 						)
 					}
 					resetSessionLease(true)

@@ -79,6 +79,94 @@ func TestOpenAIWSIngressPreviousResponseRecoveryEnabled(t *testing.T) {
 	require.True(t, svc.openAIWSIngressPreviousResponseRecoveryEnabled())
 }
 
+func TestOpenAIWSPayloadToolReplaySelfContained(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		payload    string
+		want       bool
+		wantReason string
+	}{
+		{
+			name:       "function_call_pair",
+			payload:    `{"input":[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want:       true,
+			wantReason: "self_contained",
+		},
+		{
+			name:       "local_shell_call_matches_function_call_output",
+			payload:    `{"input":[{"type":"local_shell_call","call_id":"call_1","action":{"type":"exec","command":"pwd"}},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want:       true,
+			wantReason: "self_contained",
+		},
+		{
+			name:       "tool_search_pair",
+			payload:    `{"input":[{"type":"tool_search_call","call_id":"search_1","query":"x"},{"type":"tool_search_output","call_id":"search_1","output":"ok"}]}`,
+			want:       true,
+			wantReason: "self_contained",
+		},
+		{
+			name:       "custom_tool_pair",
+			payload:    `{"input":[{"type":"custom_tool_call","call_id":"custom_1","name":"x","input":"{}"},{"type":"custom_tool_call_output","call_id":"custom_1","output":"ok"}]}`,
+			want:       true,
+			wantReason: "self_contained",
+		},
+		{
+			name:       "mcp_tool_pair",
+			payload:    `{"input":[{"type":"mcp_tool_call","call_id":"mcp_1","name":"x","arguments":"{}"},{"type":"mcp_tool_call_output","call_id":"mcp_1","output":"ok"}]}`,
+			want:       true,
+			wantReason: "self_contained",
+		},
+		{
+			name:       "output_before_call_is_not_self_contained",
+			payload:    `{"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"},{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}]}`,
+			want:       false,
+			wantReason: "missing_tool_call_context",
+		},
+		{
+			name:       "output_missing_call_id",
+			payload:    `{"input":[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"function_call_output","output":"ok"}]}`,
+			want:       false,
+			wantReason: "tool_output_missing_call_id",
+		},
+		{
+			name:       "mismatched_tool_type",
+			payload:    `{"input":[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"tool_search_output","call_id":"call_1","output":"ok"}]}`,
+			want:       false,
+			wantReason: "missing_tool_call_context",
+		},
+		{
+			name:       "item_reference_is_not_context",
+			payload:    `{"input":[{"type":"item_reference","id":"fc_1"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want:       false,
+			wantReason: "missing_tool_call_context",
+		},
+		{
+			name:       "parallel_call_missing_output",
+			payload:    `{"input":[{"type":"function_call","call_id":"call_1","name":"a","arguments":"{}"},{"type":"function_call","call_id":"call_2","name":"b","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want:       false,
+			wantReason: "missing_tool_output_for_call",
+		},
+		{
+			name:       "no_tool_output",
+			payload:    `{"input":[{"type":"input_text","text":"hello"}]}`,
+			want:       false,
+			wantReason: "missing_tool_output",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, reason := OpenAIWSPayloadToolReplaySelfContained([]byte(tt.payload))
+			require.Equal(t, tt.want, got)
+			require.Equal(t, tt.wantReason, reason)
+		})
+	}
+}
+
 func TestDropPreviousResponseIDFromRawPayload(t *testing.T) {
 	t.Parallel()
 

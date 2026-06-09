@@ -1307,13 +1307,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
+	effectiveFirstMessage := firstMessage
+	effectivePreviousResponseID := previousResponseID
 
 	for {
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			ctx,
 			apiKey.GroupID,
-			previousResponseID,
+			effectivePreviousResponseID,
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
@@ -1343,6 +1345,45 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		if effectivePreviousResponseID != "" && !scheduleDecision.StickyPreviousHit {
+			selfContained, reason := service.OpenAIWSPayloadToolReplaySelfContained(effectiveFirstMessage)
+			if !selfContained {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("openai.websocket_previous_response_cross_account_blocked",
+					zap.Int64("account_id", account.ID),
+					zap.String("schedule_layer", scheduleDecision.Layer),
+					zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
+					zap.String("tool_replay_reason", reason),
+				)
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "upstream continuation account is unavailable; please restart the conversation")
+				return
+			}
+			updatedFirstMessage, removed, dropErr := service.DropOpenAIWSPreviousResponseIDFromRawPayload(effectiveFirstMessage)
+			if dropErr != nil || !removed {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("openai.websocket_previous_response_cross_account_drop_failed",
+					zap.Int64("account_id", account.ID),
+					zap.String("schedule_layer", scheduleDecision.Layer),
+					zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
+					zap.Error(dropErr),
+					zap.Bool("removed", removed),
+				)
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "upstream continuation account is unavailable; please restart the conversation")
+				return
+			}
+			reqLog.Info("openai.websocket_previous_response_cross_account_replay",
+				zap.Int64("account_id", account.ID),
+				zap.String("schedule_layer", scheduleDecision.Layer),
+				zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
+				zap.String("tool_replay_reason", reason),
+			)
+			effectiveFirstMessage = updatedFirstMessage
+			effectivePreviousResponseID = ""
+		}
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
@@ -1489,9 +1530,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		// 应用渠道模型映射到 WebSocket 首条消息
-		wsFirstMessage := firstMessage
+		wsFirstMessage := effectiveFirstMessage
 		if channelMappingWS.Mapped {
-			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
+			wsFirstMessage = h.gatewayService.ReplaceModelInBody(effectiveFirstMessage, channelMappingWS.MappedModel)
 		}
 
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。

@@ -1144,6 +1144,124 @@ func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversByDrop
 	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
 }
 
+func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversForSelfContainedFunctionCallOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var wsAttempts atomic.Int32
+	var wsRequestPayloads [][]byte
+	var wsRequestMu sync.Mutex
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := wsAttempts.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket failed: %v", err)
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		var req map[string]any
+		if err := conn.ReadJSON(&req); err != nil {
+			t.Errorf("read ws request failed: %v", err)
+			return
+		}
+		reqRaw, _ := json.Marshal(req)
+		wsRequestMu.Lock()
+		wsRequestPayloads = append(wsRequestPayloads, reqRaw)
+		wsRequestMu.Unlock()
+		if attempt == 1 {
+			_ = conn.WriteJSON(map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"code":    "previous_response_not_found",
+					"type":    "invalid_request_error",
+					"message": "previous response not found",
+				},
+			})
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id":    "resp_ws_prev_recover_tool_ok",
+				"model": "gpt-5.3-codex",
+				"usage": map[string]any{
+					"input_tokens":  1,
+					"output_tokens": 1,
+					"input_tokens_details": map[string]any{
+						"cached_tokens": 0,
+					},
+				},
+			},
+		})
+	}))
+	defer wsServer.Close()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "custom-client/1.0")
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_http_drop_prev","usage":{"input_tokens":1,"output_tokens":1}}`)),
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.FallbackCooldownSeconds = 1
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+
+	account := &Account{
+		ID:          93,
+		Name:        "openai-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": wsServer.URL,
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_missing","input":[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "resp_ws_prev_recover_tool_ok", result.RequestID)
+	require.Nil(t, upstream.lastReq, "self-contained function_call_output previous_response_not_found 不应回退 HTTP")
+	require.Equal(t, int32(2), wsAttempts.Load(), "自洽 tool replay 应触发一次去掉 previous_response_id 的恢复重试")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	wsRequestMu.Lock()
+	requests := append([][]byte(nil), wsRequestPayloads...)
+	wsRequestMu.Unlock()
+	require.Len(t, requests, 2)
+	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应保留 previous_response_id")
+	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
+	require.Equal(t, "function_call", gjson.GetBytes(requests[1], "input.0.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(requests[1], "input.1.type").String())
+}
+
 func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundSkipsRecoveryForFunctionCallOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
