@@ -2786,13 +2786,26 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				)
 				return false
 			}
-			if HasFunctionCallOutput(wsReqBody) {
-				logOpenAIWSModeInfo(
-					"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=has_function_call_output previous_response_id_present=true",
-					account.ID,
-					attempt,
-				)
-				return false
+			hasFunctionCallOutput := HasFunctionCallOutput(wsReqBody)
+			if hasFunctionCallOutput {
+				selfContained, reason := openAIWSReqBodyToolReplaySelfContained(wsReqBody)
+				if selfContained {
+					logOpenAIWSModeInfo(
+						"reconnect_prev_response_recovery_tool_replay account_id=%d attempt=%d action=drop_previous_response_id previous_response_id=%s tool_replay_reason=%s",
+						account.ID,
+						attempt,
+						truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+						normalizeOpenAIWSLogValue(reason),
+					)
+				} else {
+					logOpenAIWSModeInfo(
+						"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=tool_replay_not_self_contained tool_replay_reason=%s previous_response_id_present=true",
+						account.ID,
+						attempt,
+						normalizeOpenAIWSLogValue(reason),
+					)
+					return false
+				}
 			}
 			delete(wsReqBody, "previous_response_id")
 			wsPrevResponseRecoveryTried = true
@@ -2820,19 +2833,27 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			previousResponseID := openAIWSPayloadString(wsReqBody, "previous_response_id")
 			hasFunctionCallOutput := HasFunctionCallOutput(wsReqBody)
-			if previousResponseID != "" && !hasFunctionCallOutput {
+			dropPreviousResponseID := previousResponseID != "" && !hasFunctionCallOutput
+			toolReplayReason := ""
+			if previousResponseID != "" && hasFunctionCallOutput {
+				selfContained, reason := openAIWSReqBodyToolReplaySelfContained(wsReqBody)
+				toolReplayReason = reason
+				dropPreviousResponseID = selfContained
+			}
+			if dropPreviousResponseID {
 				delete(wsReqBody, "previous_response_id")
 			}
 			wsInvalidEncryptedContentRecoveryTried = true
 			logOpenAIWSModeInfo(
-				"reconnect_invalid_encrypted_content_recovery account_id=%d attempt=%d action=drop_encrypted_reasoning_items retry=1 previous_response_id_present=%v previous_response_id=%s previous_response_id_kind=%s has_function_call_output=%v dropped_previous_response_id=%v",
+				"reconnect_invalid_encrypted_content_recovery account_id=%d attempt=%d action=drop_encrypted_reasoning_items retry=1 previous_response_id_present=%v previous_response_id=%s previous_response_id_kind=%s has_function_call_output=%v dropped_previous_response_id=%v tool_replay_reason=%s",
 				account.ID,
 				attempt,
 				previousResponseID != "",
 				truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
 				normalizeOpenAIWSLogValue(ClassifyOpenAIPreviousResponseIDKind(previousResponseID)),
 				hasFunctionCallOutput,
-				previousResponseID != "" && !hasFunctionCallOutput,
+				dropPreviousResponseID,
+				normalizeOpenAIWSLogValue(toolReplayReason),
 			)
 			return true
 		}
