@@ -201,6 +201,7 @@ describe("admin settings auth source defaults helpers", () => {
       auth_source_default_dingtalk_subscriptions: [],
       auth_source_default_dingtalk_grant_on_signup: false,
       auth_source_default_dingtalk_grant_on_first_bind: false,
+      // 嵌套 platform_quotas 字段
       auth_source_default_email_platform_quotas: allNullQuotas,
       auth_source_default_linuxdo_platform_quotas: allNullQuotas,
       auth_source_default_oidc_platform_quotas: allNullQuotas,

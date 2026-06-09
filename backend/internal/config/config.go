@@ -774,6 +774,8 @@ type GatewayConfig struct {
 
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
+	// OpenAI 上游传输层错误是否触发 failover/临时下线（默认关闭，避免改变旧 502 语义）
+	OpenAITransportErrorFailoverEnabled bool `mapstructure:"openai_transport_error_failover_enabled"`
 
 	// 账户切换最大次数（遇到上游错误时切换到其他账户的次数上限）
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
@@ -1817,6 +1819,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
+	viper.SetDefault("gateway.openai_transport_error_failover_enabled", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)

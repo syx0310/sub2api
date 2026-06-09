@@ -1560,38 +1560,6 @@ func openAIWSRawItemsHasFunctionCallOutput(items []json.RawMessage) bool {
 	return false
 }
 
-func openAIWSRawItemsHaveToolCallContextForOutputs(items []json.RawMessage) bool {
-	if len(items) == 0 {
-		return false
-	}
-	contextCallIDs := make(map[string]struct{})
-	outputCallIDs := make(map[string]struct{})
-	for _, item := range items {
-		itemType := gjson.GetBytes(item, "type").String()
-		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		switch {
-		case isCodexToolCallContextItemType(itemType):
-			if callID != "" {
-				contextCallIDs[callID] = struct{}{}
-			}
-		case isCodexToolCallOutputItemType(itemType):
-			if callID == "" {
-				return false
-			}
-			outputCallIDs[callID] = struct{}{}
-		}
-	}
-	if len(outputCallIDs) == 0 || len(contextCallIDs) == 0 {
-		return false
-	}
-	for callID := range outputCallIDs {
-		if _, ok := contextCallIDs[callID]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 func openAIWSToolOutputCallTypes(outputType string) []string {
 	switch outputType {
 	case "function_call_output":
@@ -1764,14 +1732,6 @@ func openAIWSRawPayloadHasToolCallOutput(payload []byte) bool {
 		return isCodexToolCallOutputItemType(input.Get("type").String())
 	}
 	return false
-}
-
-func openAIWSRawPayloadHasInlineToolCallContextForOutputs(payload []byte) bool {
-	items, exists, err := openAIWSExtractNormalizedInputSequence(payload)
-	if err != nil || !exists {
-		return false
-	}
-	return openAIWSRawItemsHaveToolCallContextForOutputs(items)
 }
 
 func buildOpenAIWSReplayInputSequence(
