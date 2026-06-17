@@ -833,10 +833,13 @@ func TestAPIContracts(t *testing.T) {
 					"min_claude_code_version": "",
 					"max_claude_code_version": "",
 					"allow_ungrouped_key_scheduling": false,
-					"backend_mode_enabled": false,
-					"enable_cch_signing": false,
-					"openai_transport_error_failover_enabled": false,
-					"enable_anthropic_cache_ttl_1h_injection": false,
+						"backend_mode_enabled": false,
+						"enable_cch_signing": false,
+						"openai_transport_error_failover_enabled": false,
+						"enable_claude_oauth_system_prompt_injection": true,
+						"claude_oauth_system_prompt": "",
+						"claude_oauth_system_prompt_blocks": "",
+						"enable_anthropic_cache_ttl_1h_injection": false,
 					"rewrite_message_cache_control": false,
 					"antigravity_user_agent_version": "",
 					"enable_fingerprint_unification": true,
@@ -885,6 +888,8 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_default_interval_seconds": 60,
 					"available_channels_enabled": false,
 					"risk_control_enabled": false,
+					"cyber_session_block_enabled": false,
+					"cyber_session_block_ttl_seconds": 3600,
 					"affiliate_enabled": false,
 					"wechat_connect_enabled": false,
 					"wechat_connect_app_id": "",
@@ -1073,11 +1078,14 @@ func TestAPIContracts(t *testing.T) {
 					"max_claude_code_version": "",
 					"allow_ungrouped_key_scheduling": false,
 					"backend_mode_enabled": false,
-					"enable_fingerprint_unification": true,
-					"enable_metadata_passthrough": false,
-					"enable_cch_signing": false,
-					"openai_transport_error_failover_enabled": false,
-					"enable_anthropic_cache_ttl_1h_injection": false,
+						"enable_fingerprint_unification": true,
+						"enable_metadata_passthrough": false,
+						"enable_cch_signing": false,
+						"openai_transport_error_failover_enabled": false,
+						"enable_claude_oauth_system_prompt_injection": true,
+						"claude_oauth_system_prompt": "",
+						"claude_oauth_system_prompt_blocks": "",
+						"enable_anthropic_cache_ttl_1h_injection": false,
 					"rewrite_message_cache_control": false,
 					"antigravity_user_agent_version": "",
 					"web_search_emulation_enabled": false,
@@ -1122,6 +1130,8 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_default_interval_seconds": 60,
 					"available_channels_enabled": false,
 					"risk_control_enabled": false,
+					"cyber_session_block_enabled": false,
+					"cyber_session_block_ttl_seconds": 3600,
 					"affiliate_enabled": false,
 					"wechat_connect_enabled": true,
 					"wechat_connect_app_id": "wx-open-config",
@@ -1674,6 +1684,10 @@ func (s *stubAccountRepo) ListByGroup(ctx context.Context, groupID int64) ([]ser
 }
 
 func (s *stubAccountRepo) ListActive(ctx context.Context) ([]service.Account, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) ListOAuthRefreshCandidates(ctx context.Context) ([]service.Account, error) {
 	return nil, errors.New("not implemented")
 }
 
