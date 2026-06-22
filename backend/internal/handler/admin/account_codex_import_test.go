@@ -83,6 +83,16 @@ func TestParseCodexSessionImportEntriesFallsBackToLineModeForMixedJSONAndToken(t
 	}
 }
 
+func TestNormalizeCodexSessionRejectsPersonalAccessToken(t *testing.T) {
+	_, err := normalizeCodexImportEntry(codexImportEntry{Index: 1, Value: "at-test-token"})
+	if err == nil {
+		t.Fatal("normalizeCodexImportEntry error = nil, want PAT rejection")
+	}
+	if !strings.Contains(err.Error(), "Codex PAT") {
+		t.Fatalf("error = %v, want Codex PAT hint", err)
+	}
+}
+
 func TestNormalizeCodexSessionJSONExtractsCredentialsAndIgnoresSessionToken(t *testing.T) {
 	accessToken := buildCodexImportTestJWT(t, time.Now().Add(time.Hour), map[string]any{
 		"email": "claim@example.com",

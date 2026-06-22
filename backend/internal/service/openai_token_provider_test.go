@@ -181,6 +181,29 @@ func TestOpenAITokenProvider_CacheMiss_FromCredentials(t *testing.T) {
 	require.Equal(t, "credential-token", cache.tokens[cacheKey])
 }
 
+func TestOpenAITokenProvider_PersonalAccessTokenSkipsRefresh(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	account := &Account{
+		ID:       103,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "at-test-token",
+			"auth_mode":    OpenAIAuthModePersonalAccessToken,
+		},
+	}
+
+	provider := NewOpenAITokenProvider(nil, cache, nil)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "at-test-token", token)
+	require.Equal(t, int32(0), atomic.LoadInt32(&cache.lockCalled))
+
+	cacheKey := OpenAITokenCacheKey(account)
+	require.Equal(t, "at-test-token", cache.tokens[cacheKey])
+}
+
 func TestOpenAITokenProvider_TokenRefresh(t *testing.T) {
 	cache := newOpenAITokenCacheStub()
 	accountRepo := &openAIAccountRepoStub{}

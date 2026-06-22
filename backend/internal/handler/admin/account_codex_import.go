@@ -556,6 +556,9 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 	if item.AccessToken == "" {
 		return nil, errors.New("缺少 accessToken/access_token")
 	}
+	if strings.HasPrefix(strings.TrimSpace(item.AccessToken), "at-") {
+		return nil, errors.New("Codex Personal Access Token(at-) 请使用独立的 Codex PAT 添加方式")
+	}
 	item.Credentials["access_token"] = item.AccessToken
 	if item.RefreshToken != "" {
 		item.Credentials["refresh_token"] = item.RefreshToken
@@ -774,16 +777,20 @@ func sanitizeCodexImportCredentialExtras(input map[string]any) map[string]any {
 		return nil
 	}
 	protected := map[string]struct{}{
-		"access_token":       {},
-		"refresh_token":      {},
-		"id_token":           {},
-		"expires_at":         {},
-		"email":              {},
-		"chatgpt_account_id": {},
-		"chatgpt_user_id":    {},
-		"organization_id":    {},
-		"plan_type":          {},
-		"client_id":          {},
+		"access_token":               {},
+		"refresh_token":              {},
+		"id_token":                   {},
+		"expires_at":                 {},
+		"email":                      {},
+		"chatgpt_account_id":         {},
+		"chatgpt_user_id":            {},
+		"organization_id":            {},
+		"plan_type":                  {},
+		"client_id":                  {},
+		"auth_mode":                  {},
+		"openai_auth_mode":           {},
+		"token_type":                 {},
+		"chatgpt_account_is_fedramp": {},
 	}
 	out := make(map[string]any, len(input))
 	for key, value := range input {
