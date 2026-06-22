@@ -210,12 +210,7 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 			newCredentials[k] = v
 		}
 	}
-	if tokenInfo.AuthMode == service.OpenAIAuthModePersonalAccessToken || account.IsOpenAIPersonalAccessToken() {
-		delete(newCredentials, "refresh_token")
-		delete(newCredentials, "id_token")
-		delete(newCredentials, "expires_at")
-		delete(newCredentials, "client_id")
-	}
+	newCredentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
 
 	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
 		Credentials: newCredentials,

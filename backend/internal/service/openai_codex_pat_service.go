@@ -16,6 +16,14 @@ const openAICodexPATWhoamiURLDefault = "https://auth.openai.com/api/accounts/v1/
 
 var openAICodexPATWhoamiURL = openAICodexPATWhoamiURLDefault
 
+var openAIPersonalAccessTokenOAuthCredentialKeys = [...]string{
+	"refresh_token",
+	"id_token",
+	"expires_at",
+	"expires_in",
+	"client_id",
+}
+
 type openAICodexPATWhoamiResponse struct {
 	Email                   string `json:"email"`
 	ChatGPTUserID           string `json:"chatgpt_user_id"`
@@ -50,6 +58,8 @@ func (s *OpenAIOAuthService) ValidateCodexPersonalAccessToken(ctx context.Contex
 	}
 	req.Header.Set("authorization", "Bearer "+accessToken)
 	req.Header.Set("accept", "application/json")
+	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("user-agent", codexCLIUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -104,4 +114,41 @@ func validateOpenAICodexPATWhoami(whoami openAICodexPATWhoamiResponse) error {
 		return infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_PAT_RESPONSE_INVALID", "Codex personal access token validation response is missing chatgpt_account_is_fedramp")
 	}
 	return nil
+}
+
+// NormalizeOpenAIPersonalAccessTokenCredentials removes OAuth-only credential
+// fields from Codex personal access token accounts while preserving local
+// routing, mapping, quota, and metadata fields.
+func NormalizeOpenAIPersonalAccessTokenCredentials(account *Account, tokenInfo *OpenAITokenInfo, credentials map[string]any) map[string]any {
+	if credentials == nil || !isOpenAIPersonalAccessTokenCredentialSet(account, tokenInfo, credentials) {
+		return credentials
+	}
+
+	for _, key := range openAIPersonalAccessTokenOAuthCredentialKeys {
+		delete(credentials, key)
+	}
+	credentials[openAIAuthModeCredentialKey] = OpenAIAuthModePersonalAccessToken
+	credentials[openAIAuthModeLegacyCredentialKey] = "personal_access_token"
+	credentials["token_type"] = "Bearer"
+	return credentials
+}
+
+func isOpenAIPersonalAccessTokenCredentialSet(account *Account, tokenInfo *OpenAITokenInfo, credentials map[string]any) bool {
+	if tokenInfo != nil && isOpenAIPersonalAccessTokenAuthMode(tokenInfo.AuthMode) {
+		return true
+	}
+	if account != nil && account.IsOpenAIPersonalAccessToken() {
+		return true
+	}
+	return isOpenAIPersonalAccessTokenAuthMode(openAICredentialString(credentials[openAIAuthModeCredentialKey])) ||
+		isOpenAIPersonalAccessTokenAuthMode(openAICredentialString(credentials[openAIAuthModeLegacyCredentialKey]))
+}
+
+func openAICredentialString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
 }

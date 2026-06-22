@@ -320,13 +320,17 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		}
 	}
 
+	accessToken := account.GetCredential("access_token")
+	if account.IsOpenAIPersonalAccessToken() {
+		if accessToken == "" {
+			return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_CODEX_PAT_REQUIRED", "access token is required")
+		}
+		return s.ValidateCodexPersonalAccessToken(ctx, accessToken, proxyURL)
+	}
+
 	refreshToken := account.GetCredential("refresh_token")
 	if refreshToken == "" {
-		accessToken := account.GetCredential("access_token")
 		if accessToken != "" {
-			if account.IsOpenAIPersonalAccessToken() {
-				return s.ValidateCodexPersonalAccessToken(ctx, accessToken, proxyURL)
-			}
 			tokenInfo := &OpenAITokenInfo{
 				AccessToken:           accessToken,
 				RefreshToken:          "",
@@ -399,7 +403,7 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 		creds["chatgpt_account_is_fedramp"] = true
 	}
 
-	return creds
+	return NormalizeOpenAIPersonalAccessTokenCredentials(nil, tokenInfo, creds)
 }
 
 // Stop stops the session store cleanup goroutine

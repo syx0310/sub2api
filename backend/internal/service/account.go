@@ -83,6 +83,15 @@ const (
 	openAIAuthModeLegacyCredentialKey = "openai_auth_mode"
 )
 
+func isOpenAIPersonalAccessTokenAuthMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "personalaccesstoken", "personal_access_token":
+		return true
+	default:
+		return false
+	}
+}
+
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
 	Keywords        []string `json:"keywords"`
@@ -1070,12 +1079,8 @@ func (a *Account) IsOpenAIPersonalAccessToken() bool {
 	if !a.IsOpenAIOAuth() {
 		return false
 	}
-	authMode := strings.TrimSpace(a.GetCredential(openAIAuthModeCredentialKey))
-	if authMode == OpenAIAuthModePersonalAccessToken {
-		return true
-	}
-	legacyMode := strings.ToLower(strings.TrimSpace(a.GetCredential(openAIAuthModeLegacyCredentialKey)))
-	return legacyMode == "personal_access_token" || legacyMode == "personalaccesstoken"
+	return isOpenAIPersonalAccessTokenAuthMode(a.GetCredential(openAIAuthModeCredentialKey)) ||
+		isOpenAIPersonalAccessTokenAuthMode(a.GetCredential(openAIAuthModeLegacyCredentialKey))
 }
 
 func (a *Account) IsOpenAIApiKey() bool {
