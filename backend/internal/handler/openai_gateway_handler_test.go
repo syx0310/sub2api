@@ -1335,12 +1335,13 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		nil, // openAITokenProvider
+		nil, // grokTokenProvider
+		nil, // resolver
+		nil, // channelService
+		nil, // balanceNotifyService
+		nil, // settingService
+		nil, // userPlatformQuotaRepo
 	)
 
 	cache := &concurrencyCacheMock{
@@ -1530,12 +1531,13 @@ func TestOpenAIResponsesWebSocket_FailoverDropsPreviousResponseIDWhenStickyMisse
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		nil, // openAITokenProvider
+		nil, // grokTokenProvider
+		nil, // resolver
+		nil, // channelService
+		nil, // balanceNotifyService
+		nil, // settingService
+		nil, // userPlatformQuotaRepo
 	)
 
 	cache := &concurrencyCacheMock{
@@ -1723,6 +1725,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
+		nil,
 		nil,
 		nil,
 		channelSvc,
