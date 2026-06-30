@@ -221,10 +221,11 @@ func (e *OpenAIWSClientCloseError) Reason() string {
 type OpenAIWSIngressHooks struct {
 	// InitialRequestModel 是首帧渠道映射前的请求模型，只用于 usage metadata
 	// 的 reasoning effort 后缀推导，禁止用于上游请求或计费模型。
-	InitialRequestModel string
-	BeforeTurn          func(turn int) error
-	BeforeRequest       func(turn int, payload []byte, originalModel string) error
-	AfterTurn           func(turn int, result *OpenAIForwardResult, turnErr error)
+	InitialRequestModel     string
+	BeforeTurn              func(turn int) error
+	BeforeRequest           func(turn int, payload []byte, originalModel string) error
+	AfterTurn               func(turn int, result *OpenAIForwardResult, turnErr error)
+	InitialRequestBodyBytes *int64
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -2675,6 +2676,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		imageSizeTier      string
 		imageInputSize     string
 		payloadBytes       int
+		requestBodyBytes   int64
 	}
 	ingressSessionOriginalModel := ""
 
@@ -2882,6 +2884,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			imageSizeTier:      imageSizeTier,
 			imageInputSize:     imageInputSize,
 			payloadBytes:       len(normalized),
+			requestBodyBytes:   int64(len(trimmed)),
 		}, nil
 	}
 
@@ -2909,6 +2912,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	firstPayload, err := parseClientPayload(firstClientMessage)
 	if err != nil {
 		return err
+	}
+	if hooks != nil && hooks.InitialRequestBodyBytes != nil && *hooks.InitialRequestBodyBytes >= 0 {
+		firstPayload.requestBodyBytes = *hooks.InitialRequestBodyBytes
 	}
 
 	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
@@ -3007,6 +3013,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				account,
 				token,
 				bridgePayloadRaw,
+				currentBridgePayload.requestBodyBytes,
 				bridgePayloadBytes,
 				currentBridgePayload.originalModel,
 				currentBridgePayload.imageBillingModel,
@@ -3212,12 +3219,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return lease, nil
 	}
 
-	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, requestBodyBytes int64, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string) (*OpenAIForwardResult, error) {
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
 		wroteDownstream := false
+		var downstreamBytes int64
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -3414,6 +3422,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				} else {
 					wroteDownstream = true
+					downstreamBytes += int64(len(upstreamMessage))
 				}
 			}
 			if isTerminalEvent {
@@ -3444,17 +3453,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
-					RequestID:       responseID,
-					Usage:           usage,
-					Model:           originalModel,
-					UpstreamModel:   mappedModel,
-					ServiceTier:     extractOpenAIServiceTierFromBody(payload),
-					ReasoningEffort: ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, originalModel), payload, mappedModel),
-					Stream:          reqStream,
-					OpenAIWSMode:    true,
-					ResponseHeaders: lease.HandshakeHeaders(),
-					Duration:        time.Since(turnStart),
-					FirstTokenMs:    firstTokenMs,
+					RequestID:         responseID,
+					Usage:             usage,
+					Model:             originalModel,
+					UpstreamModel:     mappedModel,
+					ServiceTier:       extractOpenAIServiceTierFromBody(payload),
+					ReasoningEffort:   ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, originalModel), payload, mappedModel),
+					Stream:            reqStream,
+					OpenAIWSMode:      true,
+					ResponseHeaders:   lease.HandshakeHeaders(),
+					Duration:          time.Since(turnStart),
+					FirstTokenMs:      firstTokenMs,
+					RequestBodyBytes:  bodyBytesPtr(requestBodyBytes),
+					ResponseBodyBytes: bodyBytesPtr(downstreamBytes),
 				}
 				if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 					result.wsReplayInput = replayInput
@@ -3478,6 +3489,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentImageSizeTier := firstPayload.imageSizeTier
 	currentImageInputSize := firstPayload.imageInputSize
 	currentPayloadBytes := firstPayload.payloadBytes
+	currentRequestBodyBytes := firstPayload.requestBodyBytes
 	isStrictAffinityTurn := func(payload []byte) bool {
 		if !storeDisabled {
 			return false
@@ -3971,7 +3983,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize)
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentRequestBodyBytes, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize)
 		if relayErr != nil {
 			lastTurnClean = false
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
@@ -4101,6 +4113,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentImageSizeTier = nextPayload.imageSizeTier
 		currentImageInputSize = nextPayload.imageInputSize
 		currentPayloadBytes = nextPayload.payloadBytes
+		currentRequestBodyBytes = nextPayload.requestBodyBytes
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
 		if !storeDisabled {
 			unpinSessionConn(sessionConnID)

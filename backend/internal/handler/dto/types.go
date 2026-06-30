@@ -517,6 +517,9 @@ type AdminUsageLog struct {
 
 	// IPAddress 用户请求 IP（仅管理员可见）
 	IPAddress *string `json:"ip_address,omitempty"`
+	// RequestBodyBytes/ResponseBodyBytes 记录请求/返回逻辑 payload 大小（仅管理员可见）
+	RequestBodyBytes  *int64 `json:"request_body_bytes,omitempty"`
+	ResponseBodyBytes *int64 `json:"response_body_bytes,omitempty"`
 
 	// Account 最小账号信息（避免泄露敏感字段）
 	Account *AccountSummary `json:"account,omitempty"`

@@ -59,6 +59,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	requestBodyBytes := usageBodyBytesPtr(len(body))
 
 	setOpsRequestContext(c, "", false)
 
@@ -224,6 +225,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
+		responseBodyBytes := usageResponseBodyBytesFromGin(c)
+		attachGatewayUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
 
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
@@ -278,6 +281,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				UpstreamEndpoint:   upstreamEndpoint,
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
+				RequestBodyBytes:   requestBodyBytes,
+				ResponseBodyBytes:  responseBodyBytes,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
 				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),

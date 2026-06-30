@@ -313,6 +313,38 @@ func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_PersistsBodyByteMetrics(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	requestBodyBytes := int64(2048)
+	responseBodyBytes := int64(8192)
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_body_bytes",
+			Usage: OpenAIUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey:            &APIKey{ID: 1001, Group: &Group{RateMultiplier: 1}},
+		User:              &User{ID: 2001},
+		Account:           &Account{ID: 3001, Type: AccountTypeAPIKey},
+		RequestBodyBytes:  &requestBodyBytes,
+		ResponseBodyBytes: &responseBodyBytes,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, &requestBodyBytes, usageRepo.lastLog.RequestBodyBytes)
+	require.Equal(t, &responseBodyBytes, usageRepo.lastLog.ResponseBodyBytes)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_MissingPricingRecordsZeroCostUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}

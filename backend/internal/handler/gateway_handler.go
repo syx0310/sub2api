@@ -152,6 +152,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	requestBodyBytes := usageBodyBytesPtr(len(body))
 
 	setOpsRequestContext(c, "", false)
 
@@ -440,6 +441,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
+			responseBodyBytes := usageResponseBodyBytesFromGin(c)
+			attachGatewayUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
 			if err != nil {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
@@ -532,6 +535,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UpstreamEndpoint:   upstreamEndpoint,
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
+					RequestBodyBytes:   requestBodyBytes,
+					ResponseBodyBytes:  responseBodyBytes,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  forceCacheBilling,
 					APIKeyService:      h.apiKeyService,
@@ -806,6 +811,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
+			responseBodyBytes := usageResponseBodyBytesFromGin(c)
+			attachGatewayUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
 			if err != nil {
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
@@ -962,6 +969,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UpstreamEndpoint:   upstreamEndpoint,
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
+					RequestBodyBytes:   requestBodyBytes,
+					ResponseBodyBytes:  responseBodyBytes,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  forceCacheBilling,
 					APIKeyService:      h.apiKeyService,

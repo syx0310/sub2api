@@ -249,6 +249,8 @@ type OpenAIForwardResult struct {
 	Duration           time.Duration
 	FirstTokenMs       *int
 	ClientDisconnect   bool
+	RequestBodyBytes   *int64
+	ResponseBodyBytes  *int64
 	ImageCount         int
 	ImageSize          string
 	ImageInputSize     string
@@ -6113,6 +6115,8 @@ type OpenAIRecordUsageInput struct {
 	UpstreamEndpoint   string
 	UserAgent          string // 请求的 User-Agent
 	IPAddress          string // 请求的客户端 IP 地址
+	RequestBodyBytes   *int64
+	ResponseBodyBytes  *int64
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
@@ -6138,6 +6142,8 @@ type CyberPolicyUsageInput struct {
 	UpstreamEndpoint   string
 	UserAgent          string
 	IPAddress          string
+	RequestBodyBytes   *int64
+	ResponseBodyBytes  *int64
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
 	ChannelUsageFields
@@ -6161,6 +6167,8 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 			InputTokens:  in.InputTokens,
 			OutputTokens: in.OutputTokens,
 		},
+		RequestBodyBytes:  in.RequestBodyBytes,
+		ResponseBodyBytes: in.ResponseBodyBytes,
 	}
 	if err := s.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result:             result,
@@ -6172,6 +6180,8 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		UpstreamEndpoint:   in.UpstreamEndpoint,
 		UserAgent:          in.UserAgent,
 		IPAddress:          in.IPAddress,
+		RequestBodyBytes:   in.RequestBodyBytes,
+		ResponseBodyBytes:  in.ResponseBodyBytes,
 		RequestPayloadHash: in.RequestPayloadHash,
 		APIKeyService:      in.APIKeyService,
 		ChannelUsageFields: in.ChannelUsageFields,
@@ -6318,6 +6328,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageOutputSize:     optionalTrimmedStringPtr(result.ImageOutputSize),
 		ImageSizeSource:     optionalTrimmedStringPtr(result.ImageSizeSource),
 		ImageSizeBreakdown:  result.ImageSizeBreakdown,
+		RequestBodyBytes:    resolveUsageBodyBytes(input.RequestBodyBytes, result.RequestBodyBytes),
+		ResponseBodyBytes:   resolveUsageBodyBytes(input.ResponseBodyBytes, result.ResponseBodyBytes),
 	}
 	if cost != nil {
 		usageLog.InputCost = cost.InputCost

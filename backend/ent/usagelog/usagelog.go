@@ -80,6 +80,10 @@ const (
 	FieldUserAgent = "user_agent"
 	// FieldIPAddress holds the string denoting the ip_address field in the database.
 	FieldIPAddress = "ip_address"
+	// FieldRequestBodyBytes holds the string denoting the request_body_bytes field in the database.
+	FieldRequestBodyBytes = "request_body_bytes"
+	// FieldResponseBodyBytes holds the string denoting the response_body_bytes field in the database.
+	FieldResponseBodyBytes = "response_body_bytes"
 	// FieldImageCount holds the string denoting the image_count field in the database.
 	FieldImageCount = "image_count"
 	// FieldImageSize holds the string denoting the image_size field in the database.
@@ -181,6 +185,8 @@ var Columns = []string{
 	FieldFirstTokenMs,
 	FieldUserAgent,
 	FieldIPAddress,
+	FieldRequestBodyBytes,
+	FieldResponseBodyBytes,
 	FieldImageCount,
 	FieldImageSize,
 	FieldImageInputSize,
@@ -437,6 +443,16 @@ func ByUserAgent(opts ...sql.OrderTermOption) OrderOption {
 // ByIPAddress orders the results by the ip_address field.
 func ByIPAddress(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldIPAddress, opts...).ToFunc()
+}
+
+// ByRequestBodyBytes orders the results by the request_body_bytes field.
+func ByRequestBodyBytes(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRequestBodyBytes, opts...).ToFunc()
+}
+
+// ByResponseBodyBytes orders the results by the response_body_bytes field.
+func ByResponseBodyBytes(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldResponseBodyBytes, opts...).ToFunc()
 }
 
 // ByImageCount orders the results by the image_count field.

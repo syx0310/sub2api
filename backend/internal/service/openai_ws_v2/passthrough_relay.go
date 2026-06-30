@@ -475,7 +475,6 @@ func runUpstreamToClient(
 		case coderws.MessageBinary:
 			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
-		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
@@ -488,6 +487,7 @@ func runUpstreamToClient(
 				WroteDownstream: wroteDownstream,
 			})
 			if observedEvent.terminal {
+				emitTurnComplete(onTurnComplete, state, observedEvent)
 				exitCh <- relayExitSignal{
 					stage:           "drain_terminal",
 					graceful:        true,
@@ -511,6 +511,7 @@ func runUpstreamToClient(
 			return
 		}
 		wroteDownstream = true
+		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if afterWriteClient != nil {
 			afterWriteClient()
 		}

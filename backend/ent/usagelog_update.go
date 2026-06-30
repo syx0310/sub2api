@@ -698,6 +698,60 @@ func (_u *UsageLogUpdate) ClearIPAddress() *UsageLogUpdate {
 	return _u
 }
 
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (_u *UsageLogUpdate) SetRequestBodyBytes(v int64) *UsageLogUpdate {
+	_u.mutation.ResetRequestBodyBytes()
+	_u.mutation.SetRequestBodyBytes(v)
+	return _u
+}
+
+// SetNillableRequestBodyBytes sets the "request_body_bytes" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableRequestBodyBytes(v *int64) *UsageLogUpdate {
+	if v != nil {
+		_u.SetRequestBodyBytes(*v)
+	}
+	return _u
+}
+
+// AddRequestBodyBytes adds value to the "request_body_bytes" field.
+func (_u *UsageLogUpdate) AddRequestBodyBytes(v int64) *UsageLogUpdate {
+	_u.mutation.AddRequestBodyBytes(v)
+	return _u
+}
+
+// ClearRequestBodyBytes clears the value of the "request_body_bytes" field.
+func (_u *UsageLogUpdate) ClearRequestBodyBytes() *UsageLogUpdate {
+	_u.mutation.ClearRequestBodyBytes()
+	return _u
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (_u *UsageLogUpdate) SetResponseBodyBytes(v int64) *UsageLogUpdate {
+	_u.mutation.ResetResponseBodyBytes()
+	_u.mutation.SetResponseBodyBytes(v)
+	return _u
+}
+
+// SetNillableResponseBodyBytes sets the "response_body_bytes" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableResponseBodyBytes(v *int64) *UsageLogUpdate {
+	if v != nil {
+		_u.SetResponseBodyBytes(*v)
+	}
+	return _u
+}
+
+// AddResponseBodyBytes adds value to the "response_body_bytes" field.
+func (_u *UsageLogUpdate) AddResponseBodyBytes(v int64) *UsageLogUpdate {
+	_u.mutation.AddResponseBodyBytes(v)
+	return _u
+}
+
+// ClearResponseBodyBytes clears the value of the "response_body_bytes" field.
+func (_u *UsageLogUpdate) ClearResponseBodyBytes() *UsageLogUpdate {
+	_u.mutation.ClearResponseBodyBytes()
+	return _u
+}
+
 // SetImageCount sets the "image_count" field.
 func (_u *UsageLogUpdate) SetImageCount(v int) *UsageLogUpdate {
 	_u.mutation.ResetImageCount()
@@ -1173,6 +1227,24 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.IPAddressCleared() {
 		_spec.ClearField(usagelog.FieldIPAddress, field.TypeString)
+	}
+	if value, ok := _u.mutation.RequestBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldRequestBodyBytes, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedRequestBodyBytes(); ok {
+		_spec.AddField(usagelog.FieldRequestBodyBytes, field.TypeInt64, value)
+	}
+	if _u.mutation.RequestBodyBytesCleared() {
+		_spec.ClearField(usagelog.FieldRequestBodyBytes, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.ResponseBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldResponseBodyBytes, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedResponseBodyBytes(); ok {
+		_spec.AddField(usagelog.FieldResponseBodyBytes, field.TypeInt64, value)
+	}
+	if _u.mutation.ResponseBodyBytesCleared() {
+		_spec.ClearField(usagelog.FieldResponseBodyBytes, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.ImageCount(); ok {
 		_spec.SetField(usagelog.FieldImageCount, field.TypeInt, value)
@@ -2044,6 +2116,60 @@ func (_u *UsageLogUpdateOne) ClearIPAddress() *UsageLogUpdateOne {
 	return _u
 }
 
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (_u *UsageLogUpdateOne) SetRequestBodyBytes(v int64) *UsageLogUpdateOne {
+	_u.mutation.ResetRequestBodyBytes()
+	_u.mutation.SetRequestBodyBytes(v)
+	return _u
+}
+
+// SetNillableRequestBodyBytes sets the "request_body_bytes" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableRequestBodyBytes(v *int64) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetRequestBodyBytes(*v)
+	}
+	return _u
+}
+
+// AddRequestBodyBytes adds value to the "request_body_bytes" field.
+func (_u *UsageLogUpdateOne) AddRequestBodyBytes(v int64) *UsageLogUpdateOne {
+	_u.mutation.AddRequestBodyBytes(v)
+	return _u
+}
+
+// ClearRequestBodyBytes clears the value of the "request_body_bytes" field.
+func (_u *UsageLogUpdateOne) ClearRequestBodyBytes() *UsageLogUpdateOne {
+	_u.mutation.ClearRequestBodyBytes()
+	return _u
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (_u *UsageLogUpdateOne) SetResponseBodyBytes(v int64) *UsageLogUpdateOne {
+	_u.mutation.ResetResponseBodyBytes()
+	_u.mutation.SetResponseBodyBytes(v)
+	return _u
+}
+
+// SetNillableResponseBodyBytes sets the "response_body_bytes" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableResponseBodyBytes(v *int64) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetResponseBodyBytes(*v)
+	}
+	return _u
+}
+
+// AddResponseBodyBytes adds value to the "response_body_bytes" field.
+func (_u *UsageLogUpdateOne) AddResponseBodyBytes(v int64) *UsageLogUpdateOne {
+	_u.mutation.AddResponseBodyBytes(v)
+	return _u
+}
+
+// ClearResponseBodyBytes clears the value of the "response_body_bytes" field.
+func (_u *UsageLogUpdateOne) ClearResponseBodyBytes() *UsageLogUpdateOne {
+	_u.mutation.ClearResponseBodyBytes()
+	return _u
+}
+
 // SetImageCount sets the "image_count" field.
 func (_u *UsageLogUpdateOne) SetImageCount(v int) *UsageLogUpdateOne {
 	_u.mutation.ResetImageCount()
@@ -2549,6 +2675,24 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if _u.mutation.IPAddressCleared() {
 		_spec.ClearField(usagelog.FieldIPAddress, field.TypeString)
+	}
+	if value, ok := _u.mutation.RequestBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldRequestBodyBytes, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedRequestBodyBytes(); ok {
+		_spec.AddField(usagelog.FieldRequestBodyBytes, field.TypeInt64, value)
+	}
+	if _u.mutation.RequestBodyBytesCleared() {
+		_spec.ClearField(usagelog.FieldRequestBodyBytes, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.ResponseBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldResponseBodyBytes, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedResponseBodyBytes(); ok {
+		_spec.AddField(usagelog.FieldResponseBodyBytes, field.TypeInt64, value)
+	}
+	if _u.mutation.ResponseBodyBytesCleared() {
+		_spec.ClearField(usagelog.FieldResponseBodyBytes, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.ImageCount(); ok {
 		_spec.SetField(usagelog.FieldImageCount, field.TypeInt, value)

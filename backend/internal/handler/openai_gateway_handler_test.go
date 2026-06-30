@@ -927,6 +927,10 @@ func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoni
 	require.NotNil(t, got.log.ReasoningEffort)
 	require.Equal(t, "high", *got.log.ReasoningEffort)
 	require.True(t, got.log.OpenAIWSMode)
+	require.NotNil(t, got.log.RequestBodyBytes)
+	require.Equal(t, int64(len(strings.TrimSpace(`{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`))), *got.log.RequestBodyBytes)
+	require.NotNil(t, got.log.ResponseBodyBytes)
+	require.Greater(t, *got.log.ResponseBodyBytes, int64(0))
 }
 
 func TestOpenAIResponsesWebSocket_PassthroughUsageLogInfersReasoningFromInitialRequestModel(t *testing.T) {
