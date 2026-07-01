@@ -2884,7 +2884,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			imageSizeTier:      imageSizeTier,
 			imageInputSize:     imageInputSize,
 			payloadBytes:       len(normalized),
-			requestBodyBytes:   int64(len(trimmed)),
+			requestBodyBytes:   int64(len(raw)),
 		}, nil
 	}
 

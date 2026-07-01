@@ -917,8 +917,9 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 }
 
 func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoningEffort(t *testing.T) {
+	firstPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`,
+		firstPayload: firstPayload,
 		userAgent:    testStringPtr("codex_cli_rs/0.125.0 test"),
 	})
 
@@ -928,7 +929,7 @@ func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoni
 	require.Equal(t, "high", *got.log.ReasoningEffort)
 	require.True(t, got.log.OpenAIWSMode)
 	require.NotNil(t, got.log.RequestBodyBytes)
-	require.Equal(t, int64(len(strings.TrimSpace(`{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`))), *got.log.RequestBodyBytes)
+	require.Equal(t, int64(len(firstPayload)), *got.log.RequestBodyBytes)
 	require.NotNil(t, got.log.ResponseBodyBytes)
 	require.Greater(t, *got.log.ResponseBodyBytes, int64(0))
 }

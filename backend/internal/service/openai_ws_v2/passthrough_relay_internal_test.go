@@ -128,6 +128,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			drop,
 			nil,
 			nil,
+			nil,
 			func() {},
 			nil,
 			exitCh,
@@ -157,6 +158,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			drop,
+			nil,
 			nil,
 			nil,
 			func() {},
@@ -191,6 +193,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			drop,
+			nil,
 			nil,
 			dropped,
 			func() {},
@@ -347,7 +350,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 		eventType:  "response.output_text.delta",
 		responseID: "resp_ignored",
 		usage:      Usage{InputTokens: 1},
-	})
+	}, 0)
 	require.Equal(t, 0, called)
 
 	// 缺少 response_id 时不应触发。
@@ -356,7 +359,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
 		terminal:  true,
 		eventType: "response.completed",
-	})
+	}, 0)
 	require.Equal(t, 0, called)
 
 	// terminal 且 response_id 存在，应该触发；state=nil 时 model 为空串。
@@ -369,12 +372,13 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 		eventType:  "response.completed",
 		responseID: "resp_emit",
 		usage:      Usage{InputTokens: 2, OutputTokens: 3},
-	})
+	}, 123)
 	require.Equal(t, 1, called)
 	require.Equal(t, "resp_emit", got.RequestID)
 	require.Equal(t, "response.completed", got.TerminalEventType)
 	require.Equal(t, 2, got.Usage.InputTokens)
 	require.Equal(t, 3, got.Usage.OutputTokens)
+	require.Equal(t, int64(123), got.ResponseBodyBytes)
 	require.Equal(t, "", got.RequestModel)
 }
 

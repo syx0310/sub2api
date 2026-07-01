@@ -35,6 +35,7 @@ type RelayResult struct {
 	TerminalEventType       string
 	FirstTokenMs            *int
 	Duration                time.Duration
+	ResponseBodyBytes       int64
 	ClientToUpstreamFrames  int64
 	UpstreamToClientFrames  int64
 	DroppedDownstreamFrames int64
@@ -47,6 +48,7 @@ type RelayTurnResult struct {
 	TerminalEventType string
 	Duration          time.Duration
 	FirstTokenMs      *int
+	ResponseBodyBytes int64
 }
 
 type RelayExit struct {
@@ -168,6 +170,7 @@ func Relay(
 
 	clientToUpstreamFrames := &atomic.Int64{}
 	upstreamToClientFrames := &atomic.Int64{}
+	downstreamPayloadBytes := &atomic.Int64{}
 	droppedDownstreamFrames := &atomic.Int64{}
 	emitRelayTrace(onTrace, RelayTraceEvent{
 		Stage:        "relay_start",
@@ -233,6 +236,7 @@ func Relay(
 		},
 		&dropDownstreamWrites,
 		upstreamToClientFrames,
+		downstreamPayloadBytes,
 		droppedDownstreamFrames,
 		markActivity,
 		onTrace,
@@ -280,6 +284,7 @@ func Relay(
 	enrichResult(&result, state, nowFn().Sub(startAt))
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
+	result.ResponseBodyBytes = downstreamPayloadBytes.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
 	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful {
 		emitRelayTrace(onTrace, RelayTraceEvent{
@@ -425,12 +430,14 @@ func runUpstreamToClient(
 	afterWriteClient func(),
 	dropDownstreamWrites *atomic.Bool,
 	forwardedFrames *atomic.Int64,
+	forwardedPayloadBytes *atomic.Int64,
 	droppedFrames *atomic.Int64,
 	markActivity func(),
 	onTrace func(event RelayTraceEvent),
 	exitCh chan<- relayExitSignal,
 ) {
 	wroteDownstream := false
+	turnResponseBodyBytes := int64(0)
 	for {
 		msgType, payload, err := upstreamConn.ReadFrame(ctx)
 		if err != nil {
@@ -487,7 +494,7 @@ func runUpstreamToClient(
 				WroteDownstream: wroteDownstream,
 			})
 			if observedEvent.terminal {
-				emitTurnComplete(onTurnComplete, state, observedEvent)
+				emitTurnComplete(onTurnComplete, state, observedEvent, turnResponseBodyBytes)
 				exitCh <- relayExitSignal{
 					stage:           "drain_terminal",
 					graceful:        true,
@@ -507,11 +514,22 @@ func runUpstreamToClient(
 				WroteDownstream: wroteDownstream,
 				Error:           err.Error(),
 			})
+			if observedEvent.terminal {
+				emitTurnComplete(onTurnComplete, state, observedEvent, turnResponseBodyBytes)
+			}
 			exitCh <- relayExitSignal{stage: "write_client", err: err, wroteDownstream: wroteDownstream}
 			return
 		}
 		wroteDownstream = true
-		emitTurnComplete(onTurnComplete, state, observedEvent)
+		payloadBytes := int64(len(payload))
+		turnResponseBodyBytes += payloadBytes
+		if forwardedPayloadBytes != nil {
+			forwardedPayloadBytes.Add(payloadBytes)
+		}
+		if observedEvent.terminal {
+			emitTurnComplete(onTurnComplete, state, observedEvent, turnResponseBodyBytes)
+			turnResponseBodyBytes = 0
+		}
 		if afterWriteClient != nil {
 			afterWriteClient()
 		}
@@ -673,6 +691,7 @@ func emitTurnComplete(
 	onTurnComplete func(turn RelayTurnResult),
 	state *relayState,
 	observed observedUpstreamEvent,
+	responseBodyBytes int64,
 ) {
 	if onTurnComplete == nil || !observed.terminal {
 		return
@@ -692,6 +711,7 @@ func emitTurnComplete(
 		TerminalEventType: observed.eventType,
 		Duration:          observed.duration,
 		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
+		ResponseBodyBytes: responseBodyBytes,
 	})
 }
 

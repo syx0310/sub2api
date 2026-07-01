@@ -13,6 +13,13 @@ func usageBodyBytesPtr(n int) *int64 {
 	return &v
 }
 
+func usageBodyBytesInt64Ptr(n int64) *int64 {
+	if n < 0 {
+		return nil
+	}
+	return &n
+}
+
 func usageResponseBodyBytesFromGin(c *gin.Context) *int64 {
 	if c == nil || c.Writer == nil {
 		return nil

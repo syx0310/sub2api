@@ -417,15 +417,17 @@ func TestRelay_MultipleUpstreamMessages(t *testing.T) {
 func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	t.Parallel()
 
+	firstTerminal := []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1}}}`)
+	secondTerminal := []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4}}}`)
 	clientConn := newPassthroughTestFrameConn(nil, false)
 	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
 		{
 			msgType: coderws.MessageText,
-			payload: []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1}}}`),
+			payload: firstTerminal,
 		},
 		{
 			msgType: coderws.MessageText,
-			payload: []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4}}}`),
+			payload: secondTerminal,
 		},
 	}, true)
 
@@ -445,12 +447,50 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	require.Equal(t, "response.completed", turns[0].TerminalEventType)
 	require.Equal(t, 2, turns[0].Usage.InputTokens)
 	require.Equal(t, 1, turns[0].Usage.OutputTokens)
+	require.Equal(t, int64(len(firstTerminal)), turns[0].ResponseBodyBytes)
 	require.Equal(t, "resp_turn_2", turns[1].RequestID)
 	require.Equal(t, "response.failed", turns[1].TerminalEventType)
 	require.Equal(t, 3, turns[1].Usage.InputTokens)
 	require.Equal(t, 4, turns[1].Usage.OutputTokens)
+	require.Equal(t, int64(len(secondTerminal)), turns[1].ResponseBodyBytes)
 	require.Equal(t, 5, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
+	require.Equal(t, int64(len(firstTerminal)+len(secondTerminal)), result.ResponseBodyBytes)
+}
+
+func TestRelay_TerminalWriteFailureStillEmitsTurnUsage(t *testing.T) {
+	t.Parallel()
+
+	terminal := []byte(`{"type":"response.completed","response":{"id":"resp_write_fail","usage":{"input_tokens":9,"output_tokens":2}}}`)
+	clientConn := &errorOnWriteFrameConn{}
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: terminal,
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	turns := make([]RelayTurnResult, 0, 1)
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+	require.NotNil(t, relayExit)
+	require.Equal(t, "write_client", relayExit.Stage)
+	require.Len(t, turns, 1)
+	require.Equal(t, "resp_write_fail", turns[0].RequestID)
+	require.Equal(t, 9, turns[0].Usage.InputTokens)
+	require.Equal(t, 2, turns[0].Usage.OutputTokens)
+	require.Equal(t, int64(0), turns[0].ResponseBodyBytes)
+	require.Equal(t, "resp_write_fail", result.RequestID)
+	require.Equal(t, 9, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+	require.Equal(t, int64(0), result.ResponseBodyBytes)
 }
 
 func TestRelay_OnTurnComplete_ProvidesTurnMetrics(t *testing.T) {

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,11 +22,6 @@ type openAIWSClientFrameConn struct {
 	conn *coderws.Conn
 }
 
-type openAIWSCountingFrameConn struct {
-	inner           openaiwsv2.FrameConn
-	downstreamBytes *atomic.Int64
-}
-
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
 // every client→upstream frame through the OpenAI Fast Policy. It is the
 // passthrough-relay equivalent of the parseClientPayload integration in the
@@ -44,35 +38,6 @@ type openAIWSPolicyEnforcingFrameConn struct {
 }
 
 var _ openaiwsv2.FrameConn = (*openAIWSPolicyEnforcingFrameConn)(nil)
-
-var _ openaiwsv2.FrameConn = (*openAIWSCountingFrameConn)(nil)
-
-func (c *openAIWSCountingFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
-	if c == nil || c.inner == nil {
-		return coderws.MessageText, nil, errOpenAIWSConnClosed
-	}
-	return c.inner.ReadFrame(ctx)
-}
-
-func (c *openAIWSCountingFrameConn) WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error {
-	if c == nil || c.inner == nil {
-		return errOpenAIWSConnClosed
-	}
-	if err := c.inner.WriteFrame(ctx, msgType, payload); err != nil {
-		return err
-	}
-	if c.downstreamBytes != nil {
-		c.downstreamBytes.Add(int64(len(payload)))
-	}
-	return nil
-}
-
-func (c *openAIWSCountingFrameConn) Close() error {
-	if c == nil || c.inner == nil {
-		return nil
-	}
-	return c.inner.Close()
-}
 
 func (c *openAIWSPolicyEnforcingFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
 	if c == nil || c.inner == nil {
@@ -310,7 +275,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
 	}
-	initialRequestBodyBytes := int64(len(bytes.TrimSpace(firstClientMessage)))
+	initialRequestBodyBytes := int64(len(firstClientMessage))
 	if hooks != nil && hooks.InitialRequestBodyBytes != nil && *hooks.InitialRequestBodyBytes >= 0 {
 		initialRequestBodyBytes = *hooks.InitialRequestBodyBytes
 	}
@@ -319,7 +284,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	pushRequestBodyBytes := func(payload []byte) {
 		requestBodyBytesMu.Lock()
 		defer requestBodyBytesMu.Unlock()
-		requestBodyBytesQueue = append(requestBodyBytesQueue, int64(len(bytes.TrimSpace(payload))))
+		requestBodyBytesQueue = append(requestBodyBytesQueue, int64(len(payload)))
 	}
 	popRequestBodyBytes := func() int64 {
 		requestBodyBytesMu.Lock()
@@ -331,7 +296,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		requestBodyBytesQueue = requestBodyBytesQueue[1:]
 		return value
 	}
-	var responseBodyBytes atomic.Int64
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
@@ -450,12 +414,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 
 	completedTurns := atomic.Int32{}
 	clientFrameConn := &openAIWSClientFrameConn{conn: clientConn}
-	countingClientConn := &openAIWSCountingFrameConn{
-		inner:           clientFrameConn,
-		downstreamBytes: &responseBodyBytes,
-	}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
-		inner: countingClientConn,
+		inner: clientFrameConn,
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
 		// goroutine 中被调用（passthrough_relay.go: ReadFrame loop），
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
@@ -601,7 +561,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					Duration:          turn.Duration,
 					FirstTokenMs:      turn.FirstTokenMs,
 					RequestBodyBytes:  bodyBytesPtr(popRequestBodyBytes()),
-					ResponseBodyBytes: bodyBytesPtr(responseBodyBytes.Swap(0)),
+					ResponseBodyBytes: bodyBytesPtr(turn.ResponseBodyBytes),
 				}
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
@@ -681,7 +641,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Duration:          relayResult.Duration,
 		FirstTokenMs:      relayResult.FirstTokenMs,
 		RequestBodyBytes:  bodyBytesPtr(initialRequestBodyBytes),
-		ResponseBodyBytes: bodyBytesPtr(responseBodyBytes.Load()),
+		ResponseBodyBytes: bodyBytesPtr(relayResult.ResponseBodyBytes),
 	}
 
 	turnCount := int(completedTurns.Load())
