@@ -34,14 +34,18 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 		switch block.Type {
 		case "thinking":
 			if block.Thinking != "" {
-				outputs = append(outputs, ResponsesOutput{
+				output := ResponsesOutput{
 					Type: "reasoning",
 					ID:   generateItemID(),
 					Summary: []ResponsesSummary{{
 						Type: "summary_text",
 						Text: block.Thinking,
 					}},
-				})
+				}
+				if signature, ok := compatibleGPTReasoningEncryptedContent(block.Signature); ok {
+					output.EncryptedContent = signature
+				}
+				outputs = append(outputs, output)
 			}
 		case "text":
 			if block.Text != "" {

@@ -695,16 +695,7 @@ func applyOpenAIWSRetryPayloadStrategy(payload map[string]any, attempt int) (str
 		return "full", nil
 	}
 
-	removed := make([]string, 0, 2)
-	if attempt >= 2 {
-		dropOpenAIWSPayloadKey(payload, "include", &removed)
-	}
-
-	if len(removed) == 0 {
-		return "full", nil
-	}
-	sort.Strings(removed)
-	return "trim_optional_fields", removed
+	return "full", nil
 }
 
 func logOpenAIWSModeInfo(format string, args ...any) {

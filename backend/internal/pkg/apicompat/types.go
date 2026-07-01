@@ -59,7 +59,8 @@ type AnthropicContentBlock struct {
 	Text string `json:"text,omitempty"`
 
 	// type=thinking
-	Thinking string `json:"thinking,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 
 	// type=image
 	Source *AnthropicImageSource `json:"source,omitempty"`
@@ -237,6 +238,10 @@ type ResponsesInputItem struct {
 
 	// type=function_call_output
 	Output string `json:"output,omitempty"`
+
+	// type=reasoning
+	EncryptedContent string             `json:"encrypted_content,omitempty"`
+	Summary          []ResponsesSummary `json:"summary,omitempty"`
 }
 
 // ResponsesContentPart is a typed content part in a Responses message.
