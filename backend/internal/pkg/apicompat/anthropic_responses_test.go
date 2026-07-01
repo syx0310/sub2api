@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
@@ -171,6 +172,56 @@ func TestAnthropicToResponses_ThinkingIgnored(t *testing.T) {
 	require.Len(t, parts, 1)
 	assert.Equal(t, "output_text", parts[0].Type)
 	assert.Equal(t, "Hi!", parts[0].Text)
+}
+
+func TestAnthropicToResponses_ThinkingWithGPTSignatureBecomesReasoningItem(t *testing.T) {
+	signature := testGPTReasoningEncryptedContent()
+	req := &AnthropicRequest{
+		Model:     "gpt-5.2",
+		MaxTokens: 1024,
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`"Hello"`)},
+			{Role: "assistant", Content: json.RawMessage(`[
+				{"type":"thinking","thinking":"deep thought","signature":"gpt#` + signature + `"},
+				{"type":"text","text":"Hi!"}
+			]`)},
+		},
+	}
+
+	resp, err := AnthropicToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 3)
+	assert.Equal(t, "user", items[0].Role)
+	require.Equal(t, "reasoning", items[1].Type)
+	assert.Equal(t, signature, items[1].EncryptedContent)
+	require.Len(t, items[1].Summary, 1)
+	assert.Equal(t, "deep thought", items[1].Summary[0].Text)
+	assert.Equal(t, "assistant", items[2].Role)
+}
+
+func TestAnthropicToResponses_ThinkingWithClaudeSignatureDoesNotForgeGPTReasoning(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "gpt-5.2",
+		MaxTokens: 1024,
+		Messages: []AnthropicMessage{
+			{Role: "assistant", Content: json.RawMessage(`[
+				{"type":"thinking","thinking":"claude thought","signature":"claude#` + testClaudeThinkingSignature() + `"},
+				{"type":"text","text":"visible"}
+			]`)},
+		},
+	}
+
+	resp, err := AnthropicToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, "assistant", items[0].Role)
+	assert.NotEqual(t, "reasoning", items[0].Type)
 }
 
 func TestAnthropicToResponses_MaxTokensFloor(t *testing.T) {
@@ -392,6 +443,43 @@ func TestResponsesToAnthropic_Reasoning(t *testing.T) {
 	assert.Equal(t, "Thinking about the answer...", anth.Content[0].Thinking)
 	assert.Equal(t, "text", anth.Content[1].Type)
 	assert.Equal(t, "42", anth.Content[1].Text)
+}
+
+func TestResponsesToAnthropicRequest_ReasoningWithClaudeSignatureBecomesThinking(t *testing.T) {
+	signature := testClaudeThinkingSignature()
+	req := &ResponsesRequest{
+		Model: "claude-opus-4-6",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","encrypted_content":"claude#` + signature + `","summary":[{"type":"summary_text","text":"keep me"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+
+	anth, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, anth.Messages, 2)
+
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(anth.Messages[0].Content, &blocks))
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "thinking", blocks[0].Type)
+	assert.Equal(t, "keep me", blocks[0].Thinking)
+	assert.Equal(t, signature, blocks[0].Signature)
+}
+
+func TestResponsesToAnthropicRequest_GPTReasoningDoesNotForgeClaudeThinking(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "claude-opus-4-6",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","encrypted_content":"` + testGPTReasoningEncryptedContent() + `","summary":[{"type":"summary_text","text":"drop incompatible"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+
+	anth, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, anth.Messages, 1)
+	assert.Equal(t, "user", anth.Messages[0].Role)
 }
 
 func TestResponsesToAnthropic_Incomplete(t *testing.T) {
@@ -1732,4 +1820,14 @@ func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
 	assert.Equal(t, 8, completed.Response.Usage.OutputTokens)
 	require.NotNil(t, completed.Response.Usage.InputTokensDetails)
 	assert.Equal(t, 11, completed.Response.Usage.InputTokensDetails.CachedTokens)
+}
+
+func testGPTReasoningEncryptedContent() string {
+	payload := make([]byte, 73)
+	payload[0] = 0x80
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func testClaudeThinkingSignature() string {
+	return base64.StdEncoding.EncodeToString([]byte{0x12, 0x00, 0x00})
 }

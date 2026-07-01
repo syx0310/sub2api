@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
@@ -982,8 +983,7 @@ func defaultCodexSynthInstructions(model string) string {
 // 真实 Codex 在 reasoning 存在时总会请求加密推理内容（ChatGPT/store=false 场景下用于上下文回放）。
 // 该函数为加法式、幂等：仅在 include 缺失或未包含该项时追加；对非数组的异常 include 不做破坏性改写。
 func ensureCodexReasoningInclude(reqBody map[string]any) bool {
-	reasoning, ok := reqBody["reasoning"].(map[string]any)
-	if !ok || len(reasoning) == 0 {
+	if !codexRequestNeedsReasoningInclude(reqBody) {
 		return false
 	}
 	const encrypted = "reasoning.encrypted_content"
@@ -999,10 +999,41 @@ func ensureCodexReasoningInclude(reqBody map[string]any) bool {
 		}
 		reqBody["include"] = append(existing, encrypted)
 		return true
+	case []string:
+		for _, v := range existing {
+			if v == encrypted {
+				return false
+			}
+		}
+		reqBody["include"] = append(existing, encrypted)
+		return true
 	default:
 		// include 为非预期类型时保持原样，避免破坏调用方意图。
 		return false
 	}
+}
+
+func codexRequestNeedsReasoningInclude(reqBody map[string]any) bool {
+	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok && len(reasoning) > 0 {
+		return true
+	}
+	return codexInputContainsReasoningItem(reqBody["input"])
+}
+
+func codexInputContainsReasoningItem(input any) bool {
+	switch v := input.(type) {
+	case []any:
+		for _, raw := range v {
+			if codexInputContainsReasoningItem(raw) {
+				return true
+			}
+		}
+	case map[string]any:
+		if typ, _ := v["type"].(string); strings.TrimSpace(typ) == "reasoning" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyCodexClientMetadata 在请求体补齐 client_metadata["x-codex-installation-id"]，
@@ -1099,11 +1130,10 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		}
 		typ, _ := m["type"].(string)
 
-		// chatgpt.com codex backend (OAuth path) does not persist reasoning
-		// items because applyCodexOAuthTransform forces store=false. Any rs_*
-		// reference replayed in input is guaranteed to 404 upstream
-		// ("Item with id 'rs_...' not found"). Drop reasoning items entirely.
 		if typ == "reasoning" {
+			if sanitized, keep := sanitizeCodexReasoningInputItem(m); keep {
+				filtered = append(filtered, sanitized)
+			}
 			continue
 		}
 
@@ -1123,6 +1153,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		}
 
 		if typ == "item_reference" {
+			if id, ok := m["id"].(string); ok && strings.HasPrefix(strings.TrimSpace(id), "rs_") {
+				continue
+			}
 			if !opts.PreserveReferences {
 				continue
 			}
@@ -1199,6 +1232,63 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		filtered = append(filtered, newItem)
 	}
 	return filtered
+}
+
+func sanitizeCodexReasoningInputItem(item map[string]any) (map[string]any, bool) {
+	next := make(map[string]any, len(item))
+	for key, value := range item {
+		switch key {
+		case "id", "status":
+			// rs_* ids are server-side item anchors. The OAuth transform forces
+			// store=false, so replaying those anchors can trigger item-not-found.
+			continue
+		default:
+			next[key] = value
+		}
+	}
+
+	if raw, ok := next["encrypted_content"].(string); ok {
+		if signature, compatible := apicompat.CompatibleGPTReasoningEncryptedContent(raw); compatible {
+			next["encrypted_content"] = signature
+		} else {
+			delete(next, "encrypted_content")
+		}
+	} else {
+		delete(next, "encrypted_content")
+	}
+
+	if !hasCodexReasoningReplayPayload(next) {
+		return nil, false
+	}
+	return next, true
+}
+
+func hasCodexReasoningReplayPayload(item map[string]any) bool {
+	if encrypted, ok := item["encrypted_content"].(string); ok && strings.TrimSpace(encrypted) != "" {
+		return true
+	}
+	if hasNonEmptyJSONishValue(item["summary"]) {
+		return true
+	}
+	if hasNonEmptyJSONishValue(item["content"]) {
+		return true
+	}
+	return false
+}
+
+func hasNonEmptyJSONishValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	default:
+		return true
+	}
 }
 
 func isCodexToolCallItemType(typ string) bool {

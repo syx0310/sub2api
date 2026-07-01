@@ -29,6 +29,16 @@ func TestEnsureCodexReasoningInclude(t *testing.T) {
 	}
 	require.True(t, ensureCodexReasoningInclude(body3))
 	require.Equal(t, []any{"foo", "reasoning.encrypted_content"}, body3["include"])
+
+	// input 内已有 reasoning item → 也要补齐 include，用于自包含 reasoning 回放。
+	body4 := map[string]any{
+		"input": []any{
+			map[string]any{"type": "reasoning", "encrypted_content": testGPTReasoningEncryptedContent()},
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+		},
+	}
+	require.True(t, ensureCodexReasoningInclude(body4))
+	require.Equal(t, []any{"reasoning.encrypted_content"}, body4["include"])
 }
 
 // applyCodexClientMetadata：用账号真实 device_id 注入 installation 标识，幂等、不覆盖既有项、不伪造。

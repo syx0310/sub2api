@@ -33,10 +33,14 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string) *AnthropicRespo
 				}
 			}
 			if summaryText != "" {
-				blocks = append(blocks, AnthropicContentBlock{
+				block := AnthropicContentBlock{
 					Type:     "thinking",
 					Thinking: summaryText,
-				})
+				}
+				if signature, ok := compatibleClaudeThinkingSignature(item.EncryptedContent); ok {
+					block.Signature = signature
+				}
+				blocks = append(blocks, block)
 			}
 		case "message":
 			for _, part := range item.Content {

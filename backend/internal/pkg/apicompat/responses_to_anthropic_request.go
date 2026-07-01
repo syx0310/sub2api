@@ -125,6 +125,14 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 				system, _ = json.Marshal(text)
 			}
 
+		case item.Type == "reasoning":
+			if content, ok := convertResponsesReasoningToAnthropicThinkingContent(item); ok {
+				messages = append(messages, AnthropicMessage{
+					Role:    "assistant",
+					Content: content,
+				})
+			}
+
 		case item.Type == "function_call":
 			// function_call → assistant message with tool_use block
 			input := json.RawMessage("{}")
@@ -202,6 +210,33 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 	messages = mergeConsecutiveMessages(messages)
 
 	return system, messages, nil
+}
+
+func convertResponsesReasoningToAnthropicThinkingContent(item ResponsesInputItem) (json.RawMessage, bool) {
+	signature, ok := compatibleClaudeThinkingSignature(item.EncryptedContent)
+	if !ok {
+		return nil, false
+	}
+	block := AnthropicContentBlock{
+		Type:      "thinking",
+		Thinking:  responsesSummaryText(item.Summary),
+		Signature: signature,
+	}
+	content, err := json.Marshal([]AnthropicContentBlock{block})
+	if err != nil {
+		return nil, false
+	}
+	return content, true
+}
+
+func responsesSummaryText(summary []ResponsesSummary) string {
+	var parts []string
+	for _, s := range summary {
+		if (s.Type == "" || s.Type == "summary_text") && s.Text != "" {
+			parts = append(parts, s.Text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // normalizeAnthropicToolPairing rebuilds the message sequence so it satisfies
