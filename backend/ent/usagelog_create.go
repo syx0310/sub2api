@@ -449,6 +449,34 @@ func (_c *UsageLogCreate) SetNillableIPAddress(v *string) *UsageLogCreate {
 	return _c
 }
 
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (_c *UsageLogCreate) SetRequestBodyBytes(v int64) *UsageLogCreate {
+	_c.mutation.SetRequestBodyBytes(v)
+	return _c
+}
+
+// SetNillableRequestBodyBytes sets the "request_body_bytes" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableRequestBodyBytes(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetRequestBodyBytes(*v)
+	}
+	return _c
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (_c *UsageLogCreate) SetResponseBodyBytes(v int64) *UsageLogCreate {
+	_c.mutation.SetResponseBodyBytes(v)
+	return _c
+}
+
+// SetNillableResponseBodyBytes sets the "response_body_bytes" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableResponseBodyBytes(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetResponseBodyBytes(*v)
+	}
+	return _c
+}
+
 // SetImageCount sets the "image_count" field.
 func (_c *UsageLogCreate) SetImageCount(v int) *UsageLogCreate {
 	_c.mutation.SetImageCount(v)
@@ -970,6 +998,14 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.IPAddress(); ok {
 		_spec.SetField(usagelog.FieldIPAddress, field.TypeString, value)
 		_node.IPAddress = &value
+	}
+	if value, ok := _c.mutation.RequestBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldRequestBodyBytes, field.TypeInt64, value)
+		_node.RequestBodyBytes = &value
+	}
+	if value, ok := _c.mutation.ResponseBodyBytes(); ok {
+		_spec.SetField(usagelog.FieldResponseBodyBytes, field.TypeInt64, value)
+		_node.ResponseBodyBytes = &value
 	}
 	if value, ok := _c.mutation.ImageCount(); ok {
 		_spec.SetField(usagelog.FieldImageCount, field.TypeInt, value)
@@ -1719,6 +1755,54 @@ func (u *UsageLogUpsert) UpdateIPAddress() *UsageLogUpsert {
 // ClearIPAddress clears the value of the "ip_address" field.
 func (u *UsageLogUpsert) ClearIPAddress() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldIPAddress)
+	return u
+}
+
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (u *UsageLogUpsert) SetRequestBodyBytes(v int64) *UsageLogUpsert {
+	u.Set(usagelog.FieldRequestBodyBytes, v)
+	return u
+}
+
+// UpdateRequestBodyBytes sets the "request_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateRequestBodyBytes() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldRequestBodyBytes)
+	return u
+}
+
+// AddRequestBodyBytes adds v to the "request_body_bytes" field.
+func (u *UsageLogUpsert) AddRequestBodyBytes(v int64) *UsageLogUpsert {
+	u.Add(usagelog.FieldRequestBodyBytes, v)
+	return u
+}
+
+// ClearRequestBodyBytes clears the value of the "request_body_bytes" field.
+func (u *UsageLogUpsert) ClearRequestBodyBytes() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldRequestBodyBytes)
+	return u
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (u *UsageLogUpsert) SetResponseBodyBytes(v int64) *UsageLogUpsert {
+	u.Set(usagelog.FieldResponseBodyBytes, v)
+	return u
+}
+
+// UpdateResponseBodyBytes sets the "response_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateResponseBodyBytes() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldResponseBodyBytes)
+	return u
+}
+
+// AddResponseBodyBytes adds v to the "response_body_bytes" field.
+func (u *UsageLogUpsert) AddResponseBodyBytes(v int64) *UsageLogUpsert {
+	u.Add(usagelog.FieldResponseBodyBytes, v)
+	return u
+}
+
+// ClearResponseBodyBytes clears the value of the "response_body_bytes" field.
+func (u *UsageLogUpsert) ClearResponseBodyBytes() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldResponseBodyBytes)
 	return u
 }
 
@@ -2563,6 +2647,62 @@ func (u *UsageLogUpsertOne) UpdateIPAddress() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearIPAddress() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearIPAddress()
+	})
+}
+
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (u *UsageLogUpsertOne) SetRequestBodyBytes(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestBodyBytes(v)
+	})
+}
+
+// AddRequestBodyBytes adds v to the "request_body_bytes" field.
+func (u *UsageLogUpsertOne) AddRequestBodyBytes(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddRequestBodyBytes(v)
+	})
+}
+
+// UpdateRequestBodyBytes sets the "request_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateRequestBodyBytes() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestBodyBytes()
+	})
+}
+
+// ClearRequestBodyBytes clears the value of the "request_body_bytes" field.
+func (u *UsageLogUpsertOne) ClearRequestBodyBytes() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearRequestBodyBytes()
+	})
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (u *UsageLogUpsertOne) SetResponseBodyBytes(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetResponseBodyBytes(v)
+	})
+}
+
+// AddResponseBodyBytes adds v to the "response_body_bytes" field.
+func (u *UsageLogUpsertOne) AddResponseBodyBytes(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddResponseBodyBytes(v)
+	})
+}
+
+// UpdateResponseBodyBytes sets the "response_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateResponseBodyBytes() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateResponseBodyBytes()
+	})
+}
+
+// ClearResponseBodyBytes clears the value of the "response_body_bytes" field.
+func (u *UsageLogUpsertOne) ClearResponseBodyBytes() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearResponseBodyBytes()
 	})
 }
 
@@ -3593,6 +3733,62 @@ func (u *UsageLogUpsertBulk) UpdateIPAddress() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearIPAddress() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearIPAddress()
+	})
+}
+
+// SetRequestBodyBytes sets the "request_body_bytes" field.
+func (u *UsageLogUpsertBulk) SetRequestBodyBytes(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestBodyBytes(v)
+	})
+}
+
+// AddRequestBodyBytes adds v to the "request_body_bytes" field.
+func (u *UsageLogUpsertBulk) AddRequestBodyBytes(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddRequestBodyBytes(v)
+	})
+}
+
+// UpdateRequestBodyBytes sets the "request_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateRequestBodyBytes() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestBodyBytes()
+	})
+}
+
+// ClearRequestBodyBytes clears the value of the "request_body_bytes" field.
+func (u *UsageLogUpsertBulk) ClearRequestBodyBytes() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearRequestBodyBytes()
+	})
+}
+
+// SetResponseBodyBytes sets the "response_body_bytes" field.
+func (u *UsageLogUpsertBulk) SetResponseBodyBytes(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetResponseBodyBytes(v)
+	})
+}
+
+// AddResponseBodyBytes adds v to the "response_body_bytes" field.
+func (u *UsageLogUpsertBulk) AddResponseBodyBytes(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddResponseBodyBytes(v)
+	})
+}
+
+// UpdateResponseBodyBytes sets the "response_body_bytes" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateResponseBodyBytes() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateResponseBodyBytes()
+	})
+}
+
+// ClearResponseBodyBytes clears the value of the "response_body_bytes" field.
+func (u *UsageLogUpsertBulk) ClearResponseBodyBytes() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearResponseBodyBytes()
 	})
 }
 

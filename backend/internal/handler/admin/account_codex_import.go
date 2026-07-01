@@ -556,9 +556,6 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 	if item.AccessToken == "" {
 		return nil, errors.New("缺少 accessToken/access_token")
 	}
-	if strings.HasPrefix(strings.TrimSpace(item.AccessToken), "at-") {
-		return nil, errors.New("Codex Personal Access Token(at-) 请使用独立的 Codex PAT 添加方式")
-	}
 	item.Credentials["access_token"] = item.AccessToken
 	if item.RefreshToken != "" {
 		item.Credentials["refresh_token"] = item.RefreshToken

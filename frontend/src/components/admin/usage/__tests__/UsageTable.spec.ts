@@ -43,6 +43,8 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
+  'admin.usage.requestBodySize': 'Req',
+  'admin.usage.responseBodySize': 'Resp',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -64,6 +66,7 @@ const DataTableStub = {
         <slot name="cell-billing_mode" :row="row" />
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
+        <slot name="cell-body_size" :row="row" />
       </div>
     </div>
   `,
@@ -320,6 +323,50 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('Per-image price')
     expect(text).toContain('not recorded')
     expect(text).not.toContain('(2K)')
+  })
+})
+
+describe('admin UsageTable body size column', () => {
+  it('renders request and response body sizes', () => {
+    const row = {
+      request_id: 'req-body-size-1',
+      model: 'claude-3',
+      actual_cost: 0,
+      total_cost: 0,
+      input_cost: 0,
+      output_cost: 0,
+      rate_multiplier: 1,
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
+      cache_ttl_overridden: false,
+      request_body_bytes: 1536,
+      response_body_bytes: 2048,
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [{ key: 'body_size', label: 'Body Size' }],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('Req:')
+    expect(wrapper.text()).toContain('1.50 KB')
+    expect(wrapper.text()).toContain('Resp:')
+    expect(wrapper.text()).toContain('2.00 KB')
   })
 })
 

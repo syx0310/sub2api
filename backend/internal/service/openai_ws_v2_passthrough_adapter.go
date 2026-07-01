@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -274,6 +275,27 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
 	}
+	initialRequestBodyBytes := int64(len(firstClientMessage))
+	if hooks != nil && hooks.InitialRequestBodyBytes != nil && *hooks.InitialRequestBodyBytes >= 0 {
+		initialRequestBodyBytes = *hooks.InitialRequestBodyBytes
+	}
+	requestBodyBytesQueue := []int64{initialRequestBodyBytes}
+	var requestBodyBytesMu sync.Mutex
+	pushRequestBodyBytes := func(payload []byte) {
+		requestBodyBytesMu.Lock()
+		defer requestBodyBytesMu.Unlock()
+		requestBodyBytesQueue = append(requestBodyBytesQueue, int64(len(payload)))
+	}
+	popRequestBodyBytes := func() int64 {
+		requestBodyBytesMu.Lock()
+		defer requestBodyBytesMu.Unlock()
+		if len(requestBodyBytesQueue) == 0 {
+			return 0
+		}
+		value := requestBodyBytesQueue[0]
+		requestBodyBytesQueue = requestBodyBytesQueue[1:]
+		return value
+	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
@@ -391,8 +413,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	clientFrameConn := &openAIWSClientFrameConn{conn: clientConn}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
-		inner: &openAIWSClientFrameConn{conn: clientConn},
+		inner: clientFrameConn,
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
 		// goroutine 中被调用（passthrough_relay.go: ReadFrame loop），
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
@@ -452,6 +475,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			//     service_tier 时按 default 处理，billing 应如实反映。
 			if policyErr == nil && blocked == nil &&
 				strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+				pushRequestBodyBytes(payload)
 				usageMeta.updateFromResponseCreate(out, requestModelForThisFrame)
 			}
 			return out, blocked, policyErr
@@ -528,14 +552,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
-					Model:           turn.RequestModel,
-					ServiceTier:     usageMeta.serviceTier.Load(),
-					ReasoningEffort: usageMeta.reasoningEffort.Load(),
-					Stream:          true,
-					OpenAIWSMode:    true,
-					ResponseHeaders: cloneHeader(handshakeHeaders),
-					Duration:        turn.Duration,
-					FirstTokenMs:    turn.FirstTokenMs,
+					Model:             turn.RequestModel,
+					ServiceTier:       usageMeta.serviceTier.Load(),
+					ReasoningEffort:   usageMeta.reasoningEffort.Load(),
+					Stream:            true,
+					OpenAIWSMode:      true,
+					ResponseHeaders:   cloneHeader(handshakeHeaders),
+					Duration:          turn.Duration,
+					FirstTokenMs:      turn.FirstTokenMs,
+					RequestBodyBytes:  bodyBytesPtr(popRequestBodyBytes()),
+					ResponseBodyBytes: bodyBytesPtr(turn.ResponseBodyBytes),
 				}
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
@@ -554,7 +580,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {
-				if msgType != coderws.MessageText || wroteDownstream {
+				if msgType != coderws.MessageText {
+					return nil
+				}
+				if wroteDownstream {
 					return nil
 				}
 				if eventType, _, _ := parseOpenAIWSEventEnvelope(payload); eventType != "error" {
@@ -603,14 +632,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
 			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
 		},
-		Model:           relayResult.RequestModel,
-		ServiceTier:     usageMeta.serviceTier.Load(),
-		ReasoningEffort: usageMeta.reasoningEffort.Load(),
-		Stream:          true,
-		OpenAIWSMode:    true,
-		ResponseHeaders: cloneHeader(handshakeHeaders),
-		Duration:        relayResult.Duration,
-		FirstTokenMs:    relayResult.FirstTokenMs,
+		Model:             relayResult.RequestModel,
+		ServiceTier:       usageMeta.serviceTier.Load(),
+		ReasoningEffort:   usageMeta.reasoningEffort.Load(),
+		Stream:            true,
+		OpenAIWSMode:      true,
+		ResponseHeaders:   cloneHeader(handshakeHeaders),
+		Duration:          relayResult.Duration,
+		FirstTokenMs:      relayResult.FirstTokenMs,
+		RequestBodyBytes:  bodyBytesPtr(initialRequestBodyBytes),
+		ResponseBodyBytes: bodyBytesPtr(relayResult.ResponseBodyBytes),
 	}
 
 	turnCount := int(completedTurns.Load())

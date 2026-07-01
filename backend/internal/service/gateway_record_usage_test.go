@@ -116,6 +116,37 @@ func TestGatewayServiceRecordUsage_BillingUsesDetachedContext(t *testing.T) {
 	require.NoError(t, quotaSvc.lastQuotaCtxErr)
 }
 
+func TestGatewayServiceRecordUsage_PersistsBodyByteMetrics(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newGatewayRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+
+	requestBodyBytes := int64(1536)
+	responseBodyBytes := int64(4096)
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_body_bytes",
+			Usage: ClaudeUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+			},
+			Model:    "claude-sonnet-4",
+			Duration: time.Second,
+		},
+		APIKey:            &APIKey{ID: 502, Group: &Group{RateMultiplier: 1}},
+		User:              &User{ID: 602},
+		Account:           &Account{ID: 702},
+		RequestBodyBytes:  &requestBodyBytes,
+		ResponseBodyBytes: &responseBodyBytes,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, &requestBodyBytes, usageRepo.lastLog.RequestBodyBytes)
+	require.Equal(t, &responseBodyBytes, usageRepo.lastLog.ResponseBodyBytes)
+}
+
 func TestGatewayServiceRecordUsage_BillingFingerprintIncludesRequestPayloadHash(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}

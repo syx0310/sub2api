@@ -147,6 +147,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	account *Account,
 	token string,
 	payload []byte,
+	requestBodyBytes int64,
 	payloadBytes int,
 	originalModel string,
 	imageBillingModel string,
@@ -221,6 +222,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	lastEventType := ""
 	sawDone := false
 	wroteDownstream := false
+	var downstreamBytes int64
 	clientDisconnected := false
 	mappedModel := ""
 	needModelReplace := false
@@ -236,17 +238,19 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
 		result := &OpenAIForwardResult{
-			RequestID:       responseID,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ServiceTier:     extractOpenAIServiceTierFromBody(body),
-			ReasoningEffort: ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(body, originalModel), body, mappedModel),
-			Stream:          reqStream,
-			OpenAIWSMode:    true,
-			ResponseHeaders: cloneHeader(resp.Header),
-			Duration:        time.Since(turnStart),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:         responseID,
+			Usage:             usage,
+			Model:             originalModel,
+			UpstreamModel:     mappedModel,
+			ServiceTier:       extractOpenAIServiceTierFromBody(body),
+			ReasoningEffort:   ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(body, originalModel), body, mappedModel),
+			Stream:            reqStream,
+			OpenAIWSMode:      true,
+			ResponseHeaders:   cloneHeader(resp.Header),
+			Duration:          time.Since(turnStart),
+			FirstTokenMs:      firstTokenMs,
+			RequestBodyBytes:  bodyBytesPtr(requestBodyBytes),
+			ResponseBodyBytes: bodyBytesPtr(downstreamBytes),
 		}
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 			result.wsReplayInput = replayInput
@@ -341,6 +345,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 			} else {
 				wroteDownstream = true
+				downstreamBytes += int64(len(upstreamMessage))
 			}
 		}
 

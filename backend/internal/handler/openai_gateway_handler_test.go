@@ -917,8 +917,9 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 }
 
 func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoningEffort(t *testing.T) {
+	firstPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`,
+		firstPayload: firstPayload,
 		userAgent:    testStringPtr("codex_cli_rs/0.125.0 test"),
 	})
 
@@ -927,6 +928,10 @@ func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoni
 	require.NotNil(t, got.log.ReasoningEffort)
 	require.Equal(t, "high", *got.log.ReasoningEffort)
 	require.True(t, got.log.OpenAIWSMode)
+	require.NotNil(t, got.log.RequestBodyBytes)
+	require.Equal(t, int64(len(firstPayload)), *got.log.RequestBodyBytes)
+	require.NotNil(t, got.log.ResponseBodyBytes)
+	require.Greater(t, *got.log.ResponseBodyBytes, int64(0))
 }
 
 func TestOpenAIResponsesWebSocket_PassthroughUsageLogInfersReasoningFromInitialRequestModel(t *testing.T) {
@@ -1335,12 +1340,13 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		nil, // openAITokenProvider
+		nil, // grokTokenProvider
+		nil, // resolver
+		nil, // channelService
+		nil, // balanceNotifyService
+		nil, // settingService
+		nil, // userPlatformQuotaRepo
 	)
 
 	cache := &concurrencyCacheMock{
@@ -1530,12 +1536,13 @@ func TestOpenAIResponsesWebSocket_FailoverDropsPreviousResponseIDWhenStickyMisse
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		nil, // openAITokenProvider
+		nil, // grokTokenProvider
+		nil, // resolver
+		nil, // channelService
+		nil, // balanceNotifyService
+		nil, // settingService
+		nil, // userPlatformQuotaRepo
 	)
 
 	cache := &concurrencyCacheMock{
@@ -1723,6 +1730,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
+		nil,
 		nil,
 		nil,
 		channelSvc,

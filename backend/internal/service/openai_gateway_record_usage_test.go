@@ -64,17 +64,21 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	subRepo := &openAIRecordUsageSubRepoStub{}
 	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
 	usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300}
+	requestBodyBytes := int64(111)
+	responseBodyBytes := int64(222)
 
 	// 流式 cyber：上游 response.failed 报告了真实 token，须按真实 token 计费并扣费，
 	// 与 WS cyber / 正常请求口径一致（不再是 tokens=0 免费行）。
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
-		APIKey:       &APIKey{ID: 2, User: &User{ID: 1}},
-		Account:      &Account{ID: 3},
-		RequestID:    "rid-cyber-stream",
-		Model:        "gpt-5.1",
-		Stream:       true,
-		InputTokens:  1200,
-		OutputTokens: 300,
+		APIKey:            &APIKey{ID: 2, User: &User{ID: 1}},
+		Account:           &Account{ID: 3},
+		RequestID:         "rid-cyber-stream",
+		Model:             "gpt-5.1",
+		Stream:            true,
+		InputTokens:       1200,
+		OutputTokens:      300,
+		RequestBodyBytes:  &requestBodyBytes,
+		ResponseBodyBytes: &responseBodyBytes,
 	})
 
 	require.Equal(t, 1, usageRepo.calls)
@@ -84,6 +88,8 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	require.Equal(t, 300, usageRepo.lastLog.OutputTokens)
 	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType, "cyber 行须标 request_type=cyber")
 	require.True(t, usageRepo.lastLog.Stream, "cyber 不覆盖真实 stream 字段")
+	require.Equal(t, &requestBodyBytes, usageRepo.lastLog.RequestBodyBytes)
+	require.Equal(t, &responseBodyBytes, usageRepo.lastLog.ResponseBodyBytes)
 
 	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1)
 	require.Greater(t, usageRepo.lastLog.ActualCost, 0.0, "流式 cyber 有真实 token，须计费")
@@ -224,6 +230,7 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		nil,
 		nil,
 		nil,
+		nil,
 		nil, // userPlatformQuotaRepo
 	)
 	svc.userGroupRateResolver = newUserGroupRateResolver(
@@ -310,6 +317,38 @@ func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing
 	require.Zero(t, billingRepo.lastCmd.APIKeyQuotaCost)
 	require.Zero(t, billingRepo.lastCmd.APIKeyRateLimitCost)
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_PersistsBodyByteMetrics(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	requestBodyBytes := int64(2048)
+	responseBodyBytes := int64(8192)
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_body_bytes",
+			Usage: OpenAIUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey:            &APIKey{ID: 1001, Group: &Group{RateMultiplier: 1}},
+		User:              &User{ID: 2001},
+		Account:           &Account{ID: 3001, Type: AccountTypeAPIKey},
+		RequestBodyBytes:  &requestBodyBytes,
+		ResponseBodyBytes: &responseBodyBytes,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, &requestBodyBytes, usageRepo.lastLog.RequestBodyBytes)
+	require.Equal(t, &responseBodyBytes, usageRepo.lastLog.ResponseBodyBytes)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_MissingPricingRecordsZeroCostUsageLog(t *testing.T) {

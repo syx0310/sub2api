@@ -162,6 +162,9 @@ type UsageLog struct {
 	FirstTokenMs *int
 	UserAgent    *string
 	IPAddress    *string
+	// RequestBodyBytes/ResponseBodyBytes store logical payload bytes, not compressed wire bytes.
+	RequestBodyBytes  *int64
+	ResponseBodyBytes *int64
 
 	// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 	CacheTTLOverridden bool

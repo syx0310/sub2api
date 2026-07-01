@@ -83,13 +83,23 @@ func TestParseCodexSessionImportEntriesFallsBackToLineModeForMixedJSONAndToken(t
 	}
 }
 
-func TestNormalizeCodexSessionRejectsPersonalAccessToken(t *testing.T) {
-	_, err := normalizeCodexImportEntry(codexImportEntry{Index: 1, Value: "at-test-token"})
-	if err == nil {
-		t.Fatal("normalizeCodexImportEntry error = nil, want PAT rejection")
+func TestNormalizeCodexSessionAcceptsPersonalAccessTokenAsAccessToken(t *testing.T) {
+	item, err := normalizeCodexImportEntry(codexImportEntry{Index: 1, Value: "at-test-token"})
+	if err != nil {
+		t.Fatalf("normalizeCodexImportEntry error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "Codex PAT") {
-		t.Fatalf("error = %v, want Codex PAT hint", err)
+	if item.Credentials["access_token"] != "at-test-token" {
+		t.Fatalf("access_token = %v, want at-test-token", item.Credentials["access_token"])
+	}
+	if item.Credentials["refresh_token"] != nil {
+		t.Fatalf("refresh_token = %v, want nil", item.Credentials["refresh_token"])
+	}
+	warnings := strings.Join(item.WarningTexts, "\n")
+	if !strings.Contains(warnings, "accessToken 不是可解析 JWT") {
+		t.Fatalf("warnings = %v, want unparsable JWT warning", item.WarningTexts)
+	}
+	if !strings.Contains(warnings, "未包含 refresh_token") {
+		t.Fatalf("warnings = %v, want missing refresh_token warning", item.WarningTexts)
 	}
 }
 

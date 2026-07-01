@@ -21,12 +21,29 @@ const (
 	maxDecompressedBodySize = 64 << 20
 )
 
+// RequestBodyStats describes the bytes consumed from a request body. RawBytes
+// is the compressed wire payload length; DecodedBytes is the logical payload
+// length returned to callers.
+type RequestBodyStats struct {
+	RawBytes        int64
+	DecodedBytes    int64
+	ContentEncoding string
+	Decoded         bool
+}
+
 // ReadRequestBodyWithPrealloc reads request body with preallocated buffer based
 // on content length, transparently decoding any Content-Encoding the upstream
 // client used to compress the body (zstd, gzip, deflate).
 func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
+	body, _, err := ReadRequestBodyWithStats(req)
+	return body, err
+}
+
+// ReadRequestBodyWithStats is ReadRequestBodyWithPrealloc plus byte counters.
+func ReadRequestBodyWithStats(req *http.Request) ([]byte, RequestBodyStats, error) {
+	var stats RequestBodyStats
 	if req == nil || req.Body == nil {
-		return nil, nil
+		return nil, stats, nil
 	}
 
 	capHint := requestBodyReadInitCap
@@ -43,25 +60,30 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 
 	buf := bytes.NewBuffer(make([]byte, 0, capHint))
 	if _, err := io.Copy(buf, req.Body); err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	raw := buf.Bytes()
+	stats.RawBytes = int64(len(raw))
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
+	stats.ContentEncoding = enc
 	if enc == "" || enc == "identity" {
-		return raw, nil
+		stats.DecodedBytes = int64(len(raw))
+		return raw, stats, nil
 	}
 
 	decoded, err := decompressRequestBody(enc, raw)
 	if err != nil {
-		return nil, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
+		return nil, stats, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
 	}
+	stats.Decoded = true
+	stats.DecodedBytes = int64(len(decoded))
 
 	req.Header.Del("Content-Encoding")
 	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(decoded))
 
-	return decoded, nil
+	return decoded, stats, nil
 }
 
 func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
