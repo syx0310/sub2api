@@ -114,4 +114,22 @@ describe('GroupDistributionChart', () => {
     })
     expect(label).toBe('group-b: $0.900 (90.0%)')
   })
+
+  it('can hide account cost for user usage stats without account_cost', () => {
+    const wrapper = mount(GroupDistributionChart, {
+      props: {
+        groupStats,
+        showAccountCost: false,
+      },
+      global: {
+        stubs: {
+          LoadingSpinner: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).not.toContain('Account Cost')
+    expect(wrapper.findAll('thead th')).toHaveLength(5)
+    expect(wrapper.findAll('tbody tr')[0].findAll('td')).toHaveLength(5)
+  })
 })

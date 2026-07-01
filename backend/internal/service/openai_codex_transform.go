@@ -11,6 +11,7 @@ import (
 
 var codexModelMap = map[string]string{
 	"gpt-5.5":                    "gpt-5.5",
+	"gpt-5.5-pro":                "gpt-5.5-pro",
 	"codex-auto-review":          "codex-auto-review",
 	"gpt-5.4":                    "gpt-5.4",
 	"gpt-5.4-mini":               "gpt-5.4-mini",
@@ -62,6 +63,7 @@ var codexVersionModelPrefixes = []struct {
 	{prefix: "gpt-5.3-codex", target: "gpt-5.3-codex"},
 	{prefix: "gpt-5.4-mini", target: "gpt-5.4-mini"},
 	{prefix: "gpt-5.4-nano", target: "gpt-5.4-nano"},
+	{prefix: "gpt-5.5-pro", target: "gpt-5.5-pro"},
 	{prefix: "gpt-5.5", target: "gpt-5.5"},
 	{prefix: "gpt-5.4", target: "gpt-5.4"},
 	{prefix: "gpt-5.2", target: "gpt-5.2"},
@@ -215,7 +217,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 	}
 
-	// 提取 input 中 role:"system" 消息至 instructions（OAuth 上游不支持 system role）。
+	// ChatGPT internal Codex endpoint does not accept role:"system".
+	// Keep the guidance in input as developer for Responses JSON mode, and
+	// also mirror it into instructions because Codex OAuth requires it.
 	if extractSystemMessagesFromInput(reqBody) {
 		result.Modified = true
 	}
@@ -708,6 +712,20 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 	return true
 }
 
+func ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody map[string]any) bool {
+	if len(reqBody) == 0 || !hasOpenAIImageGenerationTool(reqBody) {
+		return false
+	}
+	if isCodexSparkModel(firstNonEmptyString(reqBody["model"])) {
+		return false
+	}
+	if _, ok := reqBody["tool_choice"]; ok {
+		return false
+	}
+	reqBody["tool_choice"] = "auto"
+	return true
+}
+
 func applyCodexImageGenerationBridgeInstructions(reqBody map[string]any) bool {
 	if len(reqBody) == 0 || !hasOpenAIImageGenerationTool(reqBody) {
 		return false
@@ -902,10 +920,10 @@ func extractTextFromContent(content any) string {
 	}
 }
 
-// extractSystemMessagesFromInput scans the input array for items with role=="system",
-// removes them, and merges their content into reqBody["instructions"].
-// If instructions is already non-empty, extracted content is prepended with "\n\n".
-// Returns true if any system messages were extracted.
+// extractSystemMessagesFromInput scans input for role=="system", maps those
+// items to developer, and mirrors their text into reqBody["instructions"].
+// It preserves the input items so Responses JSON mode can still see JSON
+// instructions in input messages.
 func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 	input, ok := reqBody["input"].([]any)
 	if !ok || len(input) == 0 {
@@ -913,25 +931,24 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 	}
 
 	var systemTexts []string
-	remaining := make([]any, 0, len(input))
-
+	modified := false
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
-			remaining = append(remaining, item)
 			continue
 		}
 		if role, _ := m["role"].(string); role != "system" {
-			remaining = append(remaining, item)
 			continue
 		}
+		m["role"] = "developer"
+		modified = true
 		if text := extractTextFromContent(m["content"]); text != "" {
 			systemTexts = append(systemTexts, text)
 		}
 	}
 
 	if len(systemTexts) == 0 {
-		return false
+		return modified
 	}
 
 	extracted := strings.Join(systemTexts, "\n\n")
@@ -940,7 +957,6 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 	} else {
 		reqBody["instructions"] = extracted
 	}
-	reqBody["input"] = remaining
 	return true
 }
 
@@ -1247,6 +1263,11 @@ func sanitizeCodexReasoningInputItem(item map[string]any) (map[string]any, bool)
 		}
 	}
 
+	if summary, ok := next["summary"]; !ok || summary == nil {
+		// ChatGPT Codex requires summary on replayed reasoning items.
+		next["summary"] = []any{}
+	}
+
 	if raw, ok := next["encrypted_content"].(string); ok {
 		if signature, compatible := apicompat.CompatibleGPTReasoningEncryptedContent(raw); compatible {
 			next["encrypted_content"] = signature
@@ -1257,9 +1278,6 @@ func sanitizeCodexReasoningInputItem(item map[string]any) (map[string]any, bool)
 		delete(next, "encrypted_content")
 	}
 
-	if !hasCodexReasoningReplayPayload(next) {
-		return nil, false
-	}
 	return next, true
 }
 

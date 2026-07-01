@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -902,6 +903,10 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 		"gpt-5.4":                   "gpt-5.4",
 		"gpt5.5":                    "gpt-5.5",
 		"openai/gpt5.5":             "gpt-5.5",
+		"gpt-5.5-pro":               "gpt-5.5-pro",
+		"gpt5.5-pro":                "gpt-5.5-pro",
+		"openai/gpt5.5-pro":         "gpt-5.5-pro",
+		"gpt-5.5-pro-high":          "gpt-5.5-pro",
 		"codex-auto-review":         "codex-auto-review",
 		"gpt5.4":                    "gpt-5.4",
 		"gpt-5.4-high":              "gpt-5.4",
@@ -1012,6 +1017,21 @@ func TestApplyCodexOAuthTransform_CodexCLI_SuppliesEmptyWhenMissing(t *testing.T
 	require.True(t, result.Modified)
 }
 
+func TestApplyCodexOAuthTransform_GPT55KeepsBlankInstructionsPlaceholder(t *testing.T) {
+	reqBody := map[string]any{
+		"model":        "gpt-5.5",
+		"instructions": "   ",
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+
+	instructions, ok := reqBody["instructions"].(string)
+	require.True(t, ok)
+	require.Equal(t, "   ", instructions)
+	require.NotContains(t, instructions, "You are GPT-5.1 running in the Codex CLI")
+	require.True(t, result.Modified)
+}
+
 func TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions(t *testing.T) {
 	// 非 Codex CLI 场景：已有 instructions 时保留客户端的值，不再覆盖
 
@@ -1098,10 +1118,14 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		require.True(t, result)
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
-		require.Len(t, input, 1)
+		require.Len(t, input, 2)
 		msg, ok := input[0].(map[string]any)
 		require.True(t, ok)
-		require.Equal(t, "user", msg["role"])
+		require.Equal(t, "developer", msg["role"])
+		require.Equal(t, "You are an assistant.", msg["content"])
+		user, ok := input[1].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "user", user["role"])
 		require.Equal(t, "You are an assistant.", reqBody["instructions"])
 	})
 
@@ -1121,7 +1145,14 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		require.Equal(t, "Be helpful.", reqBody["instructions"])
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
-		require.Len(t, input, 0)
+		require.Len(t, input, 1)
+		msg, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", msg["role"])
+		require.Equal(t, []any{
+			map[string]any{"type": "text", "text": "Be helpful."},
+		}, msg["content"])
+		require.Equal(t, "Be helpful.", reqBody["instructions"])
 	})
 
 	t.Run("multiple system messages concatenated", func(t *testing.T) {
@@ -1137,7 +1168,17 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		require.Equal(t, "First.\n\nSecond.", reqBody["instructions"])
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
-		require.Len(t, input, 1)
+		require.Len(t, input, 3)
+		first, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", first["role"])
+		second, ok := input[1].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", second["role"])
+		user, ok := input[2].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "user", user["role"])
+		require.Equal(t, "First.\n\nSecond.", reqBody["instructions"])
 	})
 
 	t.Run("mixed system and non-system preserves non-system", func(t *testing.T) {
@@ -1152,13 +1193,17 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		require.True(t, result)
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
-		require.Len(t, input, 2)
+		require.Len(t, input, 3)
 		first, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "user", first["role"])
 		second, ok := input[1].(map[string]any)
 		require.True(t, ok)
-		require.Equal(t, "assistant", second["role"])
+		require.Equal(t, "developer", second["role"])
+		third, ok := input[2].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "assistant", third["role"])
+		require.Equal(t, "Sys prompt.", reqBody["instructions"])
 	})
 
 	t.Run("existing instructions prepended", func(t *testing.T) {
@@ -1172,6 +1217,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		result := extractSystemMessagesFromInput(reqBody)
 		require.True(t, result)
 		require.Equal(t, "Extracted.\n\nExisting instructions.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		msg, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", msg["role"])
 	})
 }
 
@@ -1231,14 +1281,53 @@ func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 1)
-	msg, ok := input[0].(map[string]any)
+	require.Len(t, input, 2)
+	system, ok := input[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "user", msg["role"])
+	require.Equal(t, "developer", system["role"])
+	require.Equal(t, "You are a coding assistant.", system["content"])
+	user, ok := input[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user", user["role"])
+	require.Equal(t, "You are a coding assistant.", reqBody["instructions"])
+}
 
+func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"role":    "system",
+				"content": "You are an assistant. Output JSON only.",
+			},
+			map[string]any{
+				"role":    "user",
+				"content": "symbol data without the keyword",
+			},
+		},
+		"text": map[string]any{
+			"format": map[string]any{
+				"type": "json_object",
+			},
+		},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, false, false)
+
+	require.True(t, result.Modified)
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Equal(t, "You are a coding assistant.", instructions)
+	require.Contains(t, instructions, "JSON")
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+	developer, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "developer", developer["role"])
+	require.Contains(t, developer["content"], "JSON")
+	user, ok := input[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user", user["role"])
 }
 
 func TestIsInstructionsEmpty(t *testing.T) {
@@ -1263,12 +1352,10 @@ func TestIsInstructionsEmpty(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_PreservesSelfContainedReasoningItems(t *testing.T) {
+func TestFilterCodexInput_PreservesReasoningStripsIDAndStatus(t *testing.T) {
 	encrypted := testGPTReasoningEncryptedContent()
-
 	build := func() []any {
 		return []any{
-			map[string]any{"type": "message", "id": "msg_0", "role": "user", "content": "hi"},
 			map[string]any{
 				"type":              "reasoning",
 				"id":                "rs_0672f12450da0b9c0169f07220a6c08198b68c2455ced99344",
@@ -1278,8 +1365,6 @@ func TestFilterCodexInput_PreservesSelfContainedReasoningItems(t *testing.T) {
 					map[string]any{"type": "summary_text", "text": "keep planning anchor"},
 				},
 			},
-			map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "tool"},
-			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "{}"},
 		}
 	}
 
@@ -1287,32 +1372,155 @@ func TestFilterCodexInput_PreservesSelfContainedReasoningItems(t *testing.T) {
 		preserve := preserve
 		t.Run(fmt.Sprintf("preserveReferences=%v", preserve), func(t *testing.T) {
 			filtered := filterCodexInput(build(), preserve)
+			require.Len(t, filtered, 1)
 
-			gotTypes := make(map[string]int)
-			var reasoning map[string]any
-			for _, raw := range filtered {
-				item, ok := raw.(map[string]any)
-				require.True(t, ok)
-				typ, ok := item["type"].(string)
-				require.True(t, ok)
-				gotTypes[typ]++
-				if typ == "reasoning" {
-					reasoning = item
-				}
-			}
-			require.Equal(t, 1, gotTypes["message"])
-			require.Equal(t, 1, gotTypes["function_call"])
-			require.Equal(t, 1, gotTypes["function_call_output"])
-			require.Equal(t, 1, gotTypes["reasoning"])
-			require.NotNil(t, reasoning)
-			require.Equal(t, encrypted, reasoning["encrypted_content"])
-			require.NotContains(t, reasoning, "id")
-			require.NotContains(t, reasoning, "status")
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "reasoning", item["type"])
+			require.Equal(t, encrypted, item["encrypted_content"])
+			_, hasID := item["id"]
+			require.False(t, hasID)
+			_, hasStatus := item["status"]
+			require.False(t, hasStatus)
+			summary, ok := item["summary"].([]any)
+			require.True(t, ok)
+			require.Len(t, summary, 1)
 		})
 	}
 }
 
-func TestFilterCodexInput_DropsEmptyReasoningItemsAndKeepsSummaryFallback(t *testing.T) {
+func TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"type": "reasoning",
+			"id":   "rs_0672f12450da0b9c0169f07220a6c08198b68c2455ced99344",
+		},
+	}
+
+	filtered := filterCodexInput(input, false)
+	require.Len(t, filtered, 1)
+
+	item, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "reasoning", item["type"])
+	_, hasID := item["id"]
+	require.False(t, hasID)
+	summary, ok := item["summary"].([]any)
+	require.True(t, ok)
+	require.Len(t, summary, 0)
+}
+
+func TestFilterCodexInput_ReasoningBackfillsMissingSummary(t *testing.T) {
+	encrypted := testGPTReasoningEncryptedContent()
+	input := []any{
+		map[string]any{
+			"type":              "reasoning",
+			"id":                "rs_abc",
+			"encrypted_content": encrypted,
+		},
+	}
+
+	filtered := filterCodexInput(input, false)
+	require.Len(t, filtered, 1)
+
+	item, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	summary, ok := item["summary"].([]any)
+	require.True(t, ok)
+	require.Len(t, summary, 0)
+	require.Equal(t, encrypted, item["encrypted_content"])
+}
+
+func TestFilterCodexInput_PreservesReasoningSummaryAndContent(t *testing.T) {
+	encrypted := testGPTReasoningEncryptedContent()
+	summary := []any{
+		map[string]any{"type": "summary_text", "text": "Considered the options."},
+	}
+	content := []any{
+		map[string]any{"type": "reasoning_text", "text": "internal chain"},
+	}
+	input := []any{
+		map[string]any{
+			"type":              "reasoning",
+			"id":                "rs_abc",
+			"summary":           summary,
+			"content":           content,
+			"encrypted_content": encrypted,
+		},
+	}
+
+	filtered := filterCodexInput(input, false)
+	require.Len(t, filtered, 1)
+
+	item, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, summary, item["summary"])
+	require.Equal(t, content, item["content"])
+	require.Equal(t, encrypted, item["encrypted_content"])
+	_, hasID := item["id"]
+	require.False(t, hasID)
+}
+
+func TestFilterCodexInput_PreservesReasoningInMixedInput(t *testing.T) {
+	encrypted := testGPTReasoningEncryptedContent()
+	build := func() []any {
+		return []any{
+			map[string]any{"type": "message", "id": "msg_0", "role": "user", "content": "hi"},
+			map[string]any{
+				"type":              "reasoning",
+				"id":                "rs_1",
+				"encrypted_content": encrypted,
+				"summary":           []any{},
+			},
+			map[string]any{
+				"type":    "reasoning",
+				"id":      "rs_2",
+				"summary": []any{},
+			},
+			// call_id already in fc_ form so the unrelated call_->fc_
+			// normalization does not obscure the pairing assertion.
+			map[string]any{"type": "function_call", "id": "fc_1", "call_id": "fc_1", "name": "tool", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "fc_1", "output": "{}"},
+		}
+	}
+
+	for _, preserve := range []bool{true, false} {
+		preserve := preserve
+		t.Run(fmt.Sprintf("preserveReferences=%v", preserve), func(t *testing.T) {
+			filtered := filterCodexInput(build(), preserve)
+			require.Len(t, filtered, 5)
+
+			byType := make(map[string][]map[string]any)
+			for _, raw := range filtered {
+				item, ok := raw.(map[string]any)
+				require.True(t, ok)
+				typ, _ := item["type"].(string)
+				byType[typ] = append(byType[typ], item)
+				if id, ok := item["id"].(string); ok {
+					require.False(t, strings.HasPrefix(id, "rs_"),
+						"no item carrying an rs_* id should survive the filter")
+				}
+			}
+
+			require.Len(t, byType["reasoning"], 2)
+			for _, r := range byType["reasoning"] {
+				_, hasID := r["id"]
+				require.False(t, hasID)
+				_, hasSummary := r["summary"]
+				require.True(t, hasSummary)
+			}
+			require.Equal(t, encrypted, byType["reasoning"][0]["encrypted_content"])
+
+			require.Len(t, byType["message"], 1)
+			require.Len(t, byType["function_call"], 1)
+			require.Equal(t, "fc_1", byType["function_call"][0]["call_id"])
+			require.Len(t, byType["function_call_output"], 1)
+			require.Equal(t, "fc_1", byType["function_call_output"][0]["call_id"])
+		})
+	}
+}
+
+func TestFilterCodexInput_DropsIncompatibleEncryptedContentAndKeepsReasoningItems(t *testing.T) {
 	empty := map[string]any{"type": "reasoning", "id": "rs_empty", "summary": []any{}}
 	summaryOnly := map[string]any{
 		"type":              "reasoning",
@@ -1322,13 +1530,21 @@ func TestFilterCodexInput_DropsEmptyReasoningItemsAndKeepsSummaryFallback(t *tes
 	}
 
 	filtered := filterCodexInput([]any{empty, summaryOnly}, true)
-	require.Len(t, filtered, 1)
-	item, ok := filtered[0].(map[string]any)
+	require.Len(t, filtered, 2)
+
+	emptyItem, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "reasoning", item["type"])
-	require.NotContains(t, item, "encrypted_content", "incompatible Claude signature must not be sent to GPT/Codex")
-	require.NotContains(t, item, "id")
-	require.Contains(t, item, "summary")
+	require.Equal(t, "reasoning", emptyItem["type"])
+	require.NotContains(t, emptyItem, "encrypted_content")
+	require.NotContains(t, emptyItem, "id")
+	require.Contains(t, emptyItem, "summary")
+
+	summaryItem, ok := filtered[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "reasoning", summaryItem["type"])
+	require.NotContains(t, summaryItem, "encrypted_content", "incompatible Claude signature must not be sent to GPT/Codex")
+	require.NotContains(t, summaryItem, "id")
+	require.Contains(t, summaryItem, "summary")
 }
 
 func testGPTReasoningEncryptedContent() string {
