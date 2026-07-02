@@ -318,6 +318,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
 	}
+	if stripped, changed, stripErr := stripCodexSparkImageGenerationToolFromRawPayload(updatedFirst, capturedSessionModel); stripErr != nil {
+		return fmt.Errorf("strip spark image_generation tool on first ws frame: %w", stripErr)
+	} else if changed {
+		updatedFirst = stripped
+		logOpenAIWSV2Passthrough("relay_spark_image_tool_stripped account_id=%d turn=1", account.ID)
+	}
 	firstClientMessage = updatedFirst
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
@@ -478,6 +484,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			//     service_tier 时按 default 处理，billing 应如实反映。
 			if policyErr == nil && blocked == nil &&
 				strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+				if stripped, changed, stripErr := stripCodexSparkImageGenerationToolFromRawPayload(out, model); stripErr != nil {
+					return payload, nil, stripErr
+				} else if changed {
+					out = stripped
+					logOpenAIWSV2Passthrough(
+						"relay_spark_image_tool_stripped account_id=%d turn=%d",
+						account.ID,
+						int(completedTurns.Load())+1,
+					)
+				}
 				pushRequestBodyBytes(payload)
 				usageMeta.updateFromResponseCreate(out, requestModelForThisFrame)
 			}
