@@ -47,7 +47,7 @@ func TestChatCompletionsToResponses_SystemMessage(t *testing.T) {
 	var items []ResponsesInputItem
 	require.NoError(t, json.Unmarshal(resp.Input, &items))
 	require.Len(t, items, 2)
-	assert.Equal(t, "system", items[0].Role)
+	assert.Equal(t, "developer", items[0].Role)
 	assert.Equal(t, "user", items[1].Role)
 }
 
@@ -420,11 +420,12 @@ func TestChatCompletionsToResponses_SystemArrayContent(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Input, &items))
 	require.Len(t, items, 2)
 
-	var systemParts []ResponsesContentPart
-	require.NoError(t, json.Unmarshal(items[0].Content, &systemParts))
-	require.Len(t, systemParts, 1)
-	assert.Equal(t, "input_text", systemParts[0].Type)
-	assert.Equal(t, "You are a careful visual assistant.", systemParts[0].Text)
+	assert.Equal(t, "developer", items[0].Role)
+	var developerParts []ResponsesContentPart
+	require.NoError(t, json.Unmarshal(items[0].Content, &developerParts))
+	require.Len(t, developerParts, 1)
+	assert.Equal(t, "input_text", developerParts[0].Type)
+	assert.Equal(t, "You are a careful visual assistant.", developerParts[0].Text)
 
 	var userParts []ResponsesContentPart
 	require.NoError(t, json.Unmarshal(items[1].Content, &userParts))

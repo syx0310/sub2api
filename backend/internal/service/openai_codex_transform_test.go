@@ -1091,18 +1091,18 @@ func TestApplyCodexOAuthTransform_StringInputWithToolsField(t *testing.T) {
 	require.Len(t, input, 1)
 }
 
-func TestExtractSystemMessagesFromInput(t *testing.T) {
+func TestRewriteSystemToDeveloper(t *testing.T) {
 	t.Run("no system messages", func(t *testing.T) {
 		reqBody := map[string]any{
 			"input": []any{
 				map[string]any{"role": "user", "content": "hello"},
 			},
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.False(t, result)
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
 		require.Len(t, input, 1)
+		result := rewriteSystemToDeveloper(input)
+		require.False(t, result)
 		_, hasInstructions := reqBody["instructions"]
 		require.False(t, hasInstructions)
 	})
@@ -1114,11 +1114,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 				map[string]any{"role": "user", "content": "hello"},
 			},
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.True(t, result)
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
 		require.Len(t, input, 2)
+		result := rewriteSystemToDeveloper(input)
+		require.True(t, result)
 		msg, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "developer", msg["role"])
@@ -1126,7 +1126,8 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		user, ok := input[1].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "user", user["role"])
-		require.Equal(t, "You are an assistant.", reqBody["instructions"])
+		_, hasInstructions := reqBody["instructions"]
+		require.False(t, hasInstructions)
 	})
 
 	t.Run("array content system message", func(t *testing.T) {
@@ -1140,19 +1141,19 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 				},
 			},
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.True(t, result)
-		require.Equal(t, "Be helpful.", reqBody["instructions"])
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
 		require.Len(t, input, 1)
+		result := rewriteSystemToDeveloper(input)
+		require.True(t, result)
 		msg, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "developer", msg["role"])
 		require.Equal(t, []any{
 			map[string]any{"type": "text", "text": "Be helpful."},
 		}, msg["content"])
-		require.Equal(t, "Be helpful.", reqBody["instructions"])
+		_, hasInstructions := reqBody["instructions"]
+		require.False(t, hasInstructions)
 	})
 
 	t.Run("multiple system messages concatenated", func(t *testing.T) {
@@ -1163,12 +1164,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 				map[string]any{"role": "user", "content": "hi"},
 			},
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.True(t, result)
-		require.Equal(t, "First.\n\nSecond.", reqBody["instructions"])
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
 		require.Len(t, input, 3)
+		result := rewriteSystemToDeveloper(input)
+		require.True(t, result)
 		first, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "developer", first["role"])
@@ -1178,7 +1178,8 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		user, ok := input[2].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "user", user["role"])
-		require.Equal(t, "First.\n\nSecond.", reqBody["instructions"])
+		_, hasInstructions := reqBody["instructions"]
+		require.False(t, hasInstructions)
 	})
 
 	t.Run("mixed system and non-system preserves non-system", func(t *testing.T) {
@@ -1189,11 +1190,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 				map[string]any{"role": "assistant", "content": "Hi there"},
 			},
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.True(t, result)
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
 		require.Len(t, input, 3)
+		result := rewriteSystemToDeveloper(input)
+		require.True(t, result)
 		first, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "user", first["role"])
@@ -1203,10 +1204,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		third, ok := input[2].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "assistant", third["role"])
-		require.Equal(t, "Sys prompt.", reqBody["instructions"])
+		_, hasInstructions := reqBody["instructions"]
+		require.False(t, hasInstructions)
 	})
 
-	t.Run("existing instructions prepended", func(t *testing.T) {
+	t.Run("existing instructions preserved", func(t *testing.T) {
 		reqBody := map[string]any{
 			"input": []any{
 				map[string]any{"role": "system", "content": "Extracted."},
@@ -1214,11 +1216,11 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 			},
 			"instructions": "Existing instructions.",
 		}
-		result := extractSystemMessagesFromInput(reqBody)
-		require.True(t, result)
-		require.Equal(t, "Extracted.\n\nExisting instructions.", reqBody["instructions"])
 		input, ok := reqBody["input"].([]any)
 		require.True(t, ok)
+		result := rewriteSystemToDeveloper(input)
+		require.True(t, result)
+		require.Equal(t, "Existing instructions.", reqBody["instructions"])
 		msg, ok := input[0].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "developer", msg["role"])
@@ -1266,7 +1268,7 @@ func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *test
 	}
 }
 
-func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
+func TestApplyCodexOAuthTransform_RewritesSystemMessages(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"input": []any{
@@ -1289,7 +1291,7 @@ func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	user, ok := input[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "user", user["role"])
-	require.Equal(t, "You are a coding assistant.", reqBody["instructions"])
+	require.Equal(t, "", reqBody["instructions"])
 }
 
 func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testing.T) {
@@ -1317,7 +1319,7 @@ func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testi
 	require.True(t, result.Modified)
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Contains(t, instructions, "JSON")
+	require.Equal(t, "", instructions)
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, input, 2)

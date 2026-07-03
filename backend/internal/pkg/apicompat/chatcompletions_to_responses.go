@@ -125,7 +125,7 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	}
 }
 
-// chatSystemToResponses converts a system message.
+// chatSystemToResponses converts a system message into the Responses developer role.
 func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	parsed, err := parseChatMessageContent(m.Content)
 	if err != nil {
@@ -135,7 +135,7 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
 }
 
 // chatDeveloperToResponses converts a developer message, preserving the role.
