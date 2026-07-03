@@ -2753,7 +2753,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
 	if instructionsEmpty && !compatMessagesBridge {
-		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
+		// Match Codex-compatible proxies: satisfy the required field without
+		// injecting a high-priority base prompt on behalf of the client.
+		markPatchSet("instructions", "")
 	}
 
 	billingModel := account.GetMappedModel(reqModel)

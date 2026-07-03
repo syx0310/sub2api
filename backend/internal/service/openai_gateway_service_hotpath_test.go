@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,11 +111,66 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
-	// 合成路径默认 instructions 现按模型填入真实 Codex base prompt（此处 inbound model=gpt-5）。
-	encodedInstr, _ := json.Marshal(defaultCodexSynthInstructions("gpt-5"))
-	expectedBody := fmt.Sprintf(`{"model":"gpt-5","stream":false,"reasoning":{"effort":"none"},"instructions":%s,"input":[{"type":"message","content":[{"type":"input_text","text":"hi","nonce":9007199254740993}]}]}`, string(encodedInstr))
+	// Missing instructions are normalized to an empty string; the proxy should
+	// not inject a Codex base prompt on behalf of the client.
+	expectedBody := `{"model":"gpt-5","stream":false,"reasoning":{"effort":"none"},"instructions":"","input":[{"type":"message","content":[{"type":"input_text","text":"hi","nonce":9007199254740993}]}]}`
 	require.JSONEq(t, expectedBody, string(upstream.lastBody))
 	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.lastBody, "input.0.content.0.nonce").Raw)
+}
+
+func TestOpenAIGatewayService_Forward_NormalizesInstructionsWithoutBasePrompt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name             string
+		instructionsJSON string
+		want             string
+	}{
+		{name: "missing", want: ""},
+		{name: "null", instructionsJSON: `"instructions":null,`, want: ""},
+		{name: "empty", instructionsJSON: `"instructions":"",`, want: ""},
+		{name: "whitespace", instructionsJSON: `"instructions":"   ",`, want: ""},
+		{name: "non string", instructionsJSON: `"instructions":{"text":"system"},`, want: ""},
+		{name: "existing", instructionsJSON: `"instructions":"client system",`, want: "client system"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{
+				resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
+				},
+			}
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.Enabled = false
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+			account := &Account{
+				ID:          11,
+				Name:        "openai-apikey",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Concurrency: 1,
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://example.com",
+				},
+				Extra: map[string]any{"use_responses_api": true},
+			}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+			SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+			body := []byte(`{"model":"gpt-5","stream":false,` + tt.instructionsJSON + `"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+			result, err := svc.Forward(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tt.want, gjson.GetBytes(upstream.lastBody, "instructions").String())
+			require.NotContains(t, string(upstream.lastBody), "You are Codex")
+		})
+	}
 }
 
 func TestOpenAIGatewayService_Forward_DecodedMutationKeepsLaterFieldDeletes(t *testing.T) {
