@@ -673,17 +673,6 @@ func summarizeOpenAIWSInput(input any) string {
 	)
 }
 
-func dropOpenAIWSPayloadKey(payload map[string]any, key string, removed *[]string) {
-	if len(payload) == 0 || strings.TrimSpace(key) == "" {
-		return
-	}
-	if _, exists := payload[key]; !exists {
-		return
-	}
-	delete(payload, key)
-	*removed = append(*removed, key)
-}
-
 // applyOpenAIWSRetryPayloadStrategy 在 WS 连续失败时仅移除无语义字段，
 // 避免重试成功却改变原始请求语义。
 // 注意：prompt_cache_key 不应在重试中移除；它常用于会话稳定标识（session_id 兜底）。

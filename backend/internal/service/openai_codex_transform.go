@@ -1253,34 +1253,6 @@ func sanitizeCodexReasoningInputItem(item map[string]any) (map[string]any, bool)
 	return next, true
 }
 
-func hasCodexReasoningReplayPayload(item map[string]any) bool {
-	if encrypted, ok := item["encrypted_content"].(string); ok && strings.TrimSpace(encrypted) != "" {
-		return true
-	}
-	if hasNonEmptyJSONishValue(item["summary"]) {
-		return true
-	}
-	if hasNonEmptyJSONishValue(item["content"]) {
-		return true
-	}
-	return false
-}
-
-func hasNonEmptyJSONishValue(value any) bool {
-	switch v := value.(type) {
-	case nil:
-		return false
-	case string:
-		return strings.TrimSpace(v) != ""
-	case []any:
-		return len(v) > 0
-	case map[string]any:
-		return len(v) > 0
-	default:
-		return true
-	}
-}
-
 func isCodexToolCallItemType(typ string) bool {
 	switch typ {
 	case "function_call",
