@@ -72,6 +72,7 @@ func ProvideRouter(
 			pc := websearch.ProviderConfig{
 				Type:       p.Type,
 				APIKey:     p.APIKey,
+				APIBaseURL: p.APIBaseURL,
 				QuotaLimit: derefInt64(p.QuotaLimit),
 				ExpiresAt:  p.ExpiresAt,
 			}

@@ -6,14 +6,19 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/stretchr/testify/require"
 )
 
 // --- validateWebSearchConfig ---
 
+func validateWebSearchConfigForTest(cfg *WebSearchEmulationConfig) error {
+	return (&SettingService{}).validateWebSearchConfig(cfg)
+}
+
 func TestValidateWebSearchConfig_Nil(t *testing.T) {
-	require.NoError(t, validateWebSearchConfig(nil))
+	require.NoError(t, validateWebSearchConfigForTest(nil))
 }
 
 func TestValidateWebSearchConfig_Valid(t *testing.T) {
@@ -22,9 +27,10 @@ func TestValidateWebSearchConfig_Valid(t *testing.T) {
 		Providers: []WebSearchProviderConfig{
 			{Type: "brave", QuotaLimit: int64Ptr(1000)},
 			{Type: "tavily", QuotaLimit: int64Ptr(500)},
+			{Type: "tavily_hikari", APIBaseURL: "https://hikari.example.com/api/tavily", QuotaLimit: int64Ptr(500)},
 		},
 	}
-	require.NoError(t, validateWebSearchConfig(cfg))
+	require.NoError(t, validateWebSearchConfigForTest(cfg))
 }
 
 func TestValidateWebSearchConfig_TooManyProviders(t *testing.T) {
@@ -32,7 +38,7 @@ func TestValidateWebSearchConfig_TooManyProviders(t *testing.T) {
 	for i := range cfg.Providers {
 		cfg.Providers[i] = WebSearchProviderConfig{Type: "brave"}
 	}
-	err := validateWebSearchConfig(cfg)
+	err := validateWebSearchConfigForTest(cfg)
 	require.ErrorContains(t, err, "too many providers")
 }
 
@@ -40,14 +46,14 @@ func TestValidateWebSearchConfig_InvalidType(t *testing.T) {
 	cfg := &WebSearchEmulationConfig{
 		Providers: []WebSearchProviderConfig{{Type: "bing"}},
 	}
-	require.ErrorContains(t, validateWebSearchConfig(cfg), "invalid type")
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "invalid type")
 }
 
 func TestValidateWebSearchConfig_NegativeQuotaLimit(t *testing.T) {
 	cfg := &WebSearchEmulationConfig{
 		Providers: []WebSearchProviderConfig{{Type: "brave", QuotaLimit: int64Ptr(-1)}},
 	}
-	require.ErrorContains(t, validateWebSearchConfig(cfg), "quota_limit must be > 0 or null")
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "quota_limit must be > 0 or null")
 }
 
 func TestValidateWebSearchConfig_DuplicateType(t *testing.T) {
@@ -57,24 +63,79 @@ func TestValidateWebSearchConfig_DuplicateType(t *testing.T) {
 			{Type: "brave"},
 		},
 	}
-	require.ErrorContains(t, validateWebSearchConfig(cfg), "duplicate type")
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "duplicate type")
 }
 
 func TestValidateWebSearchConfig_NilQuotaLimit(t *testing.T) {
 	cfg := &WebSearchEmulationConfig{
 		Providers: []WebSearchProviderConfig{{Type: "brave", QuotaLimit: nil}},
 	}
-	require.NoError(t, validateWebSearchConfig(cfg))
+	require.NoError(t, validateWebSearchConfigForTest(cfg))
+}
+
+func TestValidateWebSearchConfig_TavilyHikariAPIBaseURL(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Providers: []WebSearchProviderConfig{{Type: "tavily_hikari", APIBaseURL: "https://hikari.example.com/api/tavily"}},
+	}
+	require.NoError(t, validateWebSearchConfigForTest(cfg))
+
+	cfg.Providers[0].APIBaseURL = "http://192.168.10.23:3012/api/tavily"
+	require.NoError(t, validateWebSearchConfigForTest(cfg))
+}
+
+func TestValidateWebSearchConfig_TavilyHikariRequiresAPIBaseURL(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Providers: []WebSearchProviderConfig{{Type: "tavily_hikari"}},
+	}
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "api_base_url is required for tavily_hikari")
+}
+
+func TestValidateWebSearchConfig_APIBaseURLOnlySupportedForTavilyHikari(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Providers: []WebSearchProviderConfig{{Type: "brave", APIBaseURL: "https://hikari.example.com/api/tavily"}},
+	}
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "api_base_url is only supported for tavily_hikari")
+}
+
+func TestValidateWebSearchConfig_InvalidAPIBaseURL(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Providers: []WebSearchProviderConfig{{Type: "tavily_hikari", APIBaseURL: "ftp://hikari.example.com/api/tavily"}},
+	}
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "api_base_url must use http or https")
+
+	cfg.Providers[0].APIBaseURL = "https://hikari.example.com/api/tavily?token=bad"
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "api_base_url must not include query or fragment")
+
+	cfg.Providers[0].APIBaseURL = "http://192.168.10.23:3012/mcp"
+	require.ErrorContains(t, validateWebSearchConfigForTest(cfg), "not MCP /mcp")
+}
+
+func TestSettingServiceValidateWebSearchConfig_EnforcesURLAllowlist(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Providers: []WebSearchProviderConfig{{
+			Type:       "tavily_hikari",
+			APIBaseURL: "https://blocked.example.com/api/tavily",
+		}},
+	}
+	svc := NewSettingService(nil, &config.Config{Security: config.SecurityConfig{
+		URLAllowlist: config.URLAllowlistConfig{
+			Enabled:           true,
+			UpstreamHosts:     []string{"allowed.example.com"},
+			AllowPrivateHosts: true,
+		},
+	}})
+	require.ErrorContains(t, svc.validateWebSearchConfig(cfg), "host is not allowed")
 }
 
 // --- parseWebSearchConfigJSON ---
 
 func TestParseWebSearchConfigJSON_ValidJSON(t *testing.T) {
-	raw := `{"enabled":true,"providers":[{"type":"brave","api_key":"sk-xxx"}]}`
+	raw := `{"enabled":true,"providers":[{"type":"tavily_hikari","api_key":"sk-xxx","api_base_url":"https://hikari.example.com/api/tavily"}]}`
 	cfg := parseWebSearchConfigJSON(raw)
 	require.True(t, cfg.Enabled)
 	require.Len(t, cfg.Providers, 1)
-	require.Equal(t, "brave", cfg.Providers[0].Type)
+	require.Equal(t, "tavily_hikari", cfg.Providers[0].Type)
+	require.Equal(t, "https://hikari.example.com/api/tavily", cfg.Providers[0].APIBaseURL)
 }
 
 func TestParseWebSearchConfigJSON_EmptyString(t *testing.T) {
@@ -129,11 +190,12 @@ func TestSanitizeWebSearchConfig_PreservesOtherFields(t *testing.T) {
 	cfg := &WebSearchEmulationConfig{
 		Enabled: true,
 		Providers: []WebSearchProviderConfig{
-			{Type: "brave", APIKey: "secret", QuotaLimit: int64Ptr(1000)},
+			{Type: "tavily_hikari", APIKey: "secret", APIBaseURL: "https://hikari.example.com/api/tavily", QuotaLimit: int64Ptr(1000)},
 		},
 	}
 	out := SanitizeWebSearchConfig(context.Background(), cfg)
 	require.True(t, out.Enabled)
+	require.Equal(t, "https://hikari.example.com/api/tavily", out.Providers[0].APIBaseURL)
 	require.Equal(t, int64(1000), *out.Providers[0].QuotaLimit)
 }
 

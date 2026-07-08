@@ -22,6 +22,21 @@ func TestNewManager_PreservesOrder(t *testing.T) {
 	require.Equal(t, "tavily", m.configs[1].Type)
 }
 
+func TestManager_BuildProvider_TavilyHikari(t *testing.T) {
+	m := NewManager(nil, nil)
+	provider := m.buildProvider(ProviderConfig{
+		Type:       ProviderTypeTavilyHikari,
+		APIKey:     "th-test-token",
+		APIBaseURL: "https://hikari.example.com/api/tavily",
+	}, nil)
+
+	tavilyProvider, ok := provider.(*TavilyProvider)
+	require.True(t, ok)
+	require.Equal(t, ProviderTypeTavilyHikari, tavilyProvider.Name())
+	require.True(t, tavilyProvider.bearerAuth)
+	require.Equal(t, "https://hikari.example.com/api/tavily/search", tavilyProvider.searchURL)
+}
+
 func TestManager_SearchWithBestProvider_EmptyQuery(t *testing.T) {
 	m := NewManager([]ProviderConfig{{Type: "brave", APIKey: "k"}}, nil)
 	_, _, err := m.SearchWithBestProvider(context.Background(), SearchRequest{Query: ""})

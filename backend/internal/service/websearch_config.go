@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -19,11 +22,12 @@ type WebSearchEmulationConfig struct {
 	Providers []WebSearchProviderConfig `json:"providers"`
 }
 
-// WebSearchProviderConfig describes a single search provider (Brave or Tavily).
+// WebSearchProviderConfig describes a single search provider.
 type WebSearchProviderConfig struct {
-	Type             string `json:"type"`                    // websearch.ProviderTypeBrave | Tavily
+	Type             string `json:"type"`                    // brave | tavily | tavily_hikari
 	APIKey           string `json:"api_key,omitempty"`       // secret — omitted in API responses
 	APIKeyConfigured bool   `json:"api_key_configured"`      // read-only mask
+	APIBaseURL       string `json:"api_base_url,omitempty"`  // optional Tavily-compatible base URL
 	QuotaLimit       *int64 `json:"quota_limit"`             // nil = unlimited, >0 = limited
 	SubscribedAt     *int64 `json:"subscribed_at,omitempty"` // subscription start (unix seconds); quota resets monthly
 	QuotaUsed        int64  `json:"quota_used,omitempty"`    // read-only: current usage from Redis
@@ -36,11 +40,35 @@ type WebSearchProviderConfig struct {
 const maxWebSearchProviders = 10
 
 var validProviderTypes = map[string]bool{
-	websearch.ProviderTypeBrave:  true,
-	websearch.ProviderTypeTavily: true,
+	websearch.ProviderTypeBrave:        true,
+	websearch.ProviderTypeTavily:       true,
+	websearch.ProviderTypeTavilyHikari: true,
 }
 
-func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
+func (s *SettingService) validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
+	allowInsecureHTTP := true
+	options := urlvalidator.ValidationOptions{AllowPrivate: true}
+	enforceFullPolicy := false
+	if s != nil && s.cfg != nil {
+		allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		if s.cfg.Security.URLAllowlist.Enabled {
+			enforceFullPolicy = true
+			options = urlvalidator.ValidationOptions{
+				AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+				RequireAllowlist: true,
+				AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+			}
+		}
+	}
+	return validateWebSearchConfigWithURLPolicy(cfg, allowInsecureHTTP, options, enforceFullPolicy)
+}
+
+func validateWebSearchConfigWithURLPolicy(
+	cfg *WebSearchEmulationConfig,
+	allowInsecureHTTP bool,
+	options urlvalidator.ValidationOptions,
+	enforceFullPolicy bool,
+) error {
 	if cfg == nil {
 		return nil
 	}
@@ -55,10 +83,57 @@ func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
 		if p.QuotaLimit != nil && *p.QuotaLimit < 0 {
 			return fmt.Errorf("provider[%d]: quota_limit must be > 0 or null", i)
 		}
+		if p.Type == websearch.ProviderTypeTavilyHikari && strings.TrimSpace(p.APIBaseURL) == "" {
+			return fmt.Errorf("provider[%d]: api_base_url is required for tavily_hikari", i)
+		}
+		if strings.TrimSpace(p.APIBaseURL) != "" && p.Type != websearch.ProviderTypeTavilyHikari {
+			return fmt.Errorf("provider[%d]: api_base_url is only supported for tavily_hikari", i)
+		}
+		if strings.TrimSpace(p.APIBaseURL) != "" {
+			if err := validateWebSearchAPIBaseURL(p.APIBaseURL, allowInsecureHTTP, options, enforceFullPolicy); err != nil {
+				return fmt.Errorf("provider[%d]: %w", i, err)
+			}
+		}
 		if seen[p.Type] {
 			return fmt.Errorf("provider[%d]: duplicate type %q", i, p.Type)
 		}
 		seen[p.Type] = true
+	}
+	return nil
+}
+
+func validateWebSearchAPIBaseURL(
+	raw string,
+	allowInsecureHTTP bool,
+	options urlvalidator.ValidationOptions,
+	enforceFullPolicy bool,
+) error {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("invalid api_base_url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("api_base_url must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("api_base_url must include host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("api_base_url must not include query or fragment")
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if !strings.HasSuffix(path, "/api/tavily") && !strings.HasSuffix(path, "/api/tavily/search") {
+		return fmt.Errorf("api_base_url must be Hikari HTTP API base ending with /api/tavily, not MCP /mcp")
+	}
+	if enforceFullPolicy {
+		if _, err := urlvalidator.ValidateHTTPURL(trimmed, allowInsecureHTTP, options); err != nil {
+			return fmt.Errorf("invalid api_base_url: %w", err)
+		}
+		return nil
+	}
+	if _, err := urlvalidator.ValidateURLFormat(trimmed, allowInsecureHTTP); err != nil {
+		return fmt.Errorf("invalid api_base_url: %w", err)
 	}
 	return nil
 }
@@ -135,7 +210,7 @@ func parseWebSearchConfigJSON(raw string) *WebSearchEmulationConfig {
 // SaveWebSearchEmulationConfig validates and persists the configuration.
 // Empty API keys in the input are preserved from the existing config.
 func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *WebSearchEmulationConfig) error {
-	if err := validateWebSearchConfig(cfg); err != nil {
+	if err := s.validateWebSearchConfig(cfg); err != nil {
 		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", err.Error())
 	}
 	s.mergeExistingAPIKeys(ctx, cfg)

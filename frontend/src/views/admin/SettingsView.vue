@@ -4638,6 +4638,7 @@
                         :options="[
                           { value: 'brave', label: 'Brave Search' },
                           { value: 'tavily', label: 'Tavily' },
+                          { value: 'tavily_hikari', label: 'Tavily Hikari' },
                         ]"
                         class="w-36"
                         @click.stop
@@ -4787,6 +4788,28 @@
                           </button>
                         </div>
                       </div>
+                    </div>
+
+                    <!-- Tavily-compatible API base URL -->
+                    <div v-if="provider.type === 'tavily_hikari'">
+                      <label class="text-xs text-gray-500">{{
+                        t("admin.settings.webSearchEmulation.apiBaseUrl")
+                      }}</label>
+                      <input
+                        v-model="provider.api_base_url"
+                        type="text"
+                        class="input w-full text-sm"
+                        :placeholder="
+                          t(
+                            'admin.settings.webSearchEmulation.apiBaseUrlPlaceholder',
+                          )
+                        "
+                      />
+                      <p class="mt-0.5 text-xs text-gray-400">
+                        {{
+                          t("admin.settings.webSearchEmulation.apiBaseUrlHint")
+                        }}
+                      </p>
                     </div>
 
                     <!-- Quota + Subscription in compact row -->
@@ -8484,6 +8507,7 @@ function addWebSearchProvider() {
     type: "brave",
     api_key: "",
     api_key_configured: false,
+    api_base_url: "",
     quota_limit: DEFAULT_WEB_SEARCH_QUOTA_LIMIT,
     subscribed_at: null,
     proxy_id: null,
@@ -8596,6 +8620,8 @@ async function saveWebSearchConfig(): Promise<boolean> {
     const providers = webSearchConfig.providers.map(
       (p: WebSearchProviderConfig) => ({
         ...p,
+        api_base_url:
+          p.type === "tavily_hikari" ? p.api_base_url?.trim() || "" : "",
         quota_limit: Number(p.quota_limit) > 0 ? Number(p.quota_limit) : null,
       }),
     );
