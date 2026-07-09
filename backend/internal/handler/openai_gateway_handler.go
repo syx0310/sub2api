@@ -13,7 +13,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -185,7 +184,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Read request body
-	body, bodyStats, err := pkghttputil.ReadRequestBodyWithStats(c.Request)
+	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
@@ -199,26 +198,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-	requestBodyBytes := usageBodyBytesInt64Ptr(bodyStats.DecodedBytes)
+	requestBodyBytes := usageBodyBytesPtr(len(body))
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
-	if service.IsOpenAIResponsesCompactPathForTest(c) {
-		if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
-			c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
-		}
-		normalizedCompactBody, normalizedCompact, compactErr := service.NormalizeOpenAICompactRequestBodyForTest(body)
-		if compactErr != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to normalize compact request body")
-			return
-		}
-		if normalizedCompact {
-			body = normalizedCompactBody
-		}
+	body, ok = h.normalizeOpenAIResponsesCompactRequest(c, reqLog, body)
+	if !ok {
+		return
 	}
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
+		logRequestBodyParseFailure(reqLog, body, nil)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
@@ -421,16 +412,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}()
 			return h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
 		}()
-		responseBodyBytes := usageResponseBodyBytesFromGin(c)
-		attachOpenAIUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
 		}
-		requestPayloadHash := service.HashUsageRequestPayload(body)
-		recordCyberPolicy := func(forwardErrored bool) {
-			h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, forwardErrored, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), requestPayloadHash, requestBodyBytes, usageResponseBodyBytesFromGin(c))
-		}
+		responseBodyBytes := usageResponseBodyBytesFromGin(c)
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body), requestBodyBytes, responseBodyBytes)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -453,7 +440,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, true)
-						recordCyberPolicy(true)
 						return
 					}
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -470,11 +456,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							)
 							select {
 							case <-c.Request.Context().Done():
-								recordCyberPolicy(true)
 								return
 							case <-time.After(sameAccountRetryDelay):
 							}
-							recordCyberPolicy(true)
 							continue
 						}
 					}
@@ -483,13 +467,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						recordCyberPolicy(true)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						recordCyberPolicy(true)
 						return
 					}
 					reqLog.Warn("openai.upstream_failover_switching",
@@ -498,7 +480,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
-					recordCyberPolicy(true)
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -515,15 +496,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 				if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
 					reqLog.Warn("openai.forward_failed", fields...)
-					recordCyberPolicy(true)
 					return
 				}
 				reqLog.Error("openai.forward_failed", fields...)
-				recordCyberPolicy(true)
 				return
 			}
 		}
-		recordCyberPolicy(err != nil)
 		if result != nil {
 			// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
@@ -537,6 +515,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
+		responseBodyBytes = usageResponseBodyBytesFromGin(c)
+		attachOpenAIUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
+		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -586,6 +567,54 @@ func isOpenAIRemoteCompactPath(c *gin.Context) bool {
 	}
 	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
 	return strings.HasSuffix(normalizedPath, "/responses/compact")
+}
+
+// isBareOpenAIResponsesPath 仅匹配裸 /responses 端点（无 /compact 等子路径），
+// body-signal 提升只允许发生在这里，避免误伤 /responses/{id}/... 形态的请求。
+func isBareOpenAIResponsesPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	return strings.HasSuffix(normalizedPath, "/responses")
+}
+
+// normalizeOpenAIResponsesCompactRequest 统一处理两种入站 compact 形态：
+// path-based（POST /v1/responses/compact）与 Codex remote compact v2 的
+// body-signal（普通 POST /v1/responses 的 input 中携带 type=compaction_trigger，
+// 见 #3777）。body-signal 命中时在 stream 解析、compact body 归一化与
+// requireCompact 调度判定之前改写 URL path，使后续全部链路（含 passthrough
+// 分支与上游 URL 构建）与 path-based 完全一致。
+// 返回归一化后的 body；ok=false 表示错误响应已写出，调用方应直接 return。
+func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Context, reqLog *zap.Logger, body []byte) ([]byte, bool) {
+	isCompactRequest := service.IsOpenAIResponsesCompactPathForTest(c)
+	if !isCompactRequest && isBareOpenAIResponsesPath(c) && service.HasCompactionTriggerInInput(body) {
+		c.Request.URL.Path = strings.TrimRight(c.Request.URL.Path, "/") + "/compact"
+		isCompactRequest = true
+		// Codex remote compact v2 的原始请求是流式 /responses：白名单归一化会删除
+		// stream 并让上游走 unary JSON，但客户端仍按 SSE 消费响应。记录原始
+		// stream 意图，响应写回阶段据此把 JSON 合成回 SSE（#3875）。
+		clientStream := gjson.GetBytes(body, "stream").Bool()
+		if clientStream {
+			service.MarkOpenAICompactClientStream(c)
+		}
+		reqLog.Info("codex.remote_compact.detected_body_signal", zap.Bool("client_stream", clientStream))
+	}
+	if !isCompactRequest {
+		return body, true
+	}
+	if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
+		c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
+	}
+	normalizedCompactBody, normalizedCompact, compactErr := service.NormalizeOpenAICompactRequestBodyForTest(body)
+	if compactErr != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to normalize compact request body")
+		return nil, false
+	}
+	if normalizedCompact {
+		body = normalizedCompactBody
+	}
+	return body, true
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
@@ -698,7 +727,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	body, bodyStats, err := pkghttputil.ReadRequestBodyWithStats(c.Request)
+	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.anthropicErrorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
@@ -711,9 +740,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-	requestBodyBytes := usageBodyBytesInt64Ptr(bodyStats.DecodedBytes)
+	requestBodyBytes := usageBodyBytesPtr(len(body))
 
 	if !gjson.ValidBytes(body) {
+		logRequestBodyParseFailure(reqLog, body, nil)
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
@@ -861,16 +891,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 		}()
-		responseBodyBytes := usageResponseBodyBytesFromGin(c)
-		attachOpenAIUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
 		cyberBlockKeyMsg := ""
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, c, body)
 		}
-		requestPayloadHash := service.HashUsageRequestPayload(body)
-		recordCyberPolicy := func(forwardErrored bool) {
-			h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, forwardErrored, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, ""), requestPayloadHash, requestBodyBytes, usageResponseBodyBytesFromGin(c))
-		}
+		responseBodyBytes := usageResponseBodyBytesFromGin(c)
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body), requestBodyBytes, responseBodyBytes)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -893,7 +919,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, true)
-						recordCyberPolicy(true)
 						return
 					}
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -910,11 +935,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							)
 							select {
 							case <-c.Request.Context().Done():
-								recordCyberPolicy(true)
 								return
 							case <-time.After(sameAccountRetryDelay):
 							}
-							recordCyberPolicy(true)
 							continue
 						}
 					}
@@ -923,13 +946,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
-						recordCyberPolicy(true)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
-						recordCyberPolicy(true)
 						return
 					}
 					reqLog.Warn("openai_messages.upstream_failover_switching",
@@ -938,7 +959,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
-					recordCyberPolicy(true)
 					continue
 				}
 				if result != nil && result.ClientDisconnect {
@@ -946,12 +966,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Error(err),
 					)
-					recordCyberPolicy(true)
 					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
-				recordCyberPolicy(true)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),
@@ -960,7 +978,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 		}
-		recordCyberPolicy(err != nil)
 		if result != nil {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
@@ -969,6 +986,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
+		responseBodyBytes = usageResponseBodyBytesFromGin(c)
+		attachOpenAIUsageBodyBytes(result, requestBodyBytes, responseBodyBytes)
+		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -1288,7 +1308,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
 		return
 	}
-	firstRequestBodyBytes := usageBodyBytesPtr(len(firstMessage))
 
 	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
 	if reqModel == "" {
@@ -1405,15 +1424,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
-	effectiveFirstMessage := firstMessage
-	effectivePreviousResponseID := previousResponseID
 
 	for {
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			ctx,
 			apiKey.GroupID,
-			effectivePreviousResponseID,
+			previousResponseID,
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
@@ -1445,45 +1462,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
-		if effectivePreviousResponseID != "" && !scheduleDecision.StickyPreviousHit {
-			selfContained, reason := service.OpenAIWSPayloadToolReplaySelfContained(effectiveFirstMessage)
-			if !selfContained {
-				if selection.ReleaseFunc != nil {
-					selection.ReleaseFunc()
-				}
-				reqLog.Warn("openai.websocket_previous_response_cross_account_blocked",
-					zap.Int64("account_id", account.ID),
-					zap.String("schedule_layer", scheduleDecision.Layer),
-					zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
-					zap.String("tool_replay_reason", reason),
-				)
-				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "upstream continuation account is unavailable; please restart the conversation")
-				return
-			}
-			updatedFirstMessage, removed, dropErr := service.DropOpenAIWSPreviousResponseIDFromRawPayload(effectiveFirstMessage)
-			if dropErr != nil || !removed {
-				if selection.ReleaseFunc != nil {
-					selection.ReleaseFunc()
-				}
-				reqLog.Warn("openai.websocket_previous_response_cross_account_drop_failed",
-					zap.Int64("account_id", account.ID),
-					zap.String("schedule_layer", scheduleDecision.Layer),
-					zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
-					zap.Error(dropErr),
-					zap.Bool("removed", removed),
-				)
-				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "upstream continuation account is unavailable; please restart the conversation")
-				return
-			}
-			reqLog.Info("openai.websocket_previous_response_cross_account_replay",
-				zap.Int64("account_id", account.ID),
-				zap.String("schedule_layer", scheduleDecision.Layer),
-				zap.String("previous_response_id", truncateString(effectivePreviousResponseID, 64)),
-				zap.String("tool_replay_reason", reason),
-			)
-			effectiveFirstMessage = updatedFirstMessage
-			effectivePreviousResponseID = ""
-		}
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
@@ -1530,6 +1508,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		)
 
 		var requestPayloadHash string
+		firstRequestBodyBytes := usageBodyBytesPtr(len(firstMessage))
 		hooks := &service.OpenAIWSIngressHooks{
 			InitialRequestModel:     reqModel,
 			InitialRequestBodyBytes: firstRequestBodyBytes,
@@ -1660,9 +1639,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		// 应用渠道模型映射到 WebSocket 首条消息
-		wsFirstMessage := effectiveFirstMessage
+		wsFirstMessage := firstMessage
 		if channelMappingWS.Mapped {
-			wsFirstMessage = h.gatewayService.ReplaceModelInBody(effectiveFirstMessage, channelMappingWS.MappedModel)
+			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
+		}
+		// 切组/会话失配防护：previous_response_id 未在当前分组命中粘连账号（StickyPreviousHit=false），
+		// 说明该会话链不属于本次调度到的账号，原样转发会触发上游会话链鉴权失败（“鉴权失败，请检查 API Key”）。
+		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
+		// 工具续链无法重建，保持原样。仅作用于首轮首包，后续 turn 的续链由 WS 转发层既有逻辑处理。
+		if previousResponseID != "" && !scheduleDecision.StickyPreviousHit && previousResponseCanMove {
+			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
+			reqLog.Debug("openai.websocket_previous_response_id_stripped_cross_group",
+				zap.Int64("account_id", account.ID),
+				zap.String("schedule_layer", scheduleDecision.Layer),
+			)
 		}
 
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
@@ -2056,7 +2046,6 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	msg := strings.TrimSpace(err.Error())
 	for _, prefix := range []string{
 		"upstream response failed:",
-		"upstream request failed:",
 		"non-streaming openai protocol error:",
 	} {
 		if strings.HasPrefix(msg, prefix) {

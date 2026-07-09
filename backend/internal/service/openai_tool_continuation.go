@@ -50,6 +50,81 @@ func isCodexToolCallOutputItemType(typ string) bool {
 	}
 }
 
+func expectedCodexToolOutputItemType(callType string) string {
+	switch strings.TrimSpace(callType) {
+	case "tool_search_call":
+		return "tool_search_output"
+	case "custom_tool_call":
+		return "custom_tool_call_output"
+	case "mcp_tool_call":
+		return "mcp_tool_call_output"
+	case "tool_call", "function_call", "local_shell_call":
+		return "function_call_output"
+	default:
+		return ""
+	}
+}
+
+func OpenAIWSPayloadToolReplaySelfContained(payload []byte) (bool, string) {
+	if len(payload) == 0 {
+		return false, "missing_tool_output"
+	}
+	input := parseRawJSONView(payload).Get("input")
+	if !input.IsArray() {
+		return false, "missing_tool_output"
+	}
+
+	hasOutput := false
+	failureReason := ""
+	expectedOutputByCallID := make(map[string]string)
+	outputSeenByCallID := make(map[string]struct{})
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			return true
+		}
+		itemType := strings.TrimSpace(item.Get("type").String())
+		callID := strings.TrimSpace(item.Get("call_id").String())
+		if expected := expectedCodexToolOutputItemType(itemType); expected != "" && callID != "" {
+			expectedOutputByCallID[callID] = expected
+			return true
+		}
+		if !isCodexToolCallOutputItemType(itemType) {
+			return true
+		}
+
+		hasOutput = true
+		if callID == "" {
+			failureReason = "tool_output_missing_call_id"
+			return false
+		}
+		expected := expectedOutputByCallID[callID]
+		if expected == "" || expected != itemType {
+			failureReason = "missing_tool_call_context"
+			return false
+		}
+		outputSeenByCallID[callID] = struct{}{}
+		return true
+	})
+
+	if !hasOutput {
+		return false, "missing_tool_output"
+	}
+	if failureReason != "" {
+		return false, failureReason
+	}
+	for callID := range expectedOutputByCallID {
+		if _, ok := outputSeenByCallID[callID]; !ok {
+			return false, "missing_tool_output_for_call"
+		}
+	}
+	for callID := range outputSeenByCallID {
+		if _, ok := expectedOutputByCallID[callID]; !ok {
+			return false, "missing_tool_call_context"
+		}
+	}
+	return true, "self_contained"
+}
+
 // NeedsToolContinuation 判定请求是否需要工具调用续链处理。
 // 满足以下任一信号即视为续链：previous_response_id、input 内包含工具输出/item_reference、
 // 或显式声明 tools/tool_choice。
