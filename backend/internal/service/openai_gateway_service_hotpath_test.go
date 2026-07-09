@@ -829,11 +829,18 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "xhigh",
 		},
 		{
-			name:      "DeepSeek max 归一化为 xhigh",
+			name:      "保留 max 档位",
 			body:      []byte(`{"reasoning_effort":"max"}`),
-			model:     "deepseek-v4-pro",
+			model:     "gpt-5.6-sol",
 			wantNil:   false,
-			wantValue: "xhigh",
+			wantValue: "max",
+		},
+		{
+			name:      "保留 ultra 档位",
+			body:      []byte(`{"reasoning":{"effort":"ultra"}}`),
+			model:     "gpt-5.6-sol",
+			wantNil:   false,
+			wantValue: "ultra",
 		},
 		{
 			name:    "minimal 归一化为空",
@@ -847,6 +854,20 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			model:     "gpt-5-high",
 			wantNil:   false,
 			wantValue: "high",
+		},
+		{
+			name:      "从 sol 模型后缀推导 max",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.6-sol-max",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
+			name:      "从 sol 模型后缀推导 ultra",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.6-sol-ultra",
+			wantNil:   false,
+			wantValue: "ultra",
 		},
 		{
 			name:    "未知后缀不返回",

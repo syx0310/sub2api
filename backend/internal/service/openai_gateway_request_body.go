@@ -1190,8 +1190,10 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		return ""
 	case "low", "medium", "high":
 		return value
-	case "xhigh", "extrahigh", "max":
+	case "xhigh", "extrahigh":
 		return "xhigh"
+	case "max", "ultra":
+		return value
 	default:
 		// Only store known effort levels for now to keep UI consistent.
 		return ""

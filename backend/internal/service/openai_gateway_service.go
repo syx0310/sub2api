@@ -229,6 +229,7 @@ type OpenAIForwardResult struct {
 	// Nil means the request did not specify a recognized tier.
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
+	// OpenAI values include low, medium, high, xhigh, max, and ultra.
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort    *string
 	Stream             bool
