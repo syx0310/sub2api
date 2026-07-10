@@ -24,7 +24,7 @@ func TestOpenAIBuildUpstreamRequestCompactPreservesClientVersionHeader(t *testin
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
-	c.Request.Header.Set("Version", "0.125.1")
+	c.Request.Header.Set("Version", "0.145.1")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -34,7 +34,7 @@ func TestOpenAIBuildUpstreamRequestCompactPreservesClientVersionHeader(t *testin
 
 	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5"}`), "token", false, "", true)
 	require.NoError(t, err)
-	require.Equal(t, "0.125.1", req.Header.Get("Version"))
+	require.Equal(t, "0.145.1", req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughCompactPreservesClientVersionHeader(t *testing.T) {
@@ -42,12 +42,12 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughCompactPreservesClientVersio
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
-	c.Request.Header.Set("Version", "0.125.1")
+	c.Request.Header.Set("Version", "0.145.1")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{Type: AccountTypeOAuth}
 
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, []byte(`{"model":"gpt-5"}`), "token")
 	require.NoError(t, err)
-	require.Equal(t, "0.125.1", req.Header.Get("Version"))
+	require.Equal(t, "0.145.1", req.Header.Get("Version"))
 }
