@@ -26,8 +26,10 @@ func TestForwardAsAnthropic_TransportError_ReturnsFailoverError(t *testing.T) {
 	upstream := &httpUpstreamRecorder{
 		err: errors.New(`dial tcp 1.2.3.4:443: connect: connection refused`),
 	}
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAITransportErrorFailoverEnabled = true
 	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
+		cfg:          cfg,
 		httpUpstream: upstream,
 	}
 
@@ -52,8 +54,10 @@ func TestForwardAsAnthropic_TransportError_DoesNotWriteResponse(t *testing.T) {
 	upstream := &httpUpstreamRecorder{
 		err: errors.New(`read tcp: connection reset by peer`),
 	}
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAITransportErrorFailoverEnabled = true
 	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
+		cfg:          cfg,
 		httpUpstream: upstream,
 	}
 
@@ -78,8 +82,10 @@ func TestForwardAsAnthropic_TransportError_ClientCanceled_NoFailover(t *testing.
 	upstream := &httpUpstreamRecorder{
 		err: context.Canceled,
 	}
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAITransportErrorFailoverEnabled = true
 	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
+		cfg:          cfg,
 		httpUpstream: upstream,
 	}
 

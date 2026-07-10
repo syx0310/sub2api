@@ -464,17 +464,6 @@ func summarizeOpenAIWSInput(input any) string {
 	)
 }
 
-func dropOpenAIWSPayloadKey(payload map[string]any, key string, removed *[]string) {
-	if len(payload) == 0 || strings.TrimSpace(key) == "" {
-		return
-	}
-	if _, exists := payload[key]; !exists {
-		return
-	}
-	delete(payload, key)
-	*removed = append(*removed, key)
-}
-
 // applyOpenAIWSRetryPayloadStrategy 保持重试 payload 完整。
 // Codex 的 include、text、instructions、tools、prompt_cache_key 等字段都会影响语义或续链稳定性，
 // 重试时不应为了提高成功率删字段。
@@ -647,6 +636,7 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 		strings.Contains(message, "use of closed network connection") ||
 		strings.Contains(message, "connection reset by peer") ||
 		strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "an existing connection was forcibly closed by the remote host") ||
 		strings.Contains(message, "an established connection was aborted")
 }
 

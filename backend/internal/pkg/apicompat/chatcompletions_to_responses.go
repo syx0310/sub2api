@@ -28,12 +28,13 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 
 	emptyInstructions := ""
 	out := &ResponsesRequest{
-		Model:        req.Model,
-		Input:        inputJSON,
-		Instructions: &emptyInstructions,
-		Stream:       true, // upstream always streams
-		Include:      []string{"reasoning.encrypted_content"},
-		ServiceTier:  req.ServiceTier,
+		Model:             req.Model,
+		Input:             inputJSON,
+		Instructions:      &emptyInstructions,
+		Stream:            true, // upstream always streams
+		Include:           []string{"reasoning.encrypted_content"},
+		ServiceTier:       req.ServiceTier,
+		ParallelToolCalls: req.ParallelToolCalls,
 	}
 
 	// Reasoning models (gpt-5.x) do not accept sampling parameters.
