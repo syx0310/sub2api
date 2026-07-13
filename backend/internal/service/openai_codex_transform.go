@@ -1360,15 +1360,18 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if isCodexToolCallInputType(typ) {
-			// 续链模式下保留 id 以维持上下文引用，但 function_call 等
-			// call-input 类 item 的 id 必须以 "fc" 开头（上游校验
-			// "Expected an ID that begins with 'fc'"）。item_* 形式的 id
-			// 来自客户端回放，需要删除。
+		} else if expectedPrefix, ok := codexToolCallInputIDPrefix(typ); ok {
+			// 续链模式下保留 id 以维持上下文引用，但 call-input item 的
+			// id 前缀必须匹配其类型。新版 Codex 会分别生成 fc_/lsh_/
+			// tsc_/ctc_；item_* 等不匹配的客户端回放 id 仍需删除。
 			// 注意：function_call_output 等 output 类的 id 无此约束，不动。
-			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "fc") {
-				ensureCopy()
-				delete(newItem, "id")
+			if id, ok := m["id"].(string); ok && id != "" {
+				hasExpectedPrefix := strings.HasPrefix(id, expectedPrefix+"_") ||
+					strings.HasPrefix(id, expectedPrefix+"-")
+				if !hasExpectedPrefix {
+					ensureCopy()
+					delete(newItem, "id")
+				}
 			}
 		} else if typ == "message" {
 			// 同理，message 类 item 的 id 必须以 "msg" 开头（上游校验
@@ -1425,19 +1428,23 @@ func isCodexToolCallItemType(typ string) bool {
 	}
 }
 
-// isCodexToolCallInputType 仅匹配 call-input 类型（不含 output），这些类型的
-// id 必须以 "fc" 开头，上游会校验 "Expected an ID that begins with 'fc'."。
-func isCodexToolCallInputType(typ string) bool {
+// codexToolCallInputIDPrefix 返回 call-input 类型（不含 output）的 item id
+// 前缀。tool_call 和 mcp_tool_call 是本地 legacy 类型，继续按 function_call
+// 的 fc 前缀处理。
+func codexToolCallInputIDPrefix(typ string) (string, bool) {
 	switch typ {
 	case "function_call",
 		"tool_call",
-		"local_shell_call",
-		"tool_search_call",
-		"custom_tool_call",
 		"mcp_tool_call":
-		return true
+		return "fc", true
+	case "local_shell_call":
+		return "lsh", true
+	case "tool_search_call":
+		return "tsc", true
+	case "custom_tool_call":
+		return "ctc", true
 	default:
-		return false
+		return "", false
 	}
 }
 

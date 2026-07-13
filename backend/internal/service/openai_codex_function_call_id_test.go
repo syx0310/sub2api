@@ -66,10 +66,78 @@ func TestFilterCodexInput_KeepsFcID_WhenPreservingReferences(t *testing.T) {
 	require.Equal(t, "fc_validID123", fc["id"], "valid fc* id must be preserved")
 }
 
+func TestFilterCodexInput_KeepsTypedToolCallIDs_WhenPreservingReferences(t *testing.T) {
+	tests := []struct {
+		typ string
+		id  string
+	}{
+		{typ: "function_call", id: "fc_function"},
+		{typ: "tool_call", id: "fc_tool"},
+		{typ: "local_shell_call", id: "lsh_shell"},
+		{typ: "tool_search_call", id: "tsc_search"},
+		{typ: "custom_tool_call", id: "ctc_custom"},
+		{typ: "mcp_tool_call", id: "fc_mcp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typ, func(t *testing.T) {
+			input := []any{map[string]any{
+				"type":    tt.typ,
+				"id":      tt.id,
+				"call_id": "fc_call",
+				"name":    "tool",
+			}}
+
+			filtered := filterCodexInputWithOptions(input, codexInputFilterOptions{
+				PreserveReferences: true,
+			})
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tt.id, item["id"])
+		})
+	}
+}
+
+func TestFilterCodexInput_StripsMismatchedToolCallIDs_WhenPreservingReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  string
+		id   string
+	}{
+		{name: "function output prefix on call", typ: "function_call", id: "fco_wrong"},
+		{name: "function prefix on local shell", typ: "local_shell_call", id: "fc_wrong"},
+		{name: "custom prefix on tool search", typ: "tool_search_call", id: "ctc_wrong"},
+		{name: "unprefixed uuid", typ: "custom_tool_call", id: "018f9e15-7a6a-7000-8000-000000000001"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []any{map[string]any{
+				"type":    tt.typ,
+				"id":      tt.id,
+				"call_id": "fc_call",
+				"name":    "tool",
+			}}
+
+			filtered := filterCodexInputWithOptions(input, codexInputFilterOptions{
+				PreserveReferences: true,
+			})
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			_, hasID := item["id"]
+			require.False(t, hasID)
+		})
+	}
+}
+
 // TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes verifies that
 // item_* ids are stripped from all call-input types (not output types).
 func TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes(t *testing.T) {
-	types := []string{"function_call", "tool_call", "local_shell_call", "custom_tool_call", "mcp_tool_call"}
+	types := []string{"function_call", "tool_call", "local_shell_call", "tool_search_call", "custom_tool_call", "mcp_tool_call"}
 
 	for _, typ := range types {
 		input := []any{
