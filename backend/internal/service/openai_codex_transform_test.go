@@ -281,7 +281,7 @@ func TestApplyCodexOAuthTransform_PreservesKnownToolChoice(t *testing.T) {
 	require.Equal(t, "custom", choice["type"])
 }
 
-func TestApplyCodexOAuthTransform_PreservesResponsesFunctionToolChoice(t *testing.T) {
+func TestApplyCodexOAuthTransform_NormalizesLegacyFunctionToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"tools": []any{
@@ -298,13 +298,11 @@ func TestApplyCodexOAuthTransform_PreservesResponsesFunctionToolChoice(t *testin
 	choice, ok := reqBody["tool_choice"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "function", choice["type"])
-	function, ok := choice["function"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "shell", function["name"])
-	require.NotContains(t, choice, "name")
+	require.Equal(t, "shell", choice["name"])
+	require.NotContains(t, choice, "function")
 }
 
-func TestApplyCodexOAuthTransform_PreservesFunctionToolChoiceName(t *testing.T) {
+func TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"tools": []any{
@@ -318,12 +316,7 @@ func TestApplyCodexOAuthTransform_PreservesFunctionToolChoiceName(t *testing.T) 
 
 	applyCodexOAuthTransform(reqBody, true, false)
 
-	choice, ok := reqBody["tool_choice"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "function", choice["type"])
-	function, ok := choice["function"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "missing", function["name"])
+	require.Equal(t, "auto", reqBody["tool_choice"])
 }
 
 func TestApplyCodexOAuthTransform_AddsFallbackNameForFunctionCallInput(t *testing.T) {
@@ -1458,7 +1451,7 @@ func TestIsInstructionsEmpty(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_PreservesReasoningStripsIDAndStatus(t *testing.T) {
+func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 	encrypted := testGPTReasoningEncryptedContent()
 	build := func() []any {
 		return []any{
@@ -1486,8 +1479,7 @@ func TestFilterCodexInput_PreservesReasoningStripsIDAndStatus(t *testing.T) {
 			require.Equal(t, encrypted, item["encrypted_content"])
 			_, hasID := item["id"]
 			require.False(t, hasID)
-			_, hasStatus := item["status"]
-			require.False(t, hasStatus)
+			require.Equal(t, "completed", item["status"])
 			summary, ok := item["summary"].([]any)
 			require.True(t, ok)
 			require.Len(t, summary, 1)
@@ -1626,7 +1618,7 @@ func TestFilterCodexInput_PreservesReasoningInMixedInput(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_DropsIncompatibleEncryptedContentAndKeepsReasoningItems(t *testing.T) {
+func TestFilterCodexInput_PreservesOpaqueEncryptedContent(t *testing.T) {
 	empty := map[string]any{"type": "reasoning", "id": "rs_empty", "summary": []any{}}
 	summaryOnly := map[string]any{
 		"type":              "reasoning",
@@ -1648,7 +1640,7 @@ func TestFilterCodexInput_DropsIncompatibleEncryptedContentAndKeepsReasoningItem
 	summaryItem, ok := filtered[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "reasoning", summaryItem["type"])
-	require.NotContains(t, summaryItem, "encrypted_content", "incompatible Claude signature must not be sent to GPT/Codex")
+	require.Equal(t, "claude#EgAA", summaryItem["encrypted_content"])
 	require.NotContains(t, summaryItem, "id")
 	require.Contains(t, summaryItem, "summary")
 }
