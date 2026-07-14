@@ -639,11 +639,13 @@ func TestNormalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(t *testing.T)
 	t.Parallel()
 
 	normalized, err := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(
-		[]byte(`{"model":"gpt-5.1","input":[1],"previous_response_id":"resp_x","metadata":{"b":2,"a":1}}`),
+		[]byte(`{"model":"gpt-5.1","input":[1],"previous_response_id":"resp_x","client_metadata":{"turn_id":"turn_1"},"stream_options":{"reasoning_summary_delivery":"sequential_cutoff"},"metadata":{"b":2,"a":1}}`),
 	)
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(normalized, "input").Exists())
 	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(normalized, "client_metadata").Exists())
+	require.False(t, gjson.GetBytes(normalized, "stream_options").Exists())
 	require.Equal(t, float64(1), gjson.GetBytes(normalized, "metadata.a").Float())
 
 	_, err = normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(nil)
@@ -745,6 +747,48 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 
 	t.Run("strict_incremental_keep", func(t *testing.T) {
 		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
+	})
+
+	t.Run("request metadata and stream delivery changes keep previous response", func(t *testing.T) {
+		previousWithMetadata := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"stream_options":{"reasoning_summary_delivery":"sequential_cutoff"},
+			"client_metadata":{"x-codex-turn-metadata":"turn_1","x-codex-ws-stream-request-start-ms":"100"},
+			"input":[{"type":"input_text","text":"hello"}]
+		}`)
+		currentWithMetadata := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"stream_options":null,
+			"client_metadata":{"x-codex-turn-metadata":"turn_2","x-codex-ws-stream-request-start-ms":"200"},
+			"previous_response_id":"resp_turn_1",
+			"input":[{"type":"input_text","text":"world"}]
+		}`)
+
+		keep, reason, err := shouldKeepIngressPreviousResponseID(
+			previousWithMetadata,
+			currentWithMetadata,
+			"resp_turn_1",
+			false,
+		)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
+
+		state, err := buildOpenAIWSIngressPreviousTurnStrictState(previousWithMetadata)
+		require.NoError(t, err)
+		keep, reason, err = shouldKeepIngressPreviousResponseIDWithStrictState(
+			state,
+			currentWithMetadata,
+			"resp_turn_1",
+			false,
+		)
 		require.NoError(t, err)
 		require.True(t, keep)
 		require.Equal(t, "strict_incremental_ok", reason)

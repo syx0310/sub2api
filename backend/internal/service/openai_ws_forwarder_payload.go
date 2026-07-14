@@ -433,6 +433,10 @@ func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) (
 	}
 	delete(decoded, "input")
 	delete(decoded, "previous_response_id")
+	// Match the official Codex websocket reuse semantics: metadata and stream
+	// delivery options do not change the context referenced by a response ID.
+	delete(decoded, "client_metadata")
+	delete(decoded, "stream_options")
 	return json.Marshal(decoded)
 }
 
