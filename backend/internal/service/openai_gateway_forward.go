@@ -47,9 +47,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+	responsesLite := isOpenAIResponsesLiteRequest(c)
 
 	if account.Platform == PlatformGrok {
-		_ = promptCacheKey
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
 	}
 
@@ -197,7 +197,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
-	if instructionsEmpty && !compatMessagesBridge {
+	if instructionsEmpty && !compatMessagesBridge && !responsesLite {
 		markPatchSet("instructions", "")
 	}
 
@@ -251,11 +251,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(decoded) {
+		if codexImageGenerationBridgeEnabled && !responsesLite && ensureOpenAIResponsesImageGenerationTool(decoded) {
 			markDecodedModified()
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
 		}
-		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationToolChoiceAuto(decoded) {
+		if codexImageGenerationBridgeEnabled && !responsesLite && ensureOpenAIResponsesImageGenerationToolChoiceAuto(decoded) {
 			markDecodedModified()
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Set /responses image_generation tool_choice=auto for Codex client")
 		}
@@ -279,7 +279,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageIntent = true
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] /responses image_generation request inbound_model=%s mapped_model=%s account_type=%s", requestView.Model, upstreamModel, account.Type)
 		}
-		if codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(decoded) {
+		if codexImageGenerationBridgeEnabled && !responsesLite && applyCodexImageGenerationBridgeInstructions(decoded) {
 			markDecodedModified()
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
 		}
@@ -324,7 +324,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			ensureCodexOAuthInstructionsField(decoded)
 			markDecodedModified()
 		} else {
-			codexResult = applyCodexOAuthTransform(decoded, isCodexCLI, isCompactRequest)
+			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
+				IsCodexCLI:    isCodexCLI,
+				IsCompact:     isCompactRequest,
+				ResponsesLite: responsesLite,
+			})
 		}
 		if codexResult.Modified {
 			markDecodedModified()

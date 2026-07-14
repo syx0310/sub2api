@@ -165,6 +165,14 @@ func isOpenAIResponsesCompactPath(c *gin.Context) bool {
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
 }
 
+func isOpenAIResponsesLitePayload(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	value := gjson.GetBytes(body, "client_metadata."+openAIResponsesLiteWSMetadataKey).String()
+	return strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
 func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -504,10 +512,10 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
-// 2) instructions 归一化为空字符串，避免 ChatGPT internal API 拒绝缺失/空白值
+// 2) 普通请求将 instructions 归一化为空字符串；Responses Lite 保留字段缺省
 // 3) Codex OAuth upstream 不接受 input[].role="system"，统一改为 developer
 // 4) store=false 5) 非 compact 保持 stream=true；compact 强制 stream=false
-func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
+func normalizeOpenAIPassthroughOAuthBody(body []byte, compact, responsesLite bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -527,7 +535,7 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		changed = true
 	}
 
-	if instructions := gjson.GetBytes(normalized, "instructions"); !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == "" {
+	if instructions := gjson.GetBytes(normalized, "instructions"); !responsesLite && (!instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == "") {
 		next, err := sjson.SetBytes(normalized, "instructions", "")
 		if err != nil {
 			return body, false, fmt.Errorf("normalize passthrough body instructions: %w", err)

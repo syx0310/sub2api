@@ -74,6 +74,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
 		}
+		for _, value := range c.Request.Header.Values("x-codex-beta-features") {
+			if value = strings.TrimSpace(value); value != "" {
+				headers.Add("x-codex-beta-features", value)
+			}
+		}
 	}
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
 	if account != nil && account.Type == AccountTypeOAuth {
@@ -428,6 +433,10 @@ func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) (
 	}
 	delete(decoded, "input")
 	delete(decoded, "previous_response_id")
+	// Match the official Codex websocket reuse semantics: metadata and stream
+	// delivery options do not change the context referenced by a response ID.
+	delete(decoded, "client_metadata")
+	delete(decoded, "stream_options")
 	return json.Marshal(decoded)
 }
 

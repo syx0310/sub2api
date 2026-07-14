@@ -16,7 +16,17 @@ type chatMessageContent struct {
 // true. store is always false and reasoning.encrypted_content is always
 // included so that the response translator has full context.
 func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest, error) {
-	input, err := convertChatMessagesToResponsesInput(req.Messages)
+	return chatCompletionsToResponses(req, false)
+}
+
+// ChatCompletionsToResponsesPreserveSystemRole keeps legacy system messages as
+// system input items for upstream protocols that distinguish them from developer.
+func ChatCompletionsToResponsesPreserveSystemRole(req *ChatCompletionsRequest) (*ResponsesRequest, error) {
+	return chatCompletionsToResponses(req, true)
+}
+
+func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole bool) (*ResponsesRequest, error) {
+	input, err := convertChatMessagesToResponsesInput(req.Messages, preserveSystemRole)
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +110,10 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 
 // convertChatMessagesToResponsesInput converts the Chat Completions messages
 // array into a Responses API input items array.
-func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputItem, error) {
+func convertChatMessagesToResponsesInput(msgs []ChatMessage, preserveSystemRole bool) ([]ResponsesInputItem, error) {
 	var out []ResponsesInputItem
 	for _, m := range msgs {
-		items, err := chatMessageToResponsesItems(m)
+		items, err := chatMessageToResponsesItems(m, preserveSystemRole)
 		if err != nil {
 			return nil, err
 		}
@@ -114,10 +124,10 @@ func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputIt
 
 // chatMessageToResponsesItems converts a single ChatMessage into one or more
 // ResponsesInputItem values.
-func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
+func chatMessageToResponsesItems(m ChatMessage, preserveSystemRole bool) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "system":
-		return chatSystemToResponses(m)
+		return chatSystemToResponses(m, preserveSystemRole)
 	case "developer":
 		return chatDeveloperToResponses(m)
 	case "user":
@@ -133,8 +143,8 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	}
 }
 
-// chatSystemToResponses converts a system message into the Responses developer role.
-func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
+// chatSystemToResponses converts a system message into the selected Responses role.
+func chatSystemToResponses(m ChatMessage, preserveSystemRole bool) ([]ResponsesInputItem, error) {
 	parsed, err := parseChatMessageContent(m.Content)
 	if err != nil {
 		return nil, err
@@ -143,7 +153,11 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
+	role := "developer"
+	if preserveSystemRole {
+		role = "system"
+	}
+	return []ResponsesInputItem{{Role: role, Content: content}}, nil
 }
 
 // chatDeveloperToResponses converts a developer message, preserving the role.

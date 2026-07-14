@@ -49,6 +49,9 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
+	openAIUpstreamEndpointContextKey   = "openai_actual_upstream_endpoint"
+	openAIResponsesLiteHeader          = "x-openai-internal-codex-responses-lite"
+	openAIResponsesLiteWSMetadataKey   = "ws_request_header_x_openai_internal_codex_responses_lite"
 	codexCLIVersion                    = "0.144.1"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
@@ -60,31 +63,39 @@ const (
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"version":               true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept-language":         true,
+	"content-type":            true,
+	"conversation_id":         true,
+	"user-agent":              true,
+	"originator":              true,
+	"session_id":              true,
+	"version":                 true,
+	openAIResponsesLiteHeader: true,
+	"x-codex-beta-features":   true,
+	"x-codex-turn-state":      true,
+	"x-codex-turn-metadata":   true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                true,
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"openai-beta":           true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"version":               true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept":                  true,
+	"accept-language":         true,
+	"content-type":            true,
+	"conversation_id":         true,
+	"openai-beta":             true,
+	"user-agent":              true,
+	"originator":              true,
+	"session_id":              true,
+	"version":                 true,
+	openAIResponsesLiteHeader: true,
+	"x-codex-beta-features":   true,
+	"x-codex-turn-state":      true,
+	"x-codex-turn-metadata":   true,
+}
+
+func isOpenAIResponsesLiteRequest(c *gin.Context) bool {
+	return c != nil && strings.EqualFold(strings.TrimSpace(c.GetHeader(openAIResponsesLiteHeader)), "true")
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -225,6 +236,9 @@ type OpenAIForwardResult struct {
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Empty when no mapping was applied (requested model was used as-is).
 	UpstreamModel string
+	// UpstreamEndpoint is the actual upstream API path used for this request.
+	// It avoids guessing when one downstream protocol can use multiple upstream endpoints.
+	UpstreamEndpoint string
 	// ServiceTier records the OpenAI Responses API service tier, e.g. "priority" / "flex".
 	// Nil means the request did not specify a recognized tier.
 	ServiceTier *string
@@ -251,9 +265,38 @@ type OpenAIForwardResult struct {
 	VideoResolution    string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int
+	// WebSearchCalls 是 Codex alpha/search 网页搜索调用次数（每次成功请求为 1）。
+	// 上游不返回 usage 字段，>0 时走按次计费（分组单价 × 次数 × 倍率）。
+	WebSearchCalls int
 
 	wsReplayInput       []json.RawMessage
 	wsReplayInputExists bool
+}
+
+// SetActualOpenAIUpstreamEndpoint records the endpoint selected by the current
+// forwarding attempt. It covers error paths where no OpenAIForwardResult is
+// available for usage and operations logging.
+func SetActualOpenAIUpstreamEndpoint(c *gin.Context, endpoint string) {
+	if c == nil {
+		return
+	}
+	if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
+		c.Set(openAIUpstreamEndpointContextKey, endpoint)
+	}
+}
+
+// GetActualOpenAIUpstreamEndpoint returns the endpoint recorded by the latest
+// forwarding attempt in this request.
+func GetActualOpenAIUpstreamEndpoint(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, exists := c.Get(openAIUpstreamEndpointContextKey)
+	if !exists {
+		return ""
+	}
+	endpoint, _ := value.(string)
+	return strings.TrimSpace(endpoint)
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
