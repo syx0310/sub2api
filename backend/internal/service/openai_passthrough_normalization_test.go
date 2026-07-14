@@ -46,3 +46,10 @@ func TestNormalizeOpenAIPassthroughOAuthBody_ResponsesLitePreservesMissingInstru
 	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
 }
+
+func TestIsOpenAIResponsesLitePayload(t *testing.T) {
+	require.True(t, isOpenAIResponsesLitePayload([]byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`)))
+	require.True(t, isOpenAIResponsesLitePayload([]byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"TRUE"}}`)))
+	require.False(t, isOpenAIResponsesLitePayload([]byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"false"}}`)))
+	require.False(t, isOpenAIResponsesLitePayload([]byte(`{}`)))
+}

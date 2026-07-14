@@ -165,6 +165,14 @@ func isOpenAIResponsesCompactPath(c *gin.Context) bool {
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
 }
 
+func isOpenAIResponsesLitePayload(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	value := gjson.GetBytes(body, "client_metadata."+openAIResponsesLiteWSMetadataKey).String()
+	return strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
 func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil

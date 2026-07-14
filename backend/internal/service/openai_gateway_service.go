@@ -51,6 +51,7 @@ const (
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
 	openAIUpstreamEndpointContextKey   = "openai_actual_upstream_endpoint"
 	openAIResponsesLiteHeader          = "x-openai-internal-codex-responses-lite"
+	openAIResponsesLiteWSMetadataKey   = "ws_request_header_x_openai_internal_codex_responses_lite"
 	codexCLIVersion                    = "0.144.1"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
