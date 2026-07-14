@@ -422,6 +422,79 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	require.NotContains(t, body, "\"name\":\"edit\"")
 }
 
+func TestOpenAIGatewayService_ResponsesLitePreservesHTTPContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "managed"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.144.1")
+			c.Request.Header.Set(openAIResponsesLiteHeader, "true")
+
+			originalBody := []byte(`{
+				"model":"gpt-5.4",
+				"stream":true,
+				"store":false,
+				"tool_choice":"auto",
+				"parallel_tool_calls":false,
+				"input":[
+					{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}]},
+					{"type":"message","role":"developer","content":[{"type":"input_text","text":"base instructions"}]},
+					{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+				]
+			}`)
+			upstreamSSE := strings.Join([]string{
+				`data: {"type":"response.completed","response":{"id":"resp_lite","model":"gpt-5.4","usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-lite"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+			}}
+			svc := &OpenAIGatewayService{
+				cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+				httpUpstream: upstream,
+			}
+			extra := map[string]any{}
+			if passthrough {
+				extra["openai_passthrough"] = true
+			}
+			account := &Account{
+				ID:             123,
+				Name:           "lite-account",
+				Platform:       PlatformOpenAI,
+				Type:           AccountTypeOAuth,
+				Concurrency:    1,
+				Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+				Extra:          extra,
+				Status:         StatusActive,
+				Schedulable:    true,
+				RateMultiplier: f64p(1),
+			}
+
+			result, err := svc.Forward(context.Background(), c, account, originalBody)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, "true", upstream.lastReq.Header.Get(openAIResponsesLiteHeader))
+			require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "tools").Exists())
+			require.Equal(t, "additional_tools", gjson.GetBytes(upstream.lastBody, "input.0.type").String())
+			require.Equal(t, "developer", gjson.GetBytes(upstream.lastBody, "input.1.role").String())
+			require.Equal(t, "user", gjson.GetBytes(upstream.lastBody, "input.2.role").String())
+		})
+	}
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

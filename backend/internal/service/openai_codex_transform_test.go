@@ -1114,6 +1114,41 @@ func TestApplyCodexOAuthTransform_CodexCLI_SuppliesEmptyWhenMissing(t *testing.T
 	require.True(t, result.Modified)
 }
 
+func TestApplyCodexOAuthTransform_ResponsesLitePreservesTransportShape(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"type": "additional_tools",
+				"role": "developer",
+				"tools": []any{
+					map[string]any{"type": "function", "name": "shell"},
+				},
+			},
+			map[string]any{"type": "message", "role": "developer", "content": "instructions"},
+			map[string]any{"type": "message", "role": "user", "content": "hello"},
+		},
+	}
+
+	result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+		IsCodexCLI:    true,
+		ResponsesLite: true,
+	})
+
+	require.True(t, result.Modified)
+	require.NotContains(t, reqBody, "instructions")
+	require.NotContains(t, reqBody, "tools")
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 3)
+	carrier, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "additional_tools", carrier["type"])
+	require.Equal(t, "developer", carrier["role"])
+	require.False(t, reqBody["store"].(bool))
+	require.True(t, reqBody["stream"].(bool))
+}
+
 func TestApplyCodexOAuthTransform_GPT55KeepsBlankInstructionsPlaceholder(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.5",

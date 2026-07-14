@@ -48,7 +48,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	if account != nil && account.Type == AccountTypeOAuth {
-		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPath(c))
+		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(
+			body,
+			isOpenAIResponsesCompactPath(c),
+			isOpenAIResponsesLiteRequest(c),
+		)
 		if err != nil {
 			return nil, err
 		}
