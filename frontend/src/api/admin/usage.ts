@@ -4,12 +4,12 @@
  */
 
 import { apiClient } from '../client'
-import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
+import type { ActualCostBreakdown, AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
 import type { EndpointStat } from '@/types'
 
 // ==================== Types ====================
 
-export interface AdminUsageStatsResponse {
+export interface AdminUsageStatsResponse extends Partial<ActualCostBreakdown> {
   total_requests: number
   total_input_tokens: number
   total_output_tokens: number

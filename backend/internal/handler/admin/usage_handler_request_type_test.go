@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +19,7 @@ type adminUsageRepoCapture struct {
 	listParams   pagination.PaginationParams
 	listFilters  usagestats.UsageLogFilters
 	statsFilters usagestats.UsageLogFilters
+	stats        *usagestats.UsageStats
 }
 
 func (s *adminUsageRepoCapture) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagestats.UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
@@ -33,6 +35,9 @@ func (s *adminUsageRepoCapture) ListWithFilters(ctx context.Context, params pagi
 
 func (s *adminUsageRepoCapture) GetStatsWithFilters(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, error) {
 	s.statsFilters = filters
+	if s.stats != nil {
+		return s.stats, nil
+	}
 	return &usagestats.UsageStats{}, nil
 }
 
@@ -117,6 +122,11 @@ func TestAdminUsageStatsRequestTypePriority(t *testing.T) {
 	require.NotNil(t, repo.statsFilters.RequestType)
 	require.Equal(t, int16(service.RequestTypeStream), *repo.statsFilters.RequestType)
 	require.Nil(t, repo.statsFilters.Stream)
+	require.Contains(t, rec.Body.String(), `"input_actual_cost":0`)
+	require.Contains(t, rec.Body.String(), `"output_actual_cost":0`)
+	require.Contains(t, rec.Body.String(), `"cache_creation_actual_cost":0`)
+	require.Contains(t, rec.Body.String(), `"cache_read_actual_cost":0`)
+	require.Contains(t, rec.Body.String(), `"other_actual_cost":0`)
 }
 
 func TestAdminUsageStatsInvalidRequestType(t *testing.T) {
@@ -139,4 +149,39 @@ func TestAdminUsageStatsInvalidStream(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAdminUsageStatsReturnsActualCostBreakdown(t *testing.T) {
+	repo := &adminUsageRepoCapture{stats: &usagestats.UsageStats{
+		TotalActualCost:         18.9502,
+		InputActualCost:         12.3456,
+		OutputActualCost:        4.5678,
+		CacheCreationActualCost: 1.2345,
+		CacheReadActualCost:     0.6789,
+		OtherActualCost:         0.1234,
+	}}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage/stats?nocache=1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Data struct {
+			TotalActualCost         float64 `json:"total_actual_cost"`
+			InputActualCost         float64 `json:"input_actual_cost"`
+			OutputActualCost        float64 `json:"output_actual_cost"`
+			CacheCreationActualCost float64 `json:"cache_creation_actual_cost"`
+			CacheReadActualCost     float64 `json:"cache_read_actual_cost"`
+			OtherActualCost         float64 `json:"other_actual_cost"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.InDelta(t, 18.9502, body.Data.TotalActualCost, 1e-12)
+	require.InDelta(t, 12.3456, body.Data.InputActualCost, 1e-12)
+	require.InDelta(t, 4.5678, body.Data.OutputActualCost, 1e-12)
+	require.InDelta(t, 1.2345, body.Data.CacheCreationActualCost, 1e-12)
+	require.InDelta(t, 0.6789, body.Data.CacheReadActualCost, 1e-12)
+	require.InDelta(t, 0.1234, body.Data.OtherActualCost, 1e-12)
 }

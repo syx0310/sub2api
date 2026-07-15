@@ -87,6 +87,7 @@ export interface ModelStatsParams {
   request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
+  billing_mode?: string | null
 }
 
 export interface ModelStatsResponse {
@@ -124,6 +125,8 @@ export interface GroupStatsResponse {
 }
 
 export interface DashboardSnapshotV2Params extends TrendParams {
+  model_source?: 'requested' | 'upstream' | 'mapping'
+  billing_mode?: string | null
   include_stats?: boolean
   include_trend?: boolean
   include_model_stats?: boolean
