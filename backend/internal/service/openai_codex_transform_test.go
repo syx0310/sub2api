@@ -1204,8 +1204,8 @@ func TestApplyCodexOAuthTransform_ResponsesLitePreservesTransportShape(t *testin
 	require.True(t, ok)
 	require.Equal(t, "additional_tools", carrier["type"])
 	require.Equal(t, "developer", carrier["role"])
-	require.False(t, reqBody["store"].(bool))
-	require.True(t, reqBody["stream"].(bool))
+	require.Equal(t, false, reqBody["store"])
+	require.Equal(t, true, reqBody["stream"])
 }
 
 func TestApplyCodexOAuthTransform_GPT55KeepsBlankInstructionsPlaceholder(t *testing.T) {
