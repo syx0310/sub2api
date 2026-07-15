@@ -1572,7 +1572,15 @@ export interface DashboardStats {
   tpm: number // 近5分钟平均每分钟Token数
 }
 
-export interface UsageStatsResponse {
+export interface ActualCostBreakdown {
+  input_actual_cost: number
+  output_actual_cost: number
+  cache_creation_actual_cost: number
+  cache_read_actual_cost: number
+  other_actual_cost: number
+}
+
+export interface UsageStatsResponse extends Partial<ActualCostBreakdown> {
   period?: string
   total_requests: number
   total_input_tokens: number
@@ -1604,7 +1612,7 @@ export interface TrendDataPoint {
   actual_cost: number // 实际扣除
 }
 
-export interface ModelStat {
+export interface ModelStat extends Partial<ActualCostBreakdown> {
   model: string
   requests: number
   input_tokens: number

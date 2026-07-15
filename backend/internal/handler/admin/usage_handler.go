@@ -345,7 +345,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		c.Header("X-Usage-Stats-Cache", cacheStatusValue(hit))
 	}
 
-	response.Success(c, stats)
+	response.Success(c, dto.AdminUsageStatsFromUsageStats(stats))
 }
 
 // SearchUsers handles searching users by email keyword
