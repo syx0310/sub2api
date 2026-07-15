@@ -19,9 +19,27 @@ type dashboardUsageRepoCapture struct {
 	trendStream      *bool
 	modelRequestType *int16
 	modelStream      *bool
+	modelFilters     usagestats.UsageLogFilters
+	modelSource      string
+	modelCalls       int
+	models           []usagestats.ModelStat
 	rankingLimit     int
 	ranking          []usagestats.UserSpendingRankingItem
 	rankingTotal     float64
+}
+
+func (s *dashboardUsageRepoCapture) GetModelStatsWithUsageFiltersBySource(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	filters usagestats.UsageLogFilters,
+	source string,
+) ([]usagestats.ModelStat, error) {
+	s.modelFilters = filters
+	s.modelRequestType = filters.RequestType
+	s.modelStream = filters.Stream
+	s.modelSource = source
+	s.modelCalls++
+	return s.models, nil
 }
 
 func (s *dashboardUsageRepoCapture) GetUsageTrendWithFilters(
@@ -68,6 +86,7 @@ func (s *dashboardUsageRepoCapture) GetUserSpendingRanking(
 
 func newDashboardRequestTypeTestRouter(repo *dashboardUsageRepoCapture) *gin.Engine {
 	gin.SetMode(gin.TestMode)
+	dashboardModelStatsCache = newSnapshotCache(30 * time.Second)
 	dashboardSvc := service.NewDashboardService(repo, nil, nil, nil)
 	handler := NewDashboardHandler(dashboardSvc, nil)
 	router := gin.New()
@@ -169,6 +188,94 @@ func TestDashboardModelStatsValidModelSource(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, usagestats.ModelSourceUpstream, repo.modelSource)
+}
+
+func TestDashboardModelStatsModelFilterAndActualCostBreakdown(t *testing.T) {
+	repo := &dashboardUsageRepoCapture{models: []usagestats.ModelStat{{
+		Model:                   "gpt-5",
+		Requests:                3,
+		TotalTokens:             100,
+		ActualCost:              1.5,
+		InputActualCost:         0.6,
+		OutputActualCost:        0.4,
+		CacheCreationActualCost: 0.2,
+		CacheReadActualCost:     0.1,
+		OtherActualCost:         0.2,
+	}}}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/models?model=gpt-5&billing_mode=image", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "gpt-5", repo.modelFilters.Model)
+	require.Equal(t, "image", repo.modelFilters.BillingMode)
+	require.Contains(t, rec.Body.String(), `"input_actual_cost":0.6`)
+	require.Contains(t, rec.Body.String(), `"output_actual_cost":0.4`)
+	require.Contains(t, rec.Body.String(), `"cache_creation_actual_cost":0.2`)
+	require.Contains(t, rec.Body.String(), `"cache_read_actual_cost":0.1`)
+	require.Contains(t, rec.Body.String(), `"other_actual_cost":0.2`)
+}
+
+func TestDashboardModelStatsCacheSeparatesModelAndBillingModeFilters(t *testing.T) {
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	for _, query := range []string{
+		"model=model-a&billing_mode=token",
+		"model=model-b&billing_mode=token",
+		"model=model-a&billing_mode=image",
+		"model=model-a&billing_mode=token",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/models?start_date=2026-03-01&end_date=2026-03-02&"+query, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	require.Equal(t, 3, repo.modelCalls)
+}
+
+func TestDashboardSnapshotV2ModelsExposeActualCostBreakdown(t *testing.T) {
+	repo := &dashboardUsageRepoCapture{models: []usagestats.ModelStat{{
+		Model:                   "gpt-5",
+		ActualCost:              1.5,
+		InputActualCost:         0.6,
+		OutputActualCost:        0.4,
+		CacheCreationActualCost: 0.2,
+		CacheReadActualCost:     0.1,
+		OtherActualCost:         0.2,
+	}}}
+	handler := NewDashboardHandler(service.NewDashboardService(repo, nil, nil, nil), nil)
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	resp, err := handler.buildSnapshotV2Response(
+		context.Background(),
+		start,
+		start.AddDate(0, 0, 1),
+		"day",
+		&dashboardSnapshotV2Filters{
+			Model:       "gpt-5",
+			ModelSource: usagestats.ModelSourceUpstream,
+			BillingMode: "image",
+		},
+		false,
+		false,
+		true,
+		false,
+		false,
+		12,
+	)
+
+	require.NoError(t, err)
+	require.Len(t, resp.Models, 1)
+	require.Equal(t, usagestats.ModelSourceUpstream, repo.modelSource)
+	require.Equal(t, "gpt-5", repo.modelFilters.Model)
+	require.Equal(t, "image", repo.modelFilters.BillingMode)
+	require.InDelta(t, 0.6, resp.Models[0].InputActualCost, 1e-12)
+	require.InDelta(t, 0.2, resp.Models[0].OtherActualCost, 1e-12)
 }
 
 func TestDashboardUsersRankingLimitAndCache(t *testing.T) {

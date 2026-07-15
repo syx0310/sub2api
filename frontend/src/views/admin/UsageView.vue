@@ -430,6 +430,7 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
       request_type: requestType,
       stream: legacyStream === null ? undefined : legacyStream,
       billing_type: filters.value.billing_type,
+      billing_mode: filters.value.billing_mode,
     }
 
     const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source })

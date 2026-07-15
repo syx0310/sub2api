@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
@@ -267,13 +268,15 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 
 // GetModelStats handles getting model usage statistics
 // GET /api/v1/admin/dashboard/models
-// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type
+// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, model, model_source, request_type, stream, billing_type, billing_mode
 func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 
 	// Parse optional filter params
 	var userID, apiKeyID, accountID, groupID int64
+	model := strings.TrimSpace(c.Query("model"))
 	modelSource := usagestats.ModelSourceRequested
+	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 	var requestType *int16
 	var stream *bool
 	var billingType *int8
@@ -331,7 +334,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		}
 	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, billingType)
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, model, modelSource, requestType, stream, billingType, billingMode)
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
@@ -339,7 +342,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
-		"models":     stats,
+		"models":     dto.AdminModelStatsFromUsageStats(stats),
 		"start_date": startTime.Format("2006-01-02"),
 		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),
 	})

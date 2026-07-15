@@ -692,6 +692,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		args = append(args, *filters.EndTime)
 	}
 
+	actualCosts := buildActualCostBreakdownSQL("", "actual_cost")
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total_requests,
@@ -702,11 +703,16 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
+			%s as input_actual_cost,
+			%s as output_actual_cost,
+			%s as cache_creation_actual_cost,
+			%s as cache_read_actual_cost,
+			%s as other_actual_cost,
 			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as total_account_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
 		%s
-	`, buildWhere(conditions))
+	`, actualCosts.Input, actualCosts.Output, actualCosts.CacheCreation, actualCosts.CacheRead, actualCosts.Other, buildWhere(conditions))
 
 	stats := &UsageStats{}
 	var totalAccountCost float64
@@ -734,6 +740,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			&stats.TotalCacheReadTokens,
 			&stats.TotalCost,
 			&stats.TotalActualCost,
+			&stats.InputActualCost,
+			&stats.OutputActualCost,
+			&stats.CacheCreationActualCost,
+			&stats.CacheReadActualCost,
+			&stats.OtherActualCost,
 			&totalAccountCost,
 			&stats.AverageDurationMs,
 		)

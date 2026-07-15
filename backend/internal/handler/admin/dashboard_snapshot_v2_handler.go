@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -31,7 +32,7 @@ type dashboardSnapshotV2Response struct {
 
 	Stats      *dashboardSnapshotV2Stats        `json:"stats,omitempty"`
 	Trend      []usagestats.TrendDataPoint      `json:"trend,omitempty"`
-	Models     []usagestats.ModelStat           `json:"models,omitempty"`
+	Models     []dto.AdminModelStat             `json:"models,omitempty"`
 	Groups     []usagestats.GroupStat           `json:"groups,omitempty"`
 	UsersTrend []usagestats.UserUsageTrendPoint `json:"users_trend,omitempty"`
 }
@@ -42,9 +43,11 @@ type dashboardSnapshotV2Filters struct {
 	AccountID   int64
 	GroupID     int64
 	Model       string
+	ModelSource string
 	RequestType *int16
 	Stream      *bool
 	BillingType *int8
+	BillingMode string
 }
 
 type dashboardSnapshotV2CacheKey struct {
@@ -56,9 +59,11 @@ type dashboardSnapshotV2CacheKey struct {
 	AccountID         int64  `json:"account_id"`
 	GroupID           int64  `json:"group_id"`
 	Model             string `json:"model"`
+	ModelSource       string `json:"model_source"`
 	RequestType       *int16 `json:"request_type"`
 	Stream            *bool  `json:"stream"`
 	BillingType       *int8  `json:"billing_type"`
+	BillingMode       string `json:"billing_mode"`
 	IncludeStats      bool   `json:"include_stats"`
 	IncludeTrend      bool   `json:"include_trend"`
 	IncludeModels     bool   `json:"include_models"`
@@ -101,9 +106,11 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		AccountID:         filters.AccountID,
 		GroupID:           filters.GroupID,
 		Model:             filters.Model,
+		ModelSource:       filters.ModelSource,
 		RequestType:       filters.RequestType,
 		Stream:            filters.Stream,
 		BillingType:       filters.BillingType,
+		BillingMode:       filters.BillingMode,
 		IncludeStats:      includeStats,
 		IncludeTrend:      includeTrend,
 		IncludeModels:     includeModels,
@@ -200,15 +207,17 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.APIKeyID,
 			filters.AccountID,
 			filters.GroupID,
-			usagestats.ModelSourceRequested,
+			filters.Model,
+			filters.ModelSource,
 			filters.RequestType,
 			filters.Stream,
 			filters.BillingType,
+			filters.BillingMode,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get model statistics")
 		}
-		resp.Models = models
+		resp.Models = dto.AdminModelStatsFromUsageStats(models)
 	}
 
 	if includeGroups {
@@ -243,7 +252,15 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 
 func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filters, error) {
 	filters := &dashboardSnapshotV2Filters{
-		Model: strings.TrimSpace(c.Query("model")),
+		Model:       strings.TrimSpace(c.Query("model")),
+		ModelSource: usagestats.ModelSourceRequested,
+		BillingMode: strings.TrimSpace(c.Query("billing_mode")),
+	}
+	if rawModelSource := strings.TrimSpace(c.Query("model_source")); rawModelSource != "" {
+		if !usagestats.IsValidModelSource(rawModelSource) {
+			return nil, errors.New("invalid model_source, use requested/upstream/mapping")
+		}
+		filters.ModelSource = rawModelSource
 	}
 
 	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {

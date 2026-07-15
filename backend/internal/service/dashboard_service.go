@@ -141,9 +141,32 @@ func (s *DashboardService) GetModelStatsWithFilters(ctx context.Context, startTi
 }
 
 func (s *DashboardService) GetModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8, modelSource string) ([]usagestats.ModelStat, error) {
+	return s.GetModelStatsWithUsageFiltersBySource(ctx, startTime, endTime, usagestats.UsageLogFilters{
+		UserID:      userID,
+		APIKeyID:    apiKeyID,
+		AccountID:   accountID,
+		GroupID:     groupID,
+		RequestType: requestType,
+		Stream:      stream,
+		BillingType: billingType,
+	}, modelSource)
+}
+
+func (s *DashboardService) GetModelStatsWithUsageFiltersBySource(ctx context.Context, startTime, endTime time.Time, filters usagestats.UsageLogFilters, modelSource string) ([]usagestats.ModelStat, error) {
 	normalizedSource := usagestats.NormalizeModelSource(modelSource)
+	type modelStatsWithUsageFiltersRepo interface {
+		GetModelStatsWithUsageFiltersBySource(ctx context.Context, startTime, endTime time.Time, filters usagestats.UsageLogFilters, source string) ([]usagestats.ModelStat, error)
+	}
+	if filterRepo, ok := s.usageRepo.(modelStatsWithUsageFiltersRepo); ok {
+		stats, err := filterRepo.GetModelStatsWithUsageFiltersBySource(ctx, startTime, endTime, filters, normalizedSource)
+		if err != nil {
+			return nil, fmt.Errorf("get model stats with filters by source: %w", err)
+		}
+		return stats, nil
+	}
+
 	if normalizedSource == usagestats.ModelSourceRequested {
-		return s.GetModelStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+		return s.GetModelStatsWithFilters(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.RequestType, filters.Stream, filters.BillingType)
 	}
 
 	type modelStatsBySourceRepo interface {
@@ -151,14 +174,14 @@ func (s *DashboardService) GetModelStatsWithFiltersBySource(ctx context.Context,
 	}
 
 	if sourceRepo, ok := s.usageRepo.(modelStatsBySourceRepo); ok {
-		stats, err := sourceRepo.GetModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, normalizedSource)
+		stats, err := sourceRepo.GetModelStatsWithFiltersBySource(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.RequestType, filters.Stream, filters.BillingType, normalizedSource)
 		if err != nil {
 			return nil, fmt.Errorf("get model stats with filters by source: %w", err)
 		}
 		return stats, nil
 	}
 
-	return s.GetModelStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	return s.GetModelStatsWithFilters(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.RequestType, filters.Stream, filters.BillingType)
 }
 
 func (s *DashboardService) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagestats.GroupStat, error) {
