@@ -87,6 +87,96 @@ func (s *UsageLogRepoSuite) TestCreate() {
 	s.Require().NotZero(log.ID)
 }
 
+func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+
+	user := mustCreateUser(t, client, &service.User{Email: fmt.Sprintf("usage-extension-%d@example.com", time.Now().UnixNano())})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-usage-extension-" + uuid.NewString(), Name: "k"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "acc-usage-extension-" + uuid.NewString()})
+
+	newLog := func(path string) *service.UsageLog {
+		requestBytes := int64(1200 + len(path))
+		responseBytes := int64(3400 + len(path))
+		return &service.UsageLog{
+			UserID:                    user.ID,
+			APIKeyID:                  apiKey.ID,
+			AccountID:                 account.ID,
+			RequestID:                 path + "-" + uuid.NewString(),
+			Model:                     "gpt-5.5",
+			InputTokens:               10,
+			OutputTokens:              20,
+			TotalCost:                 0.5,
+			ActualCost:                0.5,
+			RequestBodyBytes:          &requestBytes,
+			ResponseBodyBytes:         &responseBytes,
+			LongContextBillingApplied: true,
+			CreatedAt:                 time.Now().UTC(),
+		}
+	}
+
+	assertStored := func(t *testing.T, log *service.UsageLog) {
+		t.Helper()
+		var requestBytes, responseBytes int64
+		var longContext bool
+		err := integrationDB.QueryRowContext(
+			ctx,
+			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
+			log.RequestID,
+			log.APIKeyID,
+		).Scan(&requestBytes, &responseBytes, &longContext)
+		require.NoError(t, err)
+		require.Equal(t, *log.RequestBodyBytes, requestBytes)
+		require.Equal(t, *log.ResponseBodyBytes, responseBytes)
+		require.True(t, longContext)
+	}
+
+	t.Run("single", func(t *testing.T) {
+		log := newLog("single")
+		inserted, err := repo.createSingle(ctx, integrationDB, log)
+		require.NoError(t, err)
+		require.True(t, inserted)
+		stored, err := repo.GetByID(ctx, log.ID)
+		require.NoError(t, err)
+		require.Equal(t, log.RequestBodyBytes, stored.RequestBodyBytes)
+		require.Equal(t, log.ResponseBodyBytes, stored.ResponseBodyBytes)
+		require.True(t, stored.LongContextBillingApplied)
+	})
+
+	t.Run("create_batch", func(t *testing.T) {
+		log := newLog("create-batch")
+		resultCh := make(chan usageLogCreateResult, 1)
+		repo.flushCreateBatch(integrationDB, []usageLogCreateRequest{{
+			log:      log,
+			prepared: prepareUsageLogInsert(log),
+			resultCh: resultCh,
+		}})
+		result := <-resultCh
+		require.NoError(t, result.err)
+		require.True(t, result.inserted)
+		assertStored(t, log)
+	})
+
+	t.Run("best_effort_batch", func(t *testing.T) {
+		log := newLog("best-effort-batch")
+		resultCh := make(chan error, 1)
+		repo.flushBestEffortBatch(integrationDB, []usageLogBestEffortRequest{{
+			prepared: prepareUsageLogInsert(log),
+			apiKeyID: log.APIKeyID,
+			resultCh: resultCh,
+		}})
+		require.NoError(t, <-resultCh)
+		assertStored(t, log)
+	})
+
+	t.Run("no_result", func(t *testing.T) {
+		log := newLog("no-result")
+		require.NoError(t, execUsageLogInsertNoResult(ctx, integrationDB, prepareUsageLogInsert(log)))
+		assertStored(t, log)
+	})
+}
+
 func TestUsageLogRepositoryCreate_BatchPathConcurrent(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)

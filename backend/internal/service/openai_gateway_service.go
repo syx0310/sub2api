@@ -50,8 +50,6 @@ const (
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
 	openAIUpstreamEndpointContextKey   = "openai_actual_upstream_endpoint"
-	openAIResponsesLiteHeader          = "x-openai-internal-codex-responses-lite"
-	openAIResponsesLiteWSMetadataKey   = "ws_request_header_x_openai_internal_codex_responses_lite"
 	codexCLIVersion                    = "0.144.1"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
@@ -63,39 +61,39 @@ const (
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"version":                 true,
-	openAIResponsesLiteHeader: true,
-	"x-codex-beta-features":   true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"user-agent":            true,
+	"originator":            true,
+	"session_id":            true,
+	"version":               true,
+	"x-codex-beta-features": true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
+	responsesLiteHeaderKey:  true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                  true,
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"openai-beta":             true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"version":                 true,
-	openAIResponsesLiteHeader: true,
-	"x-codex-beta-features":   true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
+	"accept":                true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"openai-beta":           true,
+	"user-agent":            true,
+	"originator":            true,
+	"session_id":            true,
+	"version":               true,
+	"x-codex-beta-features": true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
+	responsesLiteHeaderKey:  true,
 }
 
 func isOpenAIResponsesLiteRequest(c *gin.Context) bool {
-	return c != nil && strings.EqualFold(strings.TrimSpace(c.GetHeader(openAIResponsesLiteHeader)), "true")
+	return c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader))
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -417,6 +415,7 @@ type OpenAIGatewayService struct {
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
+	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
 }

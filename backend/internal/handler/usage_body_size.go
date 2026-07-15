@@ -24,7 +24,14 @@ func usageResponseBodyBytesFromGin(c *gin.Context) *int64 {
 	if c == nil || c.Writer == nil {
 		return nil
 	}
-	size := c.Writer.Size()
+	return usageResponseBodyBytesFromSize(c.Writer.Size())
+}
+
+func usageResponseBodyBytesFromOpenAIImages(c *gin.Context) *int64 {
+	return usageResponseBodyBytesFromSize(service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
+}
+
+func usageResponseBodyBytesFromSize(size int) *int64 {
 	if size < 0 {
 		return nil
 	}
