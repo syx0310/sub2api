@@ -425,6 +425,18 @@ func convertToolResultOutput(b AnthropicContentBlock) (string, []ResponsesConten
 	return text, imageParts
 }
 
+// extractAnthropicTextFromBlocks joins all text blocks, ignoring thinking/
+// tool_use/tool_result blocks.
+func extractAnthropicTextFromBlocks(blocks []AnthropicContentBlock) string {
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // mapAnthropicEffortToResponses converts Anthropic reasoning effort levels to
 // OpenAI Responses API effort levels.
 //
