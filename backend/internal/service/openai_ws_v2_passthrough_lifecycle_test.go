@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,6 +154,16 @@ func startPassthroughLifecycleServer(
 	svc *OpenAIGatewayService,
 	account *Account,
 ) (*httptest.Server, <-chan error) {
+	return startPassthroughLifecycleServerWithHooks(t, controlCtx, svc, account, nil)
+}
+
+func startPassthroughLifecycleServerWithHooks(
+	t *testing.T,
+	controlCtx context.Context,
+	svc *OpenAIGatewayService,
+	account *Account,
+	hooks *OpenAIWSIngressHooks,
+) (*httptest.Server, <-chan error) {
 	t.Helper()
 	serverErr := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +195,7 @@ func startPassthroughLifecycleServer(
 		req := r.Clone(controlCtx)
 		req.Header = req.Header.Clone()
 		ginCtx.Request = req
-		serverErr <- svc.ProxyResponsesWebSocketFromClient(controlCtx, ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErr <- svc.ProxyResponsesWebSocketFromClient(controlCtx, ginCtx, conn, account, "sk-test", firstMessage, hooks)
 	}))
 	return server, serverErr
 }
@@ -316,12 +327,16 @@ func TestPassthroughLifecycle_ActiveTurnInactivityUsesReadTimeout(t *testing.T) 
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())
 	defer cancelControl(context.Canceled)
 	upstream := newStagedPassthroughConn()
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_active","model":"gpt-5.1"}}`)
 	upstream.Send(`{"type":"response.output_text.delta","response_id":"resp_active","delta":"hello"}`)
 	server, serverErr := startPassthroughLifecycleServer(t, controlCtx, newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream), passthroughLifecycleAccount())
 	defer server.Close()
 	clientConn := dialPassthroughLifecycleClient(t, server)
 	defer func() { _ = clientConn.CloseNow() }()
 
+	created, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "response.created", gjson.GetBytes(created, "type").String())
 	delta, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, "response.output_text.delta", gjson.GetBytes(delta, "type").String())
@@ -411,11 +426,78 @@ func TestPassthroughLifecycle_RejectsOverlappingResponseCreate(t *testing.T) {
 	}
 }
 
+func TestPassthroughLifecycle_RejectedRequestDoesNotStartTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	cfg := passthroughLifecycleConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 3
+	upstream := newStagedPassthroughConn()
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_first","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+
+	var beforeTurns atomic.Int32
+	var rejectedEffort atomic.Pointer[string]
+	hooks := &OpenAIWSIngressHooks{
+		MaxReasoningEffort: "low",
+		BeforeTurn: func(int) error {
+			beforeTurns.Add(1)
+			return nil
+		},
+		BeforeRequest: func(_ int, payload []byte, _ string) error {
+			effort := strings.TrimSpace(gjson.GetBytes(payload, "reasoning.effort").String())
+			rejectedEffort.Store(&effort)
+			return NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				"request rejected before turn start",
+				errors.New("prompt audit rejected request"),
+			)
+		},
+	}
+
+	server, serverErr := startPassthroughLifecycleServerWithHooks(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(cfg, upstream),
+		passthroughLifecycleAccount(),
+		hooks,
+	)
+	defer server.Close()
+	clientConn := dialPassthroughLifecycleClient(t, server)
+	require.NotEmpty(t, requirePassthroughUpstreamWrite(t, upstream, time.Second))
+
+	_, err := readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","reasoning":{"effort":"xhigh"}}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	_, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.Error(t, err)
+	require.Equal(t, int32(1), beforeTurns.Load())
+	require.NotNil(t, rejectedEffort.Load())
+	require.Equal(t, "xhigh", *rejectedEffort.Load(), "BeforeRequest must observe the raw frame before effort capping")
+
+	require.NoError(t, upstream.Close())
+	_ = clientConn.CloseNow()
+	select {
+	case proxyErr := <-serverErr:
+		require.Error(t, proxyErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("rejected request did not terminate passthrough")
+	}
+}
+
 func TestPassthroughLifecycle_ActiveTurnActivityRefreshesReadTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())
 	defer cancelControl(context.Canceled)
 	upstream := newStagedPassthroughConn()
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_active_refresh","model":"gpt-5.1"}}`)
 	upstream.Send(`{"type":"response.output_text.delta","response_id":"resp_active_refresh","delta":"one"}`)
 	go func() {
 		for _, event := range []string{
@@ -435,6 +517,7 @@ func TestPassthroughLifecycle_ActiveTurnActivityRefreshesReadTimeout(t *testing.
 	defer func() { _ = clientConn.CloseNow() }()
 
 	for _, wantType := range []string{
+		"response.created",
 		"response.output_text.delta",
 		"response.output_text.delta",
 		"response.output_text.delta",
@@ -476,7 +559,11 @@ func TestPassthroughLifecycle_TerminalSwitchesToInterTurnIdleTimeout(t *testing.
 	cancelWrite()
 	require.NoError(t, err)
 	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "type").String())
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_idle_second","model":"gpt-5.1"}}`)
 	upstream.Send(`{"type":"response.completed","response":{"id":"resp_idle_second","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	created, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_idle_second", gjson.GetBytes(created, "response.id").String())
 	completed, err = readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, "resp_idle_second", gjson.GetBytes(completed, "response.id").String())
@@ -560,6 +647,7 @@ func TestPassthroughLifecycle_SecondTurnTimeoutIsNotFailoverSafe(t *testing.T) {
 	defer server.Close()
 	clientConn := dialPassthroughLifecycleClient(t, server)
 	defer func() { _ = clientConn.CloseNow() }()
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "type").String())
 
 	completed, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
 	require.NoError(t, err)
@@ -568,6 +656,7 @@ func TestPassthroughLifecycle_SecondTurnTimeoutIsNotFailoverSafe(t *testing.T) {
 	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_first"}`))
 	cancelWrite()
 	require.NoError(t, err)
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "type").String())
 	upstream.Send(`{"type":"response.created","response":{"id":"resp_second","model":"gpt-5.1"}}`)
 
 	created, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)

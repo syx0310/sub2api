@@ -48,6 +48,22 @@ func TestNewAESEncryptor_ValidKey32Bytes(t *testing.T) {
 	require.NotNil(t, enc)
 }
 
+func TestAESEncryptor_PersistentKeyConfigured(t *testing.T) {
+	cfg := aesTestCfg(aesHexKey(32, 0x01))
+
+	ephemeral, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	require.False(t, ephemeral.(*AESEncryptor).PersistentKeyConfigured())
+
+	cfg.Totp.EncryptionKeyConfigured = true
+	persistent, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	require.True(t, persistent.(*AESEncryptor).PersistentKeyConfigured())
+
+	var nilEncryptor *AESEncryptor
+	require.False(t, nilEncryptor.PersistentKeyConfigured())
+}
+
 // 16 / 24 字节密钥在 AES 体系内合法，但本实现仅接受 AES-256（32 字节）。
 func TestNewAESEncryptor_WrongKeyLength(t *testing.T) {
 	tests := []struct {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // assertAnthropicPairing enforces the Anthropic Messages tool-pairing invariants
@@ -162,4 +163,73 @@ func TestAnthropicPairing_SingleCall(t *testing.T) {
 	require.Equal(t, "user", msgs[0].Role)
 	require.True(t, hasToolUse(parseContentBlocks(msgs[1].Content), "call_A"))
 	require.True(t, hasToolResult(parseContentBlocks(msgs[2].Content), "call_A"))
+}
+
+func TestResponsesToAnthropic_FunctionOutputContentArray(t *testing.T) {
+	msgs := convertAnthropic(t, `[
+		{"type":"function_call","call_id":"call_A","name":"view_image","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_text","text":"image loaded"},
+			{"type":"input_image","image_url":"data:image/png;base64,YQ=="}
+		]}
+	]`)
+
+	require.Len(t, msgs, 2)
+	resultBlocks := parseContentBlocks(msgs[1].Content)
+	require.Len(t, resultBlocks, 1)
+	require.Equal(t, "tool_result", resultBlocks[0].Type)
+
+	var content []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(resultBlocks[0].Content, &content))
+	require.Len(t, content, 2)
+	require.Equal(t, "text", content[0].Type)
+	require.Equal(t, "image loaded", content[0].Text)
+	require.Equal(t, "image", content[1].Type)
+	require.NotNil(t, content[1].Source)
+	require.Equal(t, "image/png", content[1].Source.MediaType)
+	require.Equal(t, "YQ==", content[1].Source.Data)
+}
+
+func TestResponsesToAnthropic_FunctionOutputOmitsUnsupportedParts(t *testing.T) {
+	const secret = "SECRET_AUDIO_PAYLOAD"
+	msgs := convertAnthropic(t, `[
+		{"type":"function_call","call_id":"call_A","name":"play_audio","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_text","text":"visible result"},
+			{"type":"input_audio","audio_url":"data:audio/wav;base64,`+secret+`"}
+		]}
+	]`)
+
+	require.Len(t, msgs, 2)
+	resultBlocks := parseContentBlocks(msgs[1].Content)
+	require.Len(t, resultBlocks, 1)
+
+	var content []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(resultBlocks[0].Content, &content))
+	require.Len(t, content, 2)
+	require.Equal(t, "visible result", content[0].Text)
+	require.Equal(t, unsupportedResponsesToolOutput, content[1].Text)
+	require.NotContains(t, string(resultBlocks[0].Content), secret)
+	require.NotContains(t, string(resultBlocks[0].Content), "data:audio")
+}
+
+func TestResponsesInputItem_StructuredOutputRoundTripsWithoutStringification(t *testing.T) {
+	original := []byte(`{
+		"type":"function_call_output",
+		"call_id":"call_A",
+		"output":[{"type":"input_text","text":"ok"}]
+	}`)
+	var item ResponsesInputItem
+	require.NoError(t, json.Unmarshal(original, &item))
+	require.Empty(t, item.Output)
+	require.JSONEq(t, `[{"type":"input_text","text":"ok"}]`, string(item.RawOutput()))
+
+	roundTrip, err := json.Marshal(item)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(roundTrip, "output").IsArray())
+	require.Equal(t, "ok", gjson.GetBytes(roundTrip, "output.0.text").String())
+
+	var decoded ResponsesInputItem
+	require.NoError(t, json.Unmarshal(roundTrip, &decoded))
+	require.JSONEq(t, string(item.RawOutput()), string(decoded.RawOutput()))
 }

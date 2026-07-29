@@ -46,8 +46,10 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			context.Background(),
 			newPassthroughTestFrameConn(nil, true),
 			nil,
+			nil,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			func() {},
+			nil,
 			nil,
 			nil,
 			exitCh,
@@ -67,8 +69,10 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 				{msgType: coderws.MessageText, payload: []byte(`{"x":1}`)},
 			}, true),
 			nil,
+			nil,
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
 			func() {},
+			nil,
 			nil,
 			nil,
 			exitCh,
@@ -90,9 +94,11 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 				{msgType: coderws.MessageText, payload: []byte(`{"x":1}`)},
 			}, true),
 			nil,
+			nil,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			func() {},
 			forwarded,
+			nil,
 			func(event RelayTraceEvent) {
 				traces = append(traces, event)
 			},
@@ -127,7 +133,11 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
+			nil,
+			nil,
 			drop,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -143,7 +153,9 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 	t.Run("write client failed", func(t *testing.T) {
 		t.Parallel()
 
-		exitCh := make(chan relayExitSignal, 1)
+		// A downstream write failure switches the relay into upstream-drain
+		// mode, so the helper can also report the subsequent upstream EOF.
+		exitCh := make(chan relayExitSignal, 2)
 		drop := &atomic.Bool{}
 		drop.Store(false)
 		runUpstreamToClient(
@@ -161,7 +173,11 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
+			nil,
+			nil,
 			drop,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -180,6 +196,8 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 		drop := &atomic.Bool{}
 		drop.Store(true)
 		dropped := &atomic.Int64{}
+		state := &relayState{}
+		registerRelayRequest(state, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
 		runUpstreamToClient(
 			context.Background(),
 			newPassthroughTestFrameConn([]passthroughTestFrame{
@@ -191,7 +209,10 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			time.Now(),
 			time.Now,
-			&relayState{},
+			state,
+			nil,
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -202,6 +223,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			dropped,
+			nil,
 			func() {},
 			nil,
 			exitCh,
@@ -375,16 +397,19 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 	}, 0)
 	require.Equal(t, 0, called)
 
-	// terminal 且 response_id 存在，应该触发；state=nil 时 model 为空串。
+	// 只有已经关联到请求的 terminal 才应该触发。
 	var got RelayTurnResult
 	emitTurnComplete(func(turn RelayTurnResult) {
 		called++
 		got = turn
 	}, nil, observedUpstreamEvent{
-		terminal:   true,
-		eventType:  "response.completed",
-		responseID: "resp_emit",
-		usage:      Usage{InputTokens: 2, OutputTokens: 3},
+		terminal:        true,
+		terminalMatched: true,
+		eventType:       "response.completed",
+		responseID:      "resp_emit",
+		requestSequence: 1,
+		requestModel:    "gpt-5",
+		usage:           Usage{InputTokens: 2, OutputTokens: 3},
 	}, 123)
 	require.Equal(t, 1, called)
 	require.Equal(t, "resp_emit", got.RequestID)
@@ -392,7 +417,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 	require.Equal(t, 2, got.Usage.InputTokens)
 	require.Equal(t, 3, got.Usage.OutputTokens)
 	require.Equal(t, int64(123), got.ResponseBodyBytes)
-	require.Equal(t, "", got.RequestModel)
+	require.Equal(t, "gpt-5", got.RequestModel)
 }
 
 func TestIsDisconnectErrorCoverage_CloseStatusesAndMessageBranches(t *testing.T) {

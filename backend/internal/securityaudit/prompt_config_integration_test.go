@@ -110,7 +110,10 @@ func (r postgresPromptAuditSettingRepository) Delete(ctx context.Context, key st
 
 func promptAuditTestEncryptor(t *testing.T) service.SecretEncryptor {
 	t.Helper()
-	encryptor, err := repository.NewAESEncryptor(&config.Config{Totp: config.TotpConfig{EncryptionKey: strings.Repeat("42", 32)}})
+	encryptor, err := repository.NewAESEncryptor(&config.Config{Totp: config.TotpConfig{
+		EncryptionKey:           strings.Repeat("42", 32),
+		EncryptionKeyConfigured: true,
+	}})
 	require.NoError(t, err)
 	return encryptor
 }

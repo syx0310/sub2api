@@ -4,7 +4,10 @@
 // formats can be served through a unified gateway.
 package apicompat
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ---------------------------------------------------------------------------
 // Anthropic Messages API types
@@ -34,7 +37,7 @@ type AnthropicRequest struct {
 
 // AnthropicOutputConfig controls output generation parameters.
 type AnthropicOutputConfig struct {
-	Effort string `json:"effort,omitempty"` // "low" | "medium" | "high"
+	Effort string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
 }
 
 // AnthropicThinking configures extended thinking in the Anthropic API.
@@ -112,7 +115,7 @@ type AnthropicTool struct {
 	Type         string                 `json:"type,omitempty"` // e.g. "web_search_20250305" for server tools
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description,omitempty"`
-	InputSchema  json.RawMessage        `json:"input_schema"` // JSON Schema object
+	InputSchema  json.RawMessage        `json:"input_schema,omitempty"` // JSON Schema object
 	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
@@ -257,11 +260,59 @@ type ResponsesInputItem struct {
 	ID        string `json:"id,omitempty"`
 
 	// type=function_call_output
-	Output string `json:"output,omitempty"`
+	Output    string `json:"output,omitempty"`
+	outputRaw json.RawMessage
 
 	// type=reasoning
 	EncryptedContent string             `json:"encrypted_content,omitempty"`
 	Summary          []ResponsesSummary `json:"summary,omitempty"`
+}
+
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var wire struct {
+		*alias
+		Output json.RawMessage `json:"output"`
+	}
+
+	*i = ResponsesInputItem{}
+	wire.alias = (*alias)(i)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	output := bytes.TrimSpace(wire.Output)
+	if len(output) == 0 || bytes.Equal(output, []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(output, &i.Output); err == nil {
+		return nil
+	}
+
+	// json.RawMessage.UnmarshalJSON already owns a copy of Output. Keep that
+	// buffer directly so large structured tool results are not copied twice.
+	i.outputRaw = wire.Output
+	return nil
+}
+
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	type alias ResponsesInputItem
+	if len(i.outputRaw) == 0 {
+		return json.Marshal(alias(i))
+	}
+	return json.Marshal(struct {
+		alias
+		Output json.RawMessage `json:"output"`
+	}{
+		alias:  alias(i),
+		Output: i.outputRaw,
+	})
+}
+
+// RawOutput returns a structured function_call_output payload. Callers must
+// treat the returned bytes as read-only.
+func (i ResponsesInputItem) RawOutput() json.RawMessage {
+	return i.outputRaw
 }
 
 // ResponsesContentPart is a typed content part in a Responses message.
