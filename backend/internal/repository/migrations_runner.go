@@ -57,6 +57,8 @@ const schedulerOutboxPendingDedupKeyMigration = "153_scheduler_outbox_pending_de
 const schedulerOutboxPendingDedupKeyIndex = "idx_scheduler_outbox_pending_dedup_key"
 const latestAPIKeyIPIndexMigration = "174_add_usage_logs_api_key_latest_ip_index_notx.sql"
 const latestAPIKeyIPIndex = "idx_usage_logs_api_key_latest_ip"
+const usersEmailAliasDedupIndexMigration = "190_add_users_email_alias_dedup_index_notx.sql"
+const usersEmailAliasDedupIndex = "idx_users_email_dot_stripped"
 
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
@@ -186,11 +188,7 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		rowErr := lockConn.QueryRowContext(ctx, "SELECT checksum FROM schema_migrations WHERE filename = $1", name).Scan(&existing)
 		if rowErr == nil {
 			// 迁移已应用，验证校验和是否匹配
-			if existing != checksum {
-				// 兼容特定历史误改场景（仅白名单规则），其余仍保持严格不可变约束。
-				if isMigrationChecksumCompatible(name, existing, checksum) {
-					continue
-				}
+			if existing != checksum && !isMigrationChecksumCompatible(name, existing, checksum) {
 				// 校验和不匹配意味着迁移文件在应用后被修改，这是危险的。
 				// 正确的做法是创建新的迁移文件来进行变更。
 				return fmt.Errorf(
@@ -202,6 +200,14 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 						"Note: Modifying applied migrations breaks the immutability principle and can cause inconsistencies across environments",
 					name, existing, checksum, name, name,
 				)
+			}
+			// A previously interrupted CREATE INDEX CONCURRENTLY can leave an
+			// invalid relation. Older runners could then let IF NOT EXISTS skip
+			// the rebuild and still record the migration as complete. Validate
+			// known concurrent indexes even after their migration row exists so
+			// that state remains self-healing across upgrades.
+			if err := repairRecordedNonTransactionalMigration(ctx, lockConn, name, content); err != nil {
+				return fmt.Errorf("repair recorded migration %s: %w", name, err)
 			}
 			continue // 迁移已应用且校验和匹配，跳过
 		}
@@ -219,20 +225,8 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 				return fmt.Errorf("prepare migration %s: %w", name, err)
 			}
 
-			// *_notx.sql：用于 CREATE/DROP INDEX CONCURRENTLY 场景，必须非事务执行。
-			// 逐条语句执行，避免将多条 CONCURRENTLY 语句放入同一个隐式事务块。
-			statements := splitSQLStatements(content)
-			for i, stmt := range statements {
-				trimmed := strings.TrimSpace(stmt)
-				if trimmed == "" {
-					continue
-				}
-				if stripSQLLineComment(trimmed) == "" {
-					continue
-				}
-				if _, err := lockConn.ExecContext(ctx, trimmed); err != nil {
-					return fmt.Errorf("apply migration %s (non-tx statement %d): %w", name, i+1, err)
-				}
+			if err := executeNonTransactionalMigrationStatements(ctx, lockConn, name, content); err != nil {
+				return err
 			}
 			if _, err := lockConn.ExecContext(ctx, "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", name, checksum); err != nil {
 				return fmt.Errorf("record migration %s (non-tx): %w", name, err)
@@ -283,9 +277,90 @@ func prepareNonTransactionalMigration(ctx context.Context, db migrationConnectio
 		return dropInvalidIndexIfPresent(ctx, db, schedulerOutboxPendingDedupKeyIndex)
 	case latestAPIKeyIPIndexMigration:
 		return dropInvalidIndexIfPresent(ctx, db, latestAPIKeyIPIndex)
+	case usersEmailAliasDedupIndexMigration:
+		return dropInvalidIndexIfPresent(ctx, db, usersEmailAliasDedupIndex)
 	default:
 		return nil
 	}
+}
+
+func repairRecordedNonTransactionalMigration(ctx context.Context, db migrationConnection, name, content string) error {
+	indexName, repairable := repairableNonTransactionalIndex(name)
+	if !repairable {
+		return nil
+	}
+
+	needsRepair, err := recordedIndexNeedsRepair(ctx, db, indexName)
+	if err != nil {
+		return fmt.Errorf("check recorded index %s: %w", indexName, err)
+	}
+	if !needsRepair {
+		return nil
+	}
+
+	nonTx, err := validateMigrationExecutionMode(name, content)
+	if err != nil {
+		return fmt.Errorf("validate recorded migration: %w", err)
+	}
+	if !nonTx {
+		return fmt.Errorf("recorded index migration is not non-transactional")
+	}
+	if err := prepareNonTransactionalMigration(ctx, db, name); err != nil {
+		return err
+	}
+	return executeNonTransactionalMigrationStatements(ctx, db, name, content)
+}
+
+func recordedIndexNeedsRepair(ctx context.Context, db migrationConnection, indexName string) (bool, error) {
+	var healthy bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_class idx
+			JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+			JOIN pg_index i ON i.indexrelid = idx.oid
+			WHERE ns.nspname = 'public'
+			  AND idx.relname = $1
+			  AND i.indisvalid
+			  AND i.indisready
+		)
+	`, indexName).Scan(&healthy)
+	return !healthy, err
+}
+
+func repairableNonTransactionalIndex(name string) (string, bool) {
+	// Migration 120 is intentionally absent: 120a renames its temporary
+	// paymentorder_out_trade_no_unique index to paymentorder_out_trade_no.
+	// Replaying 120 after 120a was recorded would undo the final schema name.
+	switch name {
+	case schedulerOutboxPendingDedupKeyMigration:
+		return schedulerOutboxPendingDedupKeyIndex, true
+	case latestAPIKeyIPIndexMigration:
+		return latestAPIKeyIPIndex, true
+	case usersEmailAliasDedupIndexMigration:
+		return usersEmailAliasDedupIndex, true
+	default:
+		return "", false
+	}
+}
+
+func executeNonTransactionalMigrationStatements(ctx context.Context, db migrationConnection, name, content string) error {
+	// *_notx.sql：用于 CREATE/DROP INDEX CONCURRENTLY 场景，必须非事务执行。
+	// 逐条语句执行，避免将多条 CONCURRENTLY 语句放入同一个隐式事务块。
+	statements := splitSQLStatements(content)
+	for i, stmt := range statements {
+		trimmed := strings.TrimSpace(stmt)
+		if trimmed == "" {
+			continue
+		}
+		if stripSQLLineComment(trimmed) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, trimmed); err != nil {
+			return fmt.Errorf("apply migration %s (non-tx statement %d): %w", name, i+1, err)
+		}
+	}
+	return nil
 }
 
 func preparePaymentOrdersOutTradeNoUniqueMigration(ctx context.Context, db migrationConnection) error {

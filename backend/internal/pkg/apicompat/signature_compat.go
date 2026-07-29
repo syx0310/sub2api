@@ -13,7 +13,45 @@ const (
 	reasoningSignatureProviderUnknown reasoningSignatureProvider = "unknown"
 	reasoningSignatureProviderClaude  reasoningSignatureProvider = "claude"
 	reasoningSignatureProviderGPT     reasoningSignatureProvider = "gpt"
+	reasoningSignatureProviderGrok    reasoningSignatureProvider = "grok"
 )
+
+func compatibleResponsesReasoningEncryptedContent(raw, targetProvider string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(targetProvider)) {
+	case "openai":
+		return compatibleGPTReasoningEncryptedContent(raw)
+	case "grok", "xai":
+		return compatibleGrokReasoningEncryptedContent(raw)
+	default:
+		if payload, ok := compatibleGPTReasoningEncryptedContent(raw); ok {
+			return payload, true
+		}
+		return compatibleGrokReasoningEncryptedContent(raw)
+	}
+}
+
+func compatibleGrokReasoningEncryptedContent(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > maxReasoningSignatureLen {
+		return "", false
+	}
+	if provider, payload, ok := splitReasoningSignatureProviderPrefix(trimmed); ok {
+		if provider != reasoningSignatureProviderGrok || payload == "" || len(payload) > maxReasoningSignatureLen {
+			return "", false
+		}
+		return payload, true
+	}
+	if strings.Contains(trimmed, "#") || isValidGPTReasoningEncryptedContent(trimmed) || isClaudeThinkingSignatureShape(trimmed) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// CompatibleGrokReasoningEncryptedContent rejects ciphertext shapes owned by
+// other providers before an opaque reasoning item is replayed to Grok.
+func CompatibleGrokReasoningEncryptedContent(raw string) (string, bool) {
+	return compatibleGrokReasoningEncryptedContent(raw)
+}
 
 func compatibleGPTReasoningEncryptedContent(raw string) (string, bool) {
 	return CompatibleGPTReasoningEncryptedContent(raw)
@@ -80,6 +118,8 @@ func reasoningSignatureProviderFromPrefix(prefix string) reasoningSignatureProvi
 		return reasoningSignatureProviderClaude
 	case "openai", "gpt", "codex":
 		return reasoningSignatureProviderGPT
+	case "grok", "xai":
+		return reasoningSignatureProviderGrok
 	default:
 		return reasoningSignatureProviderUnknown
 	}

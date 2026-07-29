@@ -36,11 +36,14 @@ func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole 
 		return nil, err
 	}
 
-	emptyInstructions := ""
+	var instructions *string
+	if req.Instructions != "" {
+		instructions = &req.Instructions
+	}
 	out := &ResponsesRequest{
 		Model:             req.Model,
 		Input:             inputJSON,
-		Instructions:      &emptyInstructions,
+		Instructions:      instructions,
 		Stream:            true, // upstream always streams
 		Include:           []string{"reasoning.encrypted_content"},
 		ServiceTier:       req.ServiceTier,

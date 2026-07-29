@@ -124,6 +124,115 @@ func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
+func TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing(t *testing.T) {
+	suffix := strings.Repeat("z", 62)
+	for _, tc := range []struct {
+		name         string
+		callID       string
+		outputCallID string
+	}{
+		{name: "non-native boundary id", callID: "call-" + strings.Repeat("x", 59), outputCallID: "call-" + strings.Repeat("x", 59)},
+		{name: "overlong fc id", callID: "fc_" + strings.Repeat("y", 62), outputCallID: "fc_" + strings.Repeat("y", 62)},
+		{name: "equivalent prefixes", callID: "call_" + suffix, outputCallID: "fc_" + suffix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reqBody := map[string]any{
+				"model": "gpt-5.2",
+				"input": []any{
+					map[string]any{"type": "function_call", "call_id": tc.callID, "name": "shell"},
+					map[string]any{"type": "function_call_output", "call_id": tc.outputCallID, "output": "done"},
+				},
+			}
+
+			applyCodexOAuthTransform(reqBody, false, false)
+
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			call, ok := input[0].(map[string]any)
+			require.True(t, ok)
+			output, ok := input[1].(map[string]any)
+			require.True(t, ok)
+
+			fixedCallID, ok := call["call_id"].(string)
+			require.True(t, ok)
+			require.LessOrEqual(t, len(fixedCallID), codexCallIDMaxLength)
+			require.True(t, strings.HasPrefix(fixedCallID, codexCallIDPrefix))
+			require.Equal(t, fixedCallID, output["call_id"])
+			require.Equal(t, fixedCallID, normalizeCodexCallID(tc.callID))
+			require.Equal(t, fixedCallID, normalizeCodexCallID(tc.outputCallID))
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_PreservesCallIDsWithinLimitWhenRequested(t *testing.T) {
+	// preserve 模式下 ≤64 字符的 id 必须原样透传（含 64 字符等长边界），
+	// 不做任何前缀改写或压缩。
+	for _, tc := range []struct {
+		name   string
+		callID string
+	}{
+		{name: "anthropic toolu id", callID: "toolu_01ABCdefGHIjklMNOpqrsTUV"},
+		{name: "boundary 64 chars", callID: "toolu_" + strings.Repeat("x", codexCallIDMaxLength-len("toolu_"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.LessOrEqual(t, len(tc.callID), codexCallIDMaxLength)
+			reqBody := map[string]any{
+				"model": "gpt-5.2",
+				"input": []any{
+					map[string]any{"type": "function_call", "call_id": tc.callID, "name": "shell"},
+					map[string]any{"type": "function_call_output", "call_id": tc.callID, "output": "done"},
+				},
+			}
+
+			applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+				PreserveToolCallIDs: true,
+			})
+
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			call, ok := input[0].(map[string]any)
+			require.True(t, ok)
+			output, ok := input[1].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tc.callID, call["call_id"])
+			require.Equal(t, tc.callID, output["call_id"])
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_CompactsOverlongCallIDsWhenPreserveRequested(t *testing.T) {
+	// preserve 模式下超过 64 字符的 id 若原样透传，上游必然 400
+	// （"Invalid 'input[N].call_id': string too long"），需退回确定性压缩；
+	// function_call 与 function_call_output 两侧压缩结果一致，配对保持。
+	callID := "srvtoolu_" + strings.Repeat("x", 69) // 78 字符，对应生产环境真实报错长度
+	require.Len(t, callID, 78)
+	reqBody := map[string]any{
+		"model": "gpt-5.2",
+		"input": []any{
+			map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+			map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+		},
+	}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+		PreserveToolCallIDs: true,
+	})
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	call, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	output, ok := input[1].(map[string]any)
+	require.True(t, ok)
+
+	compacted, ok := call["call_id"].(string)
+	require.True(t, ok)
+	require.Len(t, compacted, codexCallIDMaxLength)
+	require.True(t, strings.HasPrefix(compacted, codexCallIDPrefix))
+	require.Equal(t, compacted, output["call_id"], "两侧压缩结果必须一致以保持配对")
+	require.Equal(t, compactCodexCallID(callID), compacted, "压缩必须是确定性的")
+}
+
 func TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -1498,6 +1607,177 @@ func TestRewriteSystemToDeveloper(t *testing.T) {
 	})
 }
 
+func TestExtractSystemMessagesFromInput(t *testing.T) {
+	t.Run("no system messages", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.False(t, result)
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 1)
+		_, hasInstructions := reqBody["instructions"]
+		require.False(t, hasInstructions)
+	})
+
+	t.Run("string content system message", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "system", "content": "You are an assistant."},
+				map[string]any{"role": "user", "content": "hello"},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.True(t, result)
+		require.Equal(t, "You are an assistant.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 2)
+		system, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", system["role"])
+	})
+
+	t.Run("array content system message", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{
+					"role": "system",
+					"content": []any{
+						map[string]any{"type": "text", "text": "Be helpful."},
+					},
+				},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.True(t, result)
+		require.Equal(t, "Be helpful.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		system, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", system["role"])
+	})
+
+	t.Run("multiple system messages concatenated", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "system", "content": "First."},
+				map[string]any{"role": "system", "content": "Second."},
+				map[string]any{"role": "user", "content": "hi"},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.True(t, result)
+		require.Equal(t, "First.\n\nSecond.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 3)
+	})
+
+	t.Run("mixed system and non-system preserves non-system", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "user", "content": "hello"},
+				map[string]any{"role": "system", "content": "Sys prompt."},
+				map[string]any{"role": "assistant", "content": "Hi there"},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.True(t, result)
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 3)
+		system, ok := input[1].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", system["role"])
+	})
+
+	t.Run("existing instructions preserved", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "system", "content": "Extracted."},
+				map[string]any{"role": "user", "content": "hi"},
+			},
+			"instructions": "Existing instructions.",
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, false)
+
+		require.True(t, result)
+		require.Equal(t, "Extracted.\n\nExisting instructions.", reqBody["instructions"])
+	})
+
+	t.Run("omit losslessly promoted text-only messages", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "system", "content": "First."},
+				map[string]any{
+					"role": "system",
+					"content": []any{
+						map[string]any{"type": "text", "text": "Second "},
+						map[string]any{"type": "input_text", "text": "and "},
+						map[string]any{"type": "output_text", "text": "third."},
+					},
+				},
+				map[string]any{"role": "user", "content": "hi"},
+			},
+			"instructions": "Existing.",
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, true)
+
+		require.True(t, result)
+		require.Equal(t, "First.\n\nSecond and third.\n\nExisting.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 1)
+		user, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "user", user["role"])
+	})
+
+	t.Run("omit keeps mixed system content as developer", func(t *testing.T) {
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{
+					"role": "system",
+					"content": []any{
+						map[string]any{"type": "input_text", "text": "Inspect this image."},
+						map[string]any{"type": "input_image", "image_url": "https://example.com/image.png"},
+					},
+				},
+				map[string]any{"role": "user", "content": "hi"},
+			},
+		}
+
+		result := extractSystemMessagesFromInput(reqBody, true)
+
+		require.True(t, result)
+		require.Equal(t, "Inspect this image.", reqBody["instructions"])
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		require.Len(t, input, 2)
+		developer, ok := input[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "developer", developer["role"])
+		require.Len(t, developer["content"], 2)
+	})
+}
+
 // TestApplyCodexOAuthTransform_StripsPromptCacheRetention is a regression
 // test: some clients (e.g. Cursor cloud via the Responses-shape compat path)
 // send prompt_cache_retention, but the ChatGPT internal Codex endpoint
@@ -1539,7 +1819,7 @@ func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *test
 	}
 }
 
-func TestApplyCodexOAuthTransform_RewritesSystemMessages(t *testing.T) {
+func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"input": []any{
@@ -1562,7 +1842,7 @@ func TestApplyCodexOAuthTransform_RewritesSystemMessages(t *testing.T) {
 	user, ok := input[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "user", user["role"])
-	require.Equal(t, "", reqBody["instructions"])
+	require.Equal(t, "You are a coding assistant.", reqBody["instructions"])
 }
 
 func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testing.T) {
@@ -1590,7 +1870,7 @@ func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testi
 	require.True(t, result.Modified)
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Equal(t, "", instructions)
+	require.Contains(t, instructions, "JSON")
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, input, 2)
@@ -1601,6 +1881,31 @@ func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testi
 	user, ok := input[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "user", user["role"])
+}
+
+func TestApplyCodexOAuthTransform_ResponsesLiteRewritesSystemWithoutInstructions(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{"role": "system", "content": "Keep this in input."},
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+
+	result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+		IsCodexCLI:    true,
+		ResponsesLite: true,
+	})
+
+	require.True(t, result.Modified)
+	require.NotContains(t, reqBody, "instructions")
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+	developer, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "developer", developer["role"])
+	require.Equal(t, "Keep this in input.", developer["content"])
 }
 
 func TestIsInstructionsEmpty(t *testing.T) {

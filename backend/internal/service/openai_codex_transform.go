@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -77,11 +79,40 @@ type codexTransformResult struct {
 }
 
 type codexOAuthTransformOptions struct {
-	IsCodexCLI              bool
-	IsCompact               bool
-	ResponsesLite           bool
-	SkipDefaultInstructions bool
-	PreserveToolCallIDs     bool
+	IsCodexCLI                          bool
+	IsCompact                           bool
+	ResponsesLite                       bool
+	SkipDefaultInstructions             bool
+	PreserveToolCallIDs                 bool
+	OmitPromotedSystemMessagesFromInput bool
+}
+
+const (
+	codexCallIDMaxLength = 64
+	codexCallIDPrefix    = "fc_"
+)
+
+func normalizeCodexCallID(id string) string {
+	candidate := id
+	switch {
+	case id == "":
+		return ""
+	case strings.HasPrefix(id, "fc"):
+	case strings.HasPrefix(id, "call_"):
+		candidate = codexCallIDPrefix + strings.TrimPrefix(id, "call_")
+	default:
+		candidate = codexCallIDPrefix + id
+	}
+	if len(candidate) <= codexCallIDMaxLength {
+		return candidate
+	}
+	return compactCodexCallID(candidate)
+}
+
+func compactCodexCallID(id string) string {
+	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + id))
+	encoded := hex.EncodeToString(digest[:])
+	return codexCallIDPrefix + encoded[:codexCallIDMaxLength-len(codexCallIDPrefix)]
 }
 
 const codexImageGenerationFunctionToolName = "image_gen.imagegen"
@@ -217,6 +248,16 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 			delete(reqBody, "prompt_cache_key")
 			result.Modified = true
 		}
+	}
+
+	// ChatGPT internal Codex endpoint does not accept role:"system".
+	// Mirror its text into instructions because Codex OAuth requires it. Some
+	// callers must also keep the guidance in input as developer (notably
+	// Responses JSON object mode), while Chat Completions compatibility can
+	// omit text-only messages after promoting them losslessly.
+	if !opts.ResponsesLite &&
+		extractSystemMessagesFromInput(reqBody, opts.OmitPromotedSystemMessagesFromInput) {
+		result.Modified = true
 	}
 
 	// instructions 处理逻辑：根据是否是 Codex CLI 分别调用不同方法
@@ -1098,6 +1139,90 @@ func extractTextFromContent(content any) string {
 	}
 }
 
+// extractSystemMessagesFromInput scans input for role=="system" and mirrors
+// their text into reqBody["instructions"]. By default it maps those items to
+// developer so Responses JSON mode can still see JSON instructions in input.
+// When omitPromoted is true, text-only items are removed after their content is
+// losslessly promoted; mixed or malformed content is retained as developer.
+func extractSystemMessagesFromInput(reqBody map[string]any, omitPromoted bool) bool {
+	input, ok := reqBody["input"].([]any)
+	if !ok || len(input) == 0 {
+		return false
+	}
+
+	var systemTexts []string
+	filteredInput := make([]any, 0, len(input))
+	modified := false
+	for _, item := range input {
+		m, ok := item.(map[string]any)
+		if !ok || m["role"] != "system" {
+			filteredInput = append(filteredInput, item)
+			continue
+		}
+
+		if omitPromoted {
+			if losslessText, lossless := extractLosslessTextFromContent(m["content"]); lossless {
+				if losslessText != "" {
+					systemTexts = append(systemTexts, losslessText)
+				}
+				modified = true
+				continue
+			}
+		}
+
+		if text := extractTextFromContent(m["content"]); text != "" {
+			systemTexts = append(systemTexts, text)
+		}
+		m["role"] = "developer"
+		filteredInput = append(filteredInput, item)
+		modified = true
+	}
+	if omitPromoted && len(filteredInput) != len(input) {
+		reqBody["input"] = filteredInput
+	}
+
+	if len(systemTexts) == 0 {
+		return modified
+	}
+
+	extracted := strings.Join(systemTexts, "\n\n")
+	if existing, ok := reqBody["instructions"].(string); ok && strings.TrimSpace(existing) != "" {
+		reqBody["instructions"] = extracted + "\n\n" + existing
+	} else {
+		reqBody["instructions"] = extracted
+	}
+	return true
+}
+
+// extractLosslessTextFromContent returns text only when the entire content can
+// be represented by an instructions string without dropping non-text parts.
+func extractLosslessTextFromContent(content any) (string, bool) {
+	switch v := content.(type) {
+	case string:
+		return v, true
+	case []any:
+		var b strings.Builder
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok {
+				return "", false
+			}
+			typeName, ok := m["type"].(string)
+			if !ok || (typeName != "text" && typeName != "input_text" && typeName != "output_text") {
+				return "", false
+			}
+			text, ok := m["text"].(string)
+			if !ok {
+				return "", false
+			}
+			_, _ = b.WriteString(text)
+		}
+		return b.String(), true
+	default:
+		return "", false
+	}
+}
+
 func extractPromptLikeInstructionsFromInput(reqBody map[string]any) string {
 	input, ok := reqBody["input"].([]any)
 	if !ok || len(input) == 0 {
@@ -1295,15 +1420,17 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		// 若 item_reference 指向 legacy call_* 标识，则仅修正该引用本身。
 		fixCallIDPrefix := func(id string) string {
 			if opts.PreserveCallIDs {
-				return id
+				// preserve 模式尽量原样透传客户端 id 以维持 tool_use/tool_result
+				// 配对，但上游对 call_id 有 64 字符硬上限，超长原样透传必然被
+				// 400 拒绝（"Invalid 'input[N].call_id': string too long"）。
+				// 超长时退回确定性压缩：同一逻辑 id 在 function_call 与
+				// function_call_output 两侧结果一致，配对不受影响。
+				if len(id) <= codexCallIDMaxLength {
+					return id
+				}
+				return compactCodexCallID(id)
 			}
-			if id == "" || strings.HasPrefix(id, "fc") {
-				return id
-			}
-			if strings.HasPrefix(id, "call_") {
-				return "fc_" + strings.TrimPrefix(id, "call_")
-			}
-			return "fc_" + id
+			return normalizeCodexCallID(id)
 		}
 
 		if typ == "item_reference" {
@@ -1381,28 +1508,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if expectedPrefix, ok := codexToolCallInputIDPrefix(typ); ok {
-			// 续链模式下保留 id 以维持上下文引用，但 call-input item 的
-			// id 前缀必须匹配其类型。新版 Codex 会分别生成 fc_/lsh_/
-			// tsc_/ctc_；item_* 等不匹配的客户端回放 id 仍需删除。
-			// 注意：function_call_output 等 output 类的 id 无此约束，不动。
-			if id, ok := m["id"].(string); ok && id != "" {
-				hasExpectedPrefix := strings.HasPrefix(id, expectedPrefix+"_") ||
-					strings.HasPrefix(id, expectedPrefix+"-")
-				if !hasExpectedPrefix {
-					ensureCopy()
-					delete(newItem, "id")
-				}
-			}
-		} else if typ == "message" {
-			// 同理，message 类 item 的 id 必须以 "msg" 开头（上游校验
-			// "Expected an ID that begins with 'msg'"）。item_* 形式的 id
-			// 来自客户端回放，需要删除。
-			// 注意：不改写成 msg_*，改写出的 id 未必对应真实的上游对象。
-			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "msg") {
-				ensureCopy()
-				delete(newItem, "id")
-			}
+		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
+			ensureCopy()
+			delete(newItem, "id")
 		}
 
 		filtered = append(filtered, newItem)

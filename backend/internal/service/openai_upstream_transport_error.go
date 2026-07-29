@@ -98,12 +98,9 @@ func classifyOpenAITransportError(err error) openAITransportErrorClass {
 //  2. for durable faults (expired/rejected proxy creds, dead proxy, DNS/routing)
 //     temporarily unschedules the account (DB + in-memory) and logs a stable
 //     warn event that alert rules can key on;
-//  3. returns an error that is *UpstreamFailoverError (so the handler fails over
-//     to a healthy account) for all non-canceled errors, or a plain error for
-//     context.Canceled (client gone — no failover, no eviction).
-//
-// It deliberately does NOT write to the response: the handler owns the response
-// (failover, or a protocol-correct error once failover is exhausted).
+//  3. when transport-error failover is enabled, returns *UpstreamFailoverError
+//     so the handler can try a healthy account; otherwise writes the configured
+//     502 response. context.Canceled never fails over or evicts the account.
 //
 // passthrough tags the Ops error event for the OpenAI passthrough forward path.
 func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error, passthrough bool) error {
@@ -126,6 +123,11 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	// this one — the upstream never had a chance to exhibit a fault.
 	if errors.Is(err, context.Canceled) {
 		return err
+	}
+
+	// Transport attempt reached the network path; count as Ollama Cloud activity.
+	if s != nil {
+		scheduleOllamaCloudUsageActivity(s.deferredService, account)
 	}
 
 	if !s.openAITransportErrorFailoverEnabled(ctx) {

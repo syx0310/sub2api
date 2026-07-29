@@ -11,7 +11,13 @@ import (
 // Chat Completions intermediary round-trip (e.g. thinking, cache_control,
 // structured system prompts).
 func AnthropicToResponses(req *AnthropicRequest) (*ResponsesRequest, error) {
-	input, err := convertAnthropicToResponsesInput(req.System, req.Messages)
+	return AnthropicToResponsesForProvider(req, "")
+}
+
+// AnthropicToResponsesForProvider filters replayed reasoning signatures for the
+// target Responses provider while preserving the Anthropic conversation order.
+func AnthropicToResponsesForProvider(req *AnthropicRequest, targetProvider string) (*ResponsesRequest, error) {
+	input, err := convertAnthropicToResponsesInput(req.System, req.Messages, targetProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +123,7 @@ func convertAnthropicToolChoiceToResponses(raw json.RawMessage) (json.RawMessage
 
 // convertAnthropicToResponsesInput builds the Responses API input items array
 // from the Anthropic system field and message list.
-func convertAnthropicToResponsesInput(system json.RawMessage, msgs []AnthropicMessage) ([]ResponsesInputItem, error) {
+func convertAnthropicToResponsesInput(system json.RawMessage, msgs []AnthropicMessage, targetProvider string) ([]ResponsesInputItem, error) {
 	var out []ResponsesInputItem
 
 	// System prompt → developer role input item. ChatGPT Codex SSE behaves like
@@ -139,7 +145,7 @@ func convertAnthropicToResponsesInput(system json.RawMessage, msgs []AnthropicMe
 	}
 
 	for _, m := range msgs {
-		items, err := anthropicMsgToResponsesItems(m)
+		items, err := anthropicMsgToResponsesItems(m, targetProvider)
 		if err != nil {
 			return nil, err
 		}
@@ -178,12 +184,12 @@ func isAnthropicBillingHeaderText(text string) bool {
 
 // anthropicMsgToResponsesItems converts a single Anthropic message into one
 // or more Responses API input items.
-func anthropicMsgToResponsesItems(m AnthropicMessage) ([]ResponsesInputItem, error) {
+func anthropicMsgToResponsesItems(m AnthropicMessage, targetProvider string) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "user":
 		return anthropicUserToResponses(m.Content)
 	case "assistant":
-		return anthropicAssistantToResponses(m.Content)
+		return anthropicAssistantToResponses(m.Content, targetProvider)
 	default:
 		return anthropicUserToResponses(m.Content)
 	}
@@ -259,8 +265,9 @@ func anthropicUserToResponses(raw json.RawMessage) ([]ResponsesInputItem, error)
 // anthropicAssistantToResponses handles an Anthropic assistant message.
 // Text content → assistant message with output_text parts.
 // tool_use blocks → function_call items.
-// thinking blocks → reasoning items only when their signature is GPT-compatible.
-func anthropicAssistantToResponses(raw json.RawMessage) ([]ResponsesInputItem, error) {
+// thinking blocks → reasoning items only when their signature is compatible
+// with the target Responses provider.
+func anthropicAssistantToResponses(raw json.RawMessage, targetProvider string) ([]ResponsesInputItem, error) {
 	// Try plain string.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -304,7 +311,7 @@ func anthropicAssistantToResponses(raw json.RawMessage) ([]ResponsesInputItem, e
 			if err := flushText(); err != nil {
 				return nil, err
 			}
-			if item, ok := anthropicThinkingToResponsesReasoningItem(b); ok {
+			if item, ok := anthropicThinkingToResponsesReasoningItem(b, targetProvider); ok {
 				items = append(items, item)
 			}
 		case "tool_use":
@@ -331,8 +338,8 @@ func anthropicAssistantToResponses(raw json.RawMessage) ([]ResponsesInputItem, e
 	return items, nil
 }
 
-func anthropicThinkingToResponsesReasoningItem(block AnthropicContentBlock) (ResponsesInputItem, bool) {
-	signature, ok := compatibleGPTReasoningEncryptedContent(block.Signature)
+func anthropicThinkingToResponsesReasoningItem(block AnthropicContentBlock, targetProvider string) (ResponsesInputItem, bool) {
+	signature, ok := compatibleResponsesReasoningEncryptedContent(block.Signature, targetProvider)
 	if !ok {
 		return ResponsesInputItem{}, false
 	}

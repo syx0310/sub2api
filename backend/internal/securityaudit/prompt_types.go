@@ -16,6 +16,7 @@ const (
 	ErrorCodeUnavailable     = "prompt_guard_unavailable"
 	ErrorCodeInvalidResponse = "prompt_guard_invalid_response"
 	ErrorCodeConfigConflict  = "prompt_audit_config_conflict"
+	ErrorCodeEncryptionKey   = "prompt_audit_encryption_key_required"
 	ErrorCodeRequiresEnabled = "prompt_guard_requires_audit_enabled"
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"

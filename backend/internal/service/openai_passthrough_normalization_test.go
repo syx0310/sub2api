@@ -53,3 +53,70 @@ func TestIsOpenAIResponsesLiteWebSocketPayload(t *testing.T) {
 	require.False(t, isOpenAIResponsesLiteWebSocketPayload([]byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"false"}}`)))
 	require.False(t, isOpenAIResponsesLiteWebSocketPayload([]byte(`{}`)))
 }
+
+func TestNormalizeOpenAIPassthroughOAuthBody_StringInputWrappedAsArray(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":"hello world"}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	input := gjson.GetBytes(normalized, "input")
+	require.True(t, input.IsArray(), "string input should be converted to array")
+	items := input.Array()
+	require.Len(t, items, 1)
+	require.Equal(t, "message", items[0].Get("type").String())
+	require.Equal(t, "user", items[0].Get("role").String())
+	require.Equal(t, "hello world", items[0].Get("content").String())
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_EmptyStringInputWrappedAsEmptyArray(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":"  "}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	input := gjson.GetBytes(normalized, "input")
+	require.True(t, input.IsArray())
+	require.Len(t, input.Array(), 0, "whitespace-only input should become empty array")
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_ObjectInputWrappedAsArray(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":{"type":"message","role":"user","content":"hi"}}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	input := gjson.GetBytes(normalized, "input")
+	require.True(t, input.IsArray(), "object input should be wrapped in array")
+	items := input.Array()
+	require.Len(t, items, 1)
+	require.Equal(t, "message", items[0].Get("type").String())
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_ObjectSystemInputWrappedAndRewritten(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":{"type":"message","role":"system","content":"be precise"}}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	input := gjson.GetBytes(normalized, "input")
+	require.True(t, input.IsArray())
+	require.Len(t, input.Array(), 1)
+	require.Equal(t, "developer", input.Array()[0].Get("role").String())
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_ArrayInputUnchanged(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":"hi"}]}`)
+
+	normalized, _, err := normalizeOpenAIPassthroughOAuthBody(body, false, false)
+	require.NoError(t, err)
+
+	input := gjson.GetBytes(normalized, "input")
+	require.True(t, input.IsArray())
+	require.Len(t, input.Array(), 1)
+	require.Equal(t, "message", input.Array()[0].Get("type").String())
+}

@@ -31,6 +31,29 @@ func TestMigrationsRunner_ConcurrentInstancesSerializeOnSessionLock(t *testing.T
 	}
 }
 
+func TestMigrationsRunner_RepairsRecordedMissingEmailAliasIndex(t *testing.T) {
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_users_email_dot_stripped")
+	require.NoError(t, err)
+
+	require.NoError(t, ApplyMigrations(ctx, integrationDB))
+
+	var healthy bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_class idx
+			JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+			JOIN pg_index i ON i.indexrelid = idx.oid
+			WHERE ns.nspname = 'public'
+			  AND idx.relname = $1
+			  AND i.indisvalid
+			  AND i.indisready
+		)
+	`, usersEmailAliasDedupIndex).Scan(&healthy))
+	require.True(t, healthy, "recorded email-alias migration must recreate a missing healthy index")
+}
+
 func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	tx := testTx(t)
 
@@ -54,6 +77,24 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "accounts", "overload_until", "timestamp with time zone", 0, true)
 	requireColumn(t, tx, "accounts", "session_window_status", "character varying", 20, true)
 	requireIndex(t, tx, "accounts", "idx_accounts_autopause_expiry_due")
+
+	// groups: OpenAI Live 默认关闭，管理员显式开启后才可访问。
+	requireColumn(t, tx, "groups", "allow_live", "boolean", 0, false)
+
+	// composite routes: SQL migrations are authoritative, and their ownership
+	// and active-route uniqueness constraints must stay aligned with Ent metadata.
+	requireForeignKeyOnDelete(t, tx, "composite_model_routes", "group_id", "groups", "CASCADE")
+	requirePartialUniqueIndexDefinition(
+		t,
+		tx,
+		"composite_model_routes",
+		"idx_composite_model_routes_unique_active",
+		"group_id",
+		"endpoint",
+		"match_type",
+		"public_model",
+		"WHERE (deleted_at IS NULL)",
+	)
 
 	// api_keys: key length should be 128
 	requireColumn(t, tx, "api_keys", "key", "character varying", 128, false)

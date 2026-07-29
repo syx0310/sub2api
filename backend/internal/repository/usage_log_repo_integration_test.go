@@ -985,6 +985,53 @@ func (s *UsageLogRepoSuite) TestGetUserDashboardStats() {
 	s.Require().Equal(int64(1), stats.TotalRequests)
 }
 
+func (s *UsageLogRepoSuite) TestGetUserDashboardStatsCountsZeroCostLiveByPlatform() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "userdash-live@test.com"})
+	group := mustCreateGroup(s.T(), s.client, &service.Group{
+		Name:     "userdash-live-group",
+		Platform: service.PlatformOpenAI,
+	})
+	groupID := group.ID
+	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{
+		UserID:  user.ID,
+		GroupID: &groupID,
+		Key:     "sk-userdash-live",
+		Name:    "live",
+	})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "acc-userdash-live",
+		Platform: service.PlatformOpenAI,
+	})
+
+	_, err := s.repo.Create(s.ctx, &service.UsageLog{
+		UserID:      user.ID,
+		APIKeyID:    apiKey.ID,
+		AccountID:   account.ID,
+		GroupID:     &groupID,
+		Model:       "gpt-live",
+		RequestType: service.RequestTypeLive,
+		CreatedAt:   time.Now(),
+	})
+	s.Require().NoError(err)
+	_, err = s.repo.Create(s.ctx, &service.UsageLog{
+		UserID:      user.ID,
+		APIKeyID:    apiKey.ID,
+		AccountID:   account.ID,
+		GroupID:     &groupID,
+		Model:       "failed-placeholder",
+		RequestType: service.RequestTypeSync,
+		CreatedAt:   time.Now(),
+	})
+	s.Require().NoError(err)
+
+	stats, err := s.repo.GetUserDashboardStats(s.ctx, user.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), stats.TotalRequests, "overall requests retain the historical placeholder-inclusive semantics")
+	s.Require().Len(stats.ByPlatform, 1)
+	s.Require().Equal(service.PlatformOpenAI, stats.ByPlatform[0].Platform)
+	s.Require().Equal(int64(1), stats.ByPlatform[0].TotalRequests, "successful zero-cost Live must be counted, but failed zero-cost placeholders must stay excluded")
+}
+
 // --- GetAccountTodayStats ---
 
 func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {

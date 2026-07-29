@@ -71,11 +71,11 @@ func TestUsageLogActualCostBreakdownAggregatesAndFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(3), stats.TotalRequests)
-	require.InDelta(t, 4.5, stats.InputActualCost, 1e-9)
+	require.InDelta(t, 7.5, stats.InputActualCost, 1e-9)
 	require.InDelta(t, 3.5, stats.OutputActualCost, 1e-9)
 	require.InDelta(t, 1.0, stats.CacheCreationActualCost, 1e-9)
 	require.InDelta(t, 1.0, stats.CacheReadActualCost, 1e-9)
-	require.InDelta(t, 5.0, stats.OtherActualCost, 1e-9)
+	require.InDelta(t, 2.0, stats.OtherActualCost, 1e-9)
 	require.InDelta(t, 15.0, stats.TotalActualCost, 1e-9)
 	assertActualCostInvariant(t, stats.TotalActualCost, stats.InputActualCost, stats.OutputActualCost, stats.CacheCreationActualCost, stats.CacheReadActualCost, stats.OtherActualCost)
 
@@ -94,7 +94,7 @@ func TestUsageLogActualCostBreakdownAggregatesAndFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), syncStats.TotalRequests)
 	require.InDelta(t, 13.0, syncStats.TotalActualCost, 1e-9)
-	require.InDelta(t, 5.0, syncStats.OtherActualCost, 1e-9)
+	require.InDelta(t, 2.0, syncStats.OtherActualCost, 1e-9)
 
 	models, err := repo.GetModelStatsWithUsageFiltersBySource(ctx, start, end, usagestats.UsageLogFilters{UserID: user.ID}, usagestats.ModelSourceRequested)
 	require.NoError(t, err)
@@ -103,7 +103,8 @@ func TestUsageLogActualCostBreakdownAggregatesAndFilters(t *testing.T) {
 	require.InDelta(t, 12.0, models[0].ActualCost, 1e-9)
 	assertActualCostInvariant(t, models[0].ActualCost, models[0].InputActualCost, models[0].OutputActualCost, models[0].CacheCreationActualCost, models[0].CacheReadActualCost, models[0].OtherActualCost)
 	require.Equal(t, "model-b", models[1].Model)
-	require.InDelta(t, 3.0, models[1].OtherActualCost, 1e-9)
+	require.InDelta(t, 3.0, models[1].InputActualCost, 1e-9)
+	require.InDelta(t, 0.0, models[1].OtherActualCost, 1e-9)
 
 	filteredModels, err := repo.GetModelStatsWithUsageFiltersBySource(ctx, start, end, usagestats.UsageLogFilters{
 		UserID: user.ID, Model: "model-b",

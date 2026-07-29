@@ -21,18 +21,22 @@ const rawUsageLogModelColumn = "model"
 // usageLogSuccessFilterUL 用于把"失败请求 usage log"（tokens=0、cost=0、不计费的占位记录）
 // 从统计性聚合中排除，避免污染 Dashboard / 用量拆分等指标。
 //
-// schema 中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为代理：
+// schema 中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为主要代理：
 // 任何成功落账的请求都会产生 actual_cost（包括 token 计费、纯图片 token 计费、按次/按图计费），
 // 反之 failed-request usage log 的 actual_cost 为 0。
+// Live 会话当前有意不计费，但其唯一 usage log 只在成功完成会话生命周期后写入，因此
+// request_type = 5 也是成功记录，不能被零费用代理误删。
 // 早期版本用 4 项 token 和 > 0 判定会把"按次/按图计费"与"image_output_tokens 独立计费"的纯图片
 // 请求误判为失败，导致这部分请求从用量统计里消失，故改用 actual_cost。
 // 配合 `FROM usage_logs ul` JOIN 查询使用。
-const usageLogSuccessFilterUL = "ul.actual_cost > 0"
+const usageLogSuccessFilterUL = "(ul.actual_cost > 0 OR ul.request_type = 5)"
 
 // usageLogEffectivePlatformExpr 用于按"有效平台"维度聚合 usage_logs：
 // 优先取请求实际走的分组 platform，若分组未设置 platform 再 fallback 到 account.platform。
+// Composite groups are a routing layer, so platform analytics must use the
+// resolved concrete account platform instead of grouping spend under "composite".
 // 配套要求查询里 LEFT JOIN groups g ON g.id = ul.group_id 与 LEFT JOIN accounts a ON a.id = ul.account_id。
-const usageLogEffectivePlatformExpr = "COALESCE(NULLIF(g.platform,''), a.platform)"
+const usageLogEffectivePlatformExpr = "CASE WHEN g.platform = 'composite' THEN a.platform ELSE COALESCE(NULLIF(g.platform,''), a.platform) END"
 
 // dateFormatWhitelist 将 granularity 参数映射为 PostgreSQL TO_CHAR 格式字符串，防止外部输入直接拼入 SQL
 var dateFormatWhitelist = map[string]string{

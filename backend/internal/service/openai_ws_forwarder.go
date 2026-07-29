@@ -243,6 +243,10 @@ type OpenAIWSIngressHooks struct {
 	// 的 reasoning effort 后缀推导，禁止用于上游请求或计费模型。
 	InitialRequestModel     string
 	InitialRequestBodyBytes *int64
+	// MaxReasoningEffort limits explicit reasoning effort values for this WS session.
+	MaxReasoningEffort string
+	// ReasoningEffortMappings rewrites explicit effort values for this WS session.
+	ReasoningEffortMappings []ReasoningEffortMapping
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
 	AfterTurn               func(turn int, result *OpenAIForwardResult, turnErr error)
@@ -347,6 +351,14 @@ func (s *OpenAIGatewayService) openAIWSWriteTimeout() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second
 	}
 	return 2 * time.Minute
+}
+
+func (s *OpenAIGatewayService) openAIWSClientDrainTimeout() time.Duration {
+	const maxDrainTimeout = 2 * time.Minute
+	if timeout := s.openAIWSPassthroughIdleTimeout(); timeout > 0 && timeout < maxDrainTimeout {
+		return timeout
+	}
+	return maxDrainTimeout
 }
 
 func (s *OpenAIGatewayService) openAIWSEventFlushBatchSize() int {

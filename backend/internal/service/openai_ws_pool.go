@@ -77,13 +77,14 @@ type openAIWSAcquireRequest struct {
 }
 
 type openAIWSConnLease struct {
-	pool      *openAIWSConnPool
-	accountID int64
-	conn      *openAIWSConn
-	queueWait time.Duration
-	connPick  time.Duration
-	reused    bool
-	released  atomic.Bool
+	pool             *openAIWSConnPool
+	accountID        int64
+	conn             *openAIWSConn
+	queueWait        time.Duration
+	connPick         time.Duration
+	reused           bool
+	released         atomic.Bool
+	discardOnRelease atomic.Bool
 }
 
 func (l *openAIWSConnLease) activeConn() (*openAIWSConn, error) {
@@ -223,11 +224,25 @@ func (l *openAIWSConnLease) MarkBroken() {
 	l.pool.evictConn(l.accountID, l.conn.id)
 }
 
+// DiscardOnRelease prevents a connection from returning to the pool without
+// interrupting the current lease. This lets a disconnected client drain the
+// upstream terminal event for usage settlement before the connection closes.
+func (l *openAIWSConnLease) DiscardOnRelease() {
+	if l == nil || l.released.Load() {
+		return
+	}
+	l.discardOnRelease.Store(true)
+}
+
 func (l *openAIWSConnLease) Release() {
 	if l == nil || l.conn == nil {
 		return
 	}
 	if !l.released.CompareAndSwap(false, true) {
+		return
+	}
+	if l.discardOnRelease.Load() && l.pool != nil {
+		l.pool.evictConn(l.accountID, l.conn.id)
 		return
 	}
 	l.conn.release()

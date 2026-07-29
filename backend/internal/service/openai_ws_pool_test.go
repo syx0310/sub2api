@@ -1384,6 +1384,45 @@ func TestOpenAIWSConnLease_ReleasedLeaseGuards(t *testing.T) {
 	require.ErrorIs(t, lease.PingWithTimeout(50*time.Millisecond), errOpenAIWSConnClosed)
 }
 
+func TestOpenAIWSConnLease_DiscardOnReleaseEvictsAfterDrain(t *testing.T) {
+	accountID := int64(7001)
+	rawConn := &openAIWSFakeConn{}
+	conn := newOpenAIWSConn("discard_after_drain", accountID, rawConn, nil)
+	require.True(t, conn.tryAcquire())
+
+	pool := newOpenAIWSConnPool(&config.Config{})
+	ap := pool.getOrCreateAccountPool(accountID)
+	ap.mu.Lock()
+	ap.conns[conn.id] = conn
+	ap.mu.Unlock()
+
+	lease := &openAIWSConnLease{
+		pool:      pool,
+		accountID: accountID,
+		conn:      conn,
+	}
+	lease.DiscardOnRelease()
+
+	require.NoError(t, lease.WriteJSON(map[string]any{"type": "drain"}, time.Second), "标记 discard 不应中断当前 drain")
+	ap.mu.Lock()
+	_, existsBeforeRelease := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.True(t, existsBeforeRelease)
+
+	lease.Release()
+	lease.DiscardOnRelease() // released lease must remain a no-op
+
+	ap.mu.Lock()
+	_, existsAfterRelease := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.False(t, existsAfterRelease)
+	rawConn.mu.Lock()
+	closed := rawConn.closed
+	rawConn.mu.Unlock()
+	require.True(t, closed)
+	require.False(t, conn.tryAcquire(), "discarded connection must never return to the pool")
+}
+
 func TestOpenAIWSConnLease_MarkBrokenAfterRelease_NoEviction(t *testing.T) {
 	conn := newOpenAIWSConn("released_markbroken", 7, &openAIWSFakeConn{}, nil)
 	ap := &openAIWSAccountPool{

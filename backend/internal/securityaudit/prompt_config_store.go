@@ -29,6 +29,8 @@ type ConfigManager struct {
 	redis     *redis.Client
 	encryptor SecretEncryptor
 	clock     Clock
+	// Persistent encrypted state must not use the process-local fallback key.
+	persistentKeyConfigured bool
 
 	snapshot atomic.Pointer[activeConfigSnapshot]
 	expected atomic.Int64
@@ -37,9 +39,11 @@ type ConfigManager struct {
 	// activated. A config version alone cannot distinguish async from blocking.
 	expectedBlocking atomic.Bool
 	// configUntrusted is set when a load/reload fails before a trustworthy
-	// snapshot is installed. While set, EffectiveMode fails closed so a
-	// persisted blocking policy cannot be silently skipped after startup or
-	// invalidation errors.
+	// snapshot is installed. Combined with expectedBlocking, EffectiveMode
+	// fails closed so a persisted blocking policy cannot be silently skipped
+	// after startup or invalidation errors. Without blocking intent, untrusted
+	// alone must not force ModeBlocking—Prompt Audit is default-off and must
+	// not take the gateway down for every API request (see issue #4560).
 	configUntrusted atomic.Bool
 
 	// applyMu serializes local reload/save application. Snapshot installation
@@ -58,7 +62,14 @@ type ConfigManager struct {
 }
 
 func NewConfigManager(db *sql.DB, settings service.SettingRepository, redisClient *redis.Client, encryptor service.SecretEncryptor) *ConfigManager {
-	return &ConfigManager{db: db, settings: settings, redis: redisClient, encryptor: encryptor, clock: realClock{}}
+	persistentKeyConfigured := encryptor != nil
+	if keyStatus, ok := encryptor.(interface{ PersistentKeyConfigured() bool }); ok {
+		persistentKeyConfigured = keyStatus.PersistentKeyConfigured()
+	}
+	return &ConfigManager{
+		db: db, settings: settings, redis: redisClient, encryptor: encryptor, clock: realClock{},
+		persistentKeyConfigured: persistentKeyConfigured,
+	}
 }
 
 func (m *ConfigManager) Start(ctx context.Context) error {
@@ -121,6 +132,11 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		m.markUntrustedIfNoActiveSnapshot()
 		return err
 	}
+	if err := m.validatePersistentEncryption(storage); err != nil {
+		m.recordLoadError(err)
+		m.markUntrustedIfNoActiveSnapshot()
+		return err
+	}
 	active, err := ActiveFromStorage(storage, values[SettingKeyRiskControl] == "true", m.encryptor)
 	if err != nil {
 		m.recordLoadError(err)
@@ -159,6 +175,9 @@ func (m *ConfigManager) BlockingActivationDegraded() bool {
 	if m == nil {
 		return false
 	}
+	// Fail closed only when storage intent requires blocking. Untrusted config
+	// without blocking intent must remain ModeOff so administrators can still
+	// operate the gateway and turn Prompt Audit off after a failed reload.
 	m.expectedMu.RLock()
 	expectedBlocking := m.expectedBlocking.Load()
 	m.expectedMu.RUnlock()
@@ -255,6 +274,22 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	next.UpdatedAt = m.clock.Now()
 	next.UpdatedBy = actorID
 	next.ChangeSummary = changeSummary(next)
+	if err := m.validatePersistentEncryption(next); err != nil {
+		return PublicConfig{}, err
+	}
+	// Build the exact snapshot before committing storage. A configuration that
+	// cannot decrypt or activate must never become the persisted desired state.
+	riskControlEnabled := false
+	var riskControlRaw string
+	riskControlErr := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, SettingKeyRiskControl).Scan(&riskControlRaw)
+	if riskControlErr != nil && !errors.Is(riskControlErr, sql.ErrNoRows) {
+		return PublicConfig{}, riskControlErr
+	}
+	riskControlEnabled = strings.TrimSpace(riskControlRaw) == "true"
+	active, err := ActiveFromStorage(next, riskControlEnabled, m.encryptor)
+	if err != nil {
+		return PublicConfig{}, err
+	}
 	rawNext, err := json.Marshal(next)
 	if err != nil {
 		return PublicConfig{}, err
@@ -268,22 +303,9 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	if err := tx.Commit(); err != nil {
 		return PublicConfig{}, err
 	}
-	// Install the snapshot with the current global gate, not merely the value
-	// cached when this process last reloaded Prompt Audit configuration.
-	riskControlEnabled := m.currentRiskControlEnabled()
-	if values, getErr := m.settings.GetMultiple(ctx, []string{SettingKeyRiskControl}); getErr == nil {
-		riskControlEnabled = values[SettingKeyRiskControl] == "true"
-	}
-	active, err := ActiveFromStorage(next, riskControlEnabled, m.encryptor)
-	if err != nil {
-		return PublicConfig{}, err
-	}
-	m.updateExpectedState(next.ConfigVersion, active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
-	if m.installSnapshotIfNewer(&activeConfigSnapshot{
-		storage:  cloneStorageConfig(next),
-		active:   cloneActiveConfig(active),
-		loadedAt: m.clock.Now(),
-	}) {
+	nextSnapshot := &activeConfigSnapshot{storage: cloneStorageConfig(next), active: cloneActiveConfig(active), loadedAt: m.clock.Now()}
+	if m.installSnapshotIfNewer(nextSnapshot) {
+		m.updateExpectedState(next.ConfigVersion, active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
 		m.configUntrusted.Store(false)
 		m.clearLoadError()
 	}
@@ -348,6 +370,53 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 	return next, nil
 }
 
+func (m *ConfigManager) validatePersistentEncryption(cfg storageConfig) error {
+	requiresPersistentKey := cfg.Enabled
+	for _, endpoint := range cfg.Endpoints {
+		if strings.TrimSpace(endpoint.TokenCiphertext) != "" {
+			requiresPersistentKey = true
+			break
+		}
+	}
+	if !requiresPersistentKey || m.persistentKeyConfigured {
+		return nil
+	}
+	return infraerrors.BadRequest(
+		ErrorCodeEncryptionKey,
+		"提示词审计需要固定的 TOTP_ENCRYPTION_KEY",
+	)
+}
+
+func (m *ConfigManager) installSnapshotIfNewer(next *activeConfigSnapshot) bool {
+	if m == nil || next == nil {
+		return false
+	}
+	for {
+		current := m.snapshot.Load()
+		if current != nil && current.active.ConfigVersion >= next.active.ConfigVersion {
+			return false
+		}
+		if m.snapshot.CompareAndSwap(current, next) {
+			return true
+		}
+	}
+}
+
+func (m *ConfigManager) installSnapshotIfCurrentOrNewer(next *activeConfigSnapshot) bool {
+	if m == nil || next == nil {
+		return false
+	}
+	for {
+		current := m.snapshot.Load()
+		if current != nil && current.active.ConfigVersion > next.active.ConfigVersion {
+			return false
+		}
+		if m.snapshot.CompareAndSwap(current, next) {
+			return true
+		}
+	}
+}
+
 func (m *ConfigManager) RuntimeState() (expected int64, active int64, loadedAt *time.Time, loadError string) {
 	if m == nil {
 		return 1, 0, nil, "config_manager_unavailable"
@@ -369,14 +438,18 @@ func (m *ConfigManager) RuntimeState() (expected int64, active int64, loadedAt *
 	return
 }
 
-func (m *ConfigManager) Encrypt(value string) (string, error) { return m.encryptor.Encrypt(value) }
-func (m *ConfigManager) Decrypt(value string) (string, error) { return m.encryptor.Decrypt(value) }
-
-func (m *ConfigManager) currentRiskControlEnabled() bool {
-	if snapshot := m.snapshot.Load(); snapshot != nil {
-		return snapshot.active.RiskControlEnabled
+func (m *ConfigManager) Encrypt(value string) (string, error) {
+	if m == nil || m.encryptor == nil || !m.persistentKeyConfigured {
+		return "", infraerrors.BadRequest(ErrorCodeEncryptionKey, "提示词审计需要固定的 TOTP_ENCRYPTION_KEY")
 	}
-	return false
+	return m.encryptor.Encrypt(value)
+}
+
+func (m *ConfigManager) Decrypt(value string) (string, error) {
+	if m == nil || m.encryptor == nil || !m.persistentKeyConfigured {
+		return "", infraerrors.BadRequest(ErrorCodeEncryptionKey, "提示词审计需要固定的 TOTP_ENCRYPTION_KEY")
+	}
+	return m.encryptor.Decrypt(value)
 }
 
 func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool) {
@@ -427,49 +500,6 @@ func (m *ConfigManager) observeExpectedVersion(version int64) {
 		m.expected.Store(version)
 	}
 	m.expectedMu.Unlock()
-}
-
-func activeConfigSnapshotVersion(snapshot *activeConfigSnapshot) int64 {
-	if snapshot == nil {
-		return 0
-	}
-	version := snapshot.storage.ConfigVersion
-	if snapshot.active.ConfigVersion > version {
-		version = snapshot.active.ConfigVersion
-	}
-	return version
-}
-
-func (m *ConfigManager) installSnapshotIfCurrentOrNewer(next *activeConfigSnapshot) bool {
-	if m == nil || next == nil {
-		return false
-	}
-	nextVersion := activeConfigSnapshotVersion(next)
-	for {
-		current := m.snapshot.Load()
-		if current != nil && nextVersion < activeConfigSnapshotVersion(current) {
-			return false
-		}
-		if m.snapshot.CompareAndSwap(current, next) {
-			return true
-		}
-	}
-}
-
-func (m *ConfigManager) installSnapshotIfNewer(next *activeConfigSnapshot) bool {
-	if m == nil || next == nil {
-		return false
-	}
-	nextVersion := activeConfigSnapshotVersion(next)
-	for {
-		current := m.snapshot.Load()
-		if current != nil && nextVersion <= activeConfigSnapshotVersion(current) {
-			return false
-		}
-		if m.snapshot.CompareAndSwap(current, next) {
-			return true
-		}
-	}
 }
 
 func (m *ConfigManager) refreshLoop(ctx context.Context) {

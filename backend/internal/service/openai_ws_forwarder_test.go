@@ -12,6 +12,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOpenAIWSClientDrainTimeout(t *testing.T) {
+	tests := []struct {
+		name               string
+		readTimeoutSeconds int
+		nilConfig          bool
+		want               time.Duration
+	}{
+		{name: "nil config uses bounded fallback", nilConfig: true, want: 2 * time.Minute},
+		{name: "zero uses bounded fallback", want: 2 * time.Minute},
+		{name: "short read timeout is preserved", readTimeoutSeconds: 30, want: 30 * time.Second},
+		{name: "cap is preserved", readTimeoutSeconds: 120, want: 2 * time.Minute},
+		{name: "long read timeout is capped", readTimeoutSeconds: 900, want: 2 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{}
+			if !tt.nilConfig {
+				svc.cfg = &config.Config{}
+				svc.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = tt.readTimeoutSeconds
+			}
+			require.Equal(t, tt.want, svc.openAIWSClientDrainTimeout())
+		})
+	}
+}
+
 // TestIsOpenAIWSTokenEvent_TerminalEventsExcluded 覆盖 isOpenAIWSTokenEvent 的回归用例。
 // 重点验证终止事件（response.completed / response.done）不再被当作 token event，
 // 否则当上游没有可识别的 delta 时，firstTokenMs 会被填到终止时刻，

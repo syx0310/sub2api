@@ -73,11 +73,13 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 	}
 
 	serverErrCh := make(chan error, 1)
-	turnTerminalCh := make(chan string, 2)
+	turnResultCh := make(chan *OpenAIForwardResult, 2)
+	firstRequestBodyBytes := int64(777)
 	hooks := &OpenAIWSIngressHooks{
+		InitialRequestBodyBytes: &firstRequestBodyBytes,
 		AfterTurn: func(_ int, result *OpenAIForwardResult, turnErr error) {
 			if turnErr == nil && result != nil {
-				turnTerminalCh <- result.UpstreamTerminalEvent
+				turnResultCh <- result
 			}
 		},
 	}
@@ -138,7 +140,9 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 		return message
 	}
 
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false}`)
+	firstPayload := `{"type":"response.create","model":"gpt-5.1","stream":false}`
+	secondPayload := `{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_ingress_turn_1"}`
+	writeMessage(firstPayload)
 	firstTurnImageEvent := readMessage()
 	require.Equal(t, "response.output_item.done", gjson.GetBytes(firstTurnImageEvent, "type").String())
 	require.Equal(t, "completed", gjson.GetBytes(firstTurnImageEvent, "item.status").String())
@@ -147,12 +151,18 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 	require.Equal(t, "response.completed", gjson.GetBytes(firstTurnEvent, "type").String())
 	require.Equal(t, "resp_ingress_turn_1", gjson.GetBytes(firstTurnEvent, "response.id").String())
 
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_ingress_turn_1"}`)
+	writeMessage(secondPayload)
 	secondTurnEvent := readMessage()
 	require.Equal(t, "response.completed", gjson.GetBytes(secondTurnEvent, "type").String())
 	require.Equal(t, "resp_ingress_turn_2", gjson.GetBytes(secondTurnEvent, "response.id").String())
-	require.Equal(t, "response.completed", <-turnTerminalCh, "首轮 turn 应保留成功终态")
-	require.Equal(t, "response.completed", <-turnTerminalCh, "第二轮 turn 应保留成功终态")
+	firstResult := <-turnResultCh
+	secondResult := <-turnResultCh
+	require.Equal(t, "response.completed", firstResult.UpstreamTerminalEvent, "首轮 turn 应保留成功终态")
+	require.Equal(t, "response.completed", secondResult.UpstreamTerminalEvent, "第二轮 turn 应保留成功终态")
+	require.NotNil(t, firstResult.RequestBodyBytes)
+	require.Equal(t, firstRequestBodyBytes, *firstResult.RequestBodyBytes, "首帧变换后仍应保留客户端入口字节数")
+	require.NotNil(t, secondResult.RequestBodyBytes)
+	require.Equal(t, int64(len(secondPayload)), *secondResult.RequestBodyBytes, "后续帧应记录客户端原始字节数")
 
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
@@ -4479,7 +4489,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ClientDisconnect
 
 	select {
 	case serverErr := <-serverErrCh:
-		require.NoError(t, serverErr, "客户端断连后应继续 drain 上游直到 terminal 或正常结束")
+		require.Error(t, serverErr, "drain 完成后仍应向外层返回客户端投递错误")
+		require.True(t, IsOpenAIWSClientDeliveryError(serverErr))
 	case <-time.After(5 * time.Second):
 		t.Fatal("等待 ingress websocket 结束超时")
 	}
@@ -4491,6 +4502,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ClientDisconnect
 		require.Equal(t, 1, result.Usage.OutputTokens)
 		require.NotNil(t, result.ServiceTier)
 		require.Equal(t, "flex", *result.ServiceTier)
+		require.True(t, result.ClientDisconnect)
 	case <-time.After(2 * time.Second):
 		t.Fatal("未收到断连后的 turn 结果回调")
 	}
