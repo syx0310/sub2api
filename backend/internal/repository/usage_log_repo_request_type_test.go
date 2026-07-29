@@ -31,6 +31,10 @@ var usageStatsSQLColumns = []string{
 	"total_account_cost", "avg_duration_ms",
 }
 
+func usageLogInsertSQLRegexp() string {
+	return fmt.Sprintf(`INSERT INTO usage_logs.*\$%d\s*\)`, len(usageLogInsertArgTypes))
+}
+
 func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -54,7 +58,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 		CreatedAt:      createdAt,
 	}
 
-	mock.ExpectQuery("INSERT INTO usage_logs").
+	mock.ExpectQuery(usageLogInsertSQLRegexp()).
 		WithArgs(
 			log.UserID,
 			log.APIKeyID,
@@ -145,7 +149,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 		CreatedAt:      createdAt,
 	}
 
-	mock.ExpectQuery("INSERT INTO usage_logs").
+	mock.ExpectQuery(usageLogInsertSQLRegexp()).
 		WithArgs(
 			log.UserID,
 			log.APIKeyID,
@@ -246,7 +250,7 @@ func TestExecUsageLogInsertNoResult_PersistsRequestedModel(t *testing.T) {
 		CreatedAt:      time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC),
 	})
 
-	mock.ExpectExec("INSERT INTO usage_logs").
+	mock.ExpectExec(usageLogInsertSQLRegexp()).
 		WithArgs(anySliceToDriverValues(prepared.args)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -290,11 +294,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
 	})
 
-	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[36])
-	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[37])
-	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[38])
-	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[39])
-	breakdownJSON, ok := prepared.args[40].(string)
+	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[38])
+	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[39])
+	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[40])
+	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[41])
+	breakdownJSON, ok := prepared.args[42].(string)
 	require.True(t, ok)
 	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
 }
