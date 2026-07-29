@@ -205,6 +205,38 @@ func (e *OpenAIWSClientCloseError) Reason() string {
 	return strings.TrimSpace(e.reason)
 }
 
+// IsOpenAIWSClientDeliveryError reports errors caused by reading from or
+// writing to the downstream client. These failures must not penalize the
+// selected upstream account.
+func IsOpenAIWSClientDeliveryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var turnErr *openAIWSIngressTurnError
+	if errors.As(err, &turnErr) && turnErr != nil {
+		switch strings.TrimSpace(turnErr.stage) {
+		case "read_client", "write_client":
+			return true
+		case "read_upstream", "write_upstream":
+			return false
+		}
+	}
+	return isOpenAIWSClientDisconnectError(err)
+}
+
+// ShouldReportOpenAIWSAccountScheduleFailure separates upstream transport
+// failures from local policy/concurrency closes and downstream disconnects.
+func ShouldReportOpenAIWSAccountScheduleFailure(err error) bool {
+	if err == nil || IsOpenAIWSClientDeliveryError(err) {
+		return false
+	}
+	var closeErr *OpenAIWSClientCloseError
+	if !errors.As(err, &closeErr) || closeErr == nil {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(closeErr.Reason()), "upstream ")
+}
+
 // OpenAIWSIngressHooks 定义入站 WS 每个 turn 的生命周期回调。
 type OpenAIWSIngressHooks struct {
 	// InitialRequestModel 是首帧渠道映射前的请求模型，只用于 usage metadata

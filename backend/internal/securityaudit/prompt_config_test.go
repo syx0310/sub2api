@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -137,13 +138,84 @@ func (errorSettingRepository) GetMultiple(context.Context, []string) (map[string
 	return nil, errors.New("settings unavailable")
 }
 
-func TestConfigManagerStartupLoadFailureFailsClosedWithoutSnapshot(t *testing.T) {
+type delayedSettingRepository struct {
+	staticSettingRepository
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *delayedSettingRepository) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	close(r.started)
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.staticSettingRepository.GetMultiple(ctx, keys)
+}
+
+func TestConfigManagerSnapshotInstallationIsVersionMonotonic(t *testing.T) {
+	manager := NewConfigManager(nil, staticSettingRepository{}, nil, prefixEncryptor{})
+	v3 := &activeConfigSnapshot{storage: storageConfig{ConfigVersion: 3}, active: ActiveConfig{ConfigVersion: 3}}
+	v2 := &activeConfigSnapshot{storage: storageConfig{ConfigVersion: 2}, active: ActiveConfig{ConfigVersion: 2}}
+	require.True(t, manager.installSnapshotIfNewer(v3))
+	require.False(t, manager.installSnapshotIfNewer(v2))
+	active, ok := manager.Active()
+	require.True(t, ok)
+	require.Equal(t, int64(3), active.ConfigVersion)
+}
+
+func TestConfigManagerStaleReloadCannotRegressNewerSnapshotOrExpectedState(t *testing.T) {
+	oldStorage := DefaultStorageConfig()
+	oldStorage.ConfigVersion = 2
+	oldRaw, err := json.Marshal(oldStorage)
+	require.NoError(t, err)
+	repo := &delayedSettingRepository{
+		staticSettingRepository: staticSettingRepository{values: map[string]string{
+			SettingKeyPromptAuditConfig: string(oldRaw),
+			SettingKeyRiskControl:       "false",
+		}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager := NewConfigManager(nil, repo, nil, prefixEncryptor{})
+
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- manager.Reload(context.Background()) }()
+	select {
+	case <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("stale reload did not start")
+	}
+
+	newStorage := DefaultStorageConfig()
+	newStorage.ConfigVersion = 3
+	newActive := ActiveConfig{ConfigVersion: 3, RiskControlEnabled: true, Enabled: true, BlockingEnabled: true}
+	require.True(t, manager.installSnapshotIfNewer(&activeConfigSnapshot{storage: newStorage, active: newActive}))
+	require.True(t, manager.updateExpectedState(3, true))
+	manager.markConfigUntrusted()
+	manager.recordLoadError(errors.New("newer activation state must survive"))
+	close(repo.release)
+	require.NoError(t, <-reloadDone)
+
+	active, ok := manager.Active()
+	require.True(t, ok)
+	require.Equal(t, int64(3), active.ConfigVersion)
+	expected, activeVersion, _, loadError := manager.RuntimeState()
+	require.Equal(t, int64(3), expected)
+	require.Equal(t, int64(3), activeVersion)
+	require.NotEmpty(t, loadError)
+	require.True(t, manager.configUntrusted.Load())
+	require.True(t, manager.expectedBlocking.Load())
+}
+
+func TestConfigManagerStartupLoadFailureDoesNotBlockWithoutBlockingIntent(t *testing.T) {
 	manager := NewConfigManager(nil, errorSettingRepository{}, nil, prefixEncryptor{})
 	err := manager.Start(context.Background())
 	require.Error(t, err)
 	require.True(t, manager.configUntrusted.Load())
-	require.True(t, manager.BlockingActivationDegraded())
-	require.Equal(t, ModeBlocking, manager.EffectiveMode())
+	require.False(t, manager.BlockingActivationDegraded())
+	require.Equal(t, ModeOff, manager.EffectiveMode())
 	require.NoError(t, manager.Shutdown(context.Background()))
 }
 

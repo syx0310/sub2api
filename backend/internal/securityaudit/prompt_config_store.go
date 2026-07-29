@@ -42,6 +42,12 @@ type ConfigManager struct {
 	// invalidation errors.
 	configUntrusted atomic.Bool
 
+	// applyMu serializes local reload/save application. Snapshot installation
+	// still performs a version check because a read may have started before a
+	// newer snapshot was installed by another goroutine.
+	applyMu    sync.Mutex
+	expectedMu sync.RWMutex
+
 	stateMu       sync.RWMutex
 	lastLoadError string
 	lastErrorAt   *time.Time
@@ -100,6 +106,8 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		m.markUntrustedIfNoActiveSnapshot()
 		return errors.New("prompt audit setting repository unavailable")
 	}
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	values, err := m.settings.GetMultiple(ctx, []string{SettingKeyPromptAuditConfig, SettingKeyRiskControl})
 	if err != nil {
 		m.recordLoadError(err)
@@ -113,8 +121,6 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		m.markUntrustedIfNoActiveSnapshot()
 		return err
 	}
-	m.expected.Store(storage.ConfigVersion)
-	m.expectedBlocking.Store(values[SettingKeyRiskControl] == "true" && storage.Enabled && storage.BlockingEnabled)
 	active, err := ActiveFromStorage(storage, values[SettingKeyRiskControl] == "true", m.encryptor)
 	if err != nil {
 		m.recordLoadError(err)
@@ -123,7 +129,13 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		return err
 	}
 	now := m.clock.Now()
-	m.snapshot.Store(&activeConfigSnapshot{storage: cloneStorageConfig(storage), active: cloneActiveConfig(active), loadedAt: now})
+	if !m.installSnapshotIfCurrentOrNewer(&activeConfigSnapshot{
+		storage:  cloneStorageConfig(storage),
+		active:   cloneActiveConfig(active),
+		loadedAt: now,
+	}) {
+		return nil
+	}
 	m.configUntrusted.Store(false)
 	m.clearLoadError()
 	LogInfo(EventConfigLoaded, map[string]any{
@@ -147,11 +159,14 @@ func (m *ConfigManager) BlockingActivationDegraded() bool {
 	if m == nil {
 		return false
 	}
+	m.expectedMu.RLock()
+	expectedBlocking := m.expectedBlocking.Load()
+	m.expectedMu.RUnlock()
+	if !expectedBlocking {
+		return false
+	}
 	if m.configUntrusted.Load() {
 		return true
-	}
-	if !m.expectedBlocking.Load() {
-		return false
 	}
 	active, ok := m.Active()
 	if !ok {
@@ -207,6 +222,8 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	if req.ExpectedConfigVersion < 1 {
 		return PublicConfig{}, infraerrors.BadRequest("prompt_audit_expected_config_version_required", "必须提供有效的配置版本")
 	}
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return PublicConfig{}, err
@@ -261,10 +278,15 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	if err != nil {
 		return PublicConfig{}, err
 	}
-	m.expected.Store(next.ConfigVersion)
-	m.expectedBlocking.Store(active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
-	m.snapshot.Store(&activeConfigSnapshot{storage: cloneStorageConfig(next), active: cloneActiveConfig(active), loadedAt: m.clock.Now()})
-	m.clearLoadError()
+	m.updateExpectedState(next.ConfigVersion, active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
+	if m.installSnapshotIfNewer(&activeConfigSnapshot{
+		storage:  cloneStorageConfig(next),
+		active:   cloneActiveConfig(active),
+		loadedAt: m.clock.Now(),
+	}) {
+		m.configUntrusted.Store(false)
+		m.clearLoadError()
+	}
 	LogInfo(EventConfigUpdated, map[string]any{
 		"config_version": next.ConfigVersion, "status": "updated",
 	})
@@ -330,7 +352,9 @@ func (m *ConfigManager) RuntimeState() (expected int64, active int64, loadedAt *
 	if m == nil {
 		return 1, 0, nil, "config_manager_unavailable"
 	}
+	m.expectedMu.RLock()
 	expected = m.expected.Load()
+	m.expectedMu.RUnlock()
 	if expected < 1 {
 		expected = 1
 	}
@@ -360,8 +384,7 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		return
 	}
 	if strings.TrimSpace(raw) == "" {
-		m.expected.Store(1)
-		m.expectedBlocking.Store(false)
+		m.updateExpectedState(1, false)
 		return
 	}
 	var intent struct {
@@ -375,8 +398,78 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 	if intent.ConfigVersion < 1 {
 		intent.ConfigVersion = 1
 	}
-	m.expected.Store(intent.ConfigVersion)
-	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled && intent.BlockingEnabled)
+	m.updateExpectedState(intent.ConfigVersion, riskControlEnabled && intent.Enabled && intent.BlockingEnabled)
+}
+
+func (m *ConfigManager) updateExpectedState(version int64, blocking bool) bool {
+	if m == nil {
+		return false
+	}
+	if version < 1 {
+		version = 1
+	}
+	m.expectedMu.Lock()
+	defer m.expectedMu.Unlock()
+	if version < m.expected.Load() {
+		return false
+	}
+	m.expected.Store(version)
+	m.expectedBlocking.Store(blocking)
+	return true
+}
+
+func (m *ConfigManager) observeExpectedVersion(version int64) {
+	if m == nil || version < 1 {
+		return
+	}
+	m.expectedMu.Lock()
+	if version > m.expected.Load() {
+		m.expected.Store(version)
+	}
+	m.expectedMu.Unlock()
+}
+
+func activeConfigSnapshotVersion(snapshot *activeConfigSnapshot) int64 {
+	if snapshot == nil {
+		return 0
+	}
+	version := snapshot.storage.ConfigVersion
+	if snapshot.active.ConfigVersion > version {
+		version = snapshot.active.ConfigVersion
+	}
+	return version
+}
+
+func (m *ConfigManager) installSnapshotIfCurrentOrNewer(next *activeConfigSnapshot) bool {
+	if m == nil || next == nil {
+		return false
+	}
+	nextVersion := activeConfigSnapshotVersion(next)
+	for {
+		current := m.snapshot.Load()
+		if current != nil && nextVersion < activeConfigSnapshotVersion(current) {
+			return false
+		}
+		if m.snapshot.CompareAndSwap(current, next) {
+			return true
+		}
+	}
+}
+
+func (m *ConfigManager) installSnapshotIfNewer(next *activeConfigSnapshot) bool {
+	if m == nil || next == nil {
+		return false
+	}
+	nextVersion := activeConfigSnapshotVersion(next)
+	for {
+		current := m.snapshot.Load()
+		if current != nil && nextVersion <= activeConfigSnapshotVersion(current) {
+			return false
+		}
+		if m.snapshot.CompareAndSwap(current, next) {
+			return true
+		}
+	}
 }
 
 func (m *ConfigManager) refreshLoop(ctx context.Context) {
@@ -412,7 +505,7 @@ func (m *ConfigManager) subscribeLoop(ctx context.Context) {
 			if err != nil || version < 1 {
 				continue
 			}
-			m.expected.Store(version)
+			m.observeExpectedVersion(version)
 			if err := m.Reload(ctx); err != nil {
 				// A newer published version failed to activate. Until reload
 				// succeeds, do not keep serving a potentially stale weaker mode.

@@ -46,6 +46,41 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 	}
 }
 
+func TestShouldReportOpenAIWSAccountScheduleFailure(t *testing.T) {
+	t.Parallel()
+
+	localPolicy := NewOpenAIWSClientCloseError(
+		coderws.StatusPolicyViolation,
+		"request rejected by local policy",
+		errors.New("local policy rejection"),
+	)
+	require.False(t, ShouldReportOpenAIWSAccountScheduleFailure(localPolicy))
+
+	clientWrite := wrapOpenAIWSIngressTurnError(
+		"write_client",
+		errors.New("write tcp: broken pipe"),
+		true,
+	)
+	require.True(t, IsOpenAIWSClientDeliveryError(clientWrite))
+	require.False(t, ShouldReportOpenAIWSAccountScheduleFailure(clientWrite))
+
+	upstreamTimeout := NewOpenAIWSClientCloseError(
+		coderws.StatusTryAgainLater,
+		"upstream websocket connect timeout",
+		context.DeadlineExceeded,
+	)
+	require.False(t, IsOpenAIWSClientDeliveryError(upstreamTimeout))
+	require.True(t, ShouldReportOpenAIWSAccountScheduleFailure(upstreamTimeout))
+
+	upstreamAuth := NewOpenAIWSClientCloseError(
+		coderws.StatusPolicyViolation,
+		"upstream websocket authentication failed",
+		errors.New("handshake status 401"),
+	)
+	require.True(t, ShouldReportOpenAIWSAccountScheduleFailure(upstreamAuth))
+	require.True(t, ShouldReportOpenAIWSAccountScheduleFailure(errors.New("upstream websocket read failed")))
+}
+
 func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {
 	t.Parallel()
 
