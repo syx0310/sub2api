@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
@@ -30,6 +31,8 @@ type ConfigManager struct {
 	encryptor SecretEncryptor
 	clock     Clock
 	// Persistent encrypted state must not use the process-local fallback key.
+	// With an auto-generated key, newly saved endpoint tokens would become
+	// undecryptable after the next restart (issue #4887).
 	persistentKeyConfigured bool
 
 	snapshot atomic.Pointer[activeConfigSnapshot]
@@ -61,8 +64,11 @@ type ConfigManager struct {
 	wg          sync.WaitGroup
 }
 
-func NewConfigManager(db *sql.DB, settings service.SettingRepository, redisClient *redis.Client, encryptor service.SecretEncryptor) *ConfigManager {
+func NewConfigManager(db *sql.DB, settings service.SettingRepository, redisClient *redis.Client, encryptor service.SecretEncryptor, cfg *config.Config) *ConfigManager {
 	persistentKeyConfigured := encryptor != nil
+	if cfg != nil {
+		persistentKeyConfigured = cfg.Totp.EncryptionKeyConfigured
+	}
 	if keyStatus, ok := encryptor.(interface{ PersistentKeyConfigured() bool }); ok {
 		persistentKeyConfigured = keyStatus.PersistentKeyConfigured()
 	}
@@ -132,11 +138,6 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		m.markUntrustedIfNoActiveSnapshot()
 		return err
 	}
-	if err := m.validatePersistentEncryption(storage); err != nil {
-		m.recordLoadError(err)
-		m.markUntrustedIfNoActiveSnapshot()
-		return err
-	}
 	active, err := ActiveFromStorage(storage, values[SettingKeyRiskControl] == "true", m.encryptor)
 	if err != nil {
 		m.recordLoadError(err)
@@ -145,6 +146,7 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 		return err
 	}
 	now := m.clock.Now()
+	previous := m.snapshot.Load()
 	if !m.installSnapshotIfCurrentOrNewer(&activeConfigSnapshot{
 		storage:  cloneStorageConfig(storage),
 		active:   cloneActiveConfig(active),
@@ -154,10 +156,39 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 	}
 	m.configUntrusted.Store(false)
 	m.clearLoadError()
+	m.logInvalidTokenEndpoints(previous, active)
 	LogInfo(EventConfigLoaded, map[string]any{
 		"config_version": storage.ConfigVersion, "status": "loaded",
 	})
 	return nil
+}
+
+// logInvalidTokenEndpoints warns once per change (not on every 5s refresh)
+// when stored endpoint tokens cannot be decrypted with the current key.
+func (m *ConfigManager) logInvalidTokenEndpoints(previous *activeConfigSnapshot, active ActiveConfig) {
+	invalid := active.InvalidTokenEndpointIDs()
+	if len(invalid) == 0 {
+		return
+	}
+	if previous != nil {
+		prior := previous.active.InvalidTokenEndpointIDs()
+		if len(prior) == len(invalid) {
+			same := true
+			for i := range invalid {
+				if prior[i] != invalid[i] {
+					same = false
+					break
+				}
+			}
+			if same && previous.active.ConfigVersion == active.ConfigVersion {
+				return
+			}
+		}
+	}
+	LogWarn(EventConfigTokenInvalid, map[string]any{
+		"config_version": active.ConfigVersion, "status": "degraded",
+		"error_code": "endpoint_token_undecryptable", "guard_endpoint_id": strings.Join(invalid, ","),
+	})
 }
 
 func (m *ConfigManager) Active() (ActiveConfig, bool) {
@@ -231,7 +262,7 @@ func (m *ConfigManager) Public() (PublicConfig, error) {
 	if snapshot == nil {
 		return PublicConfig{}, infraerrors.ServiceUnavailable(ErrorCodeConfigUnavailable, "提示词审计配置暂不可用")
 	}
-	return PublicFromStorage(cloneStorageConfig(snapshot.storage), snapshot.active.RiskControlEnabled), nil
+	return PublicFromStorage(cloneStorageConfig(snapshot.storage), snapshot.active.RiskControlEnabled, snapshot.active.InvalidTokenEndpointIDs()), nil
 }
 
 func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actorID int64) (PublicConfig, error) {
@@ -274,8 +305,14 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	next.UpdatedAt = m.clock.Now()
 	next.UpdatedBy = actorID
 	next.ChangeSummary = changeSummary(next)
-	if err := m.validatePersistentEncryption(next); err != nil {
-		return PublicConfig{}, err
+	// A disabled configuration with an existing ciphertext must remain editable
+	// so administrators can clear it or change unrelated settings. Enabling
+	// Prompt Audit still requires a fixed key, and buildNextStorage separately
+	// rejects every newly supplied token when only a per-boot key is available.
+	if next.Enabled {
+		if err := m.validatePersistentEncryption(next); err != nil {
+			return PublicConfig{}, err
+		}
 	}
 	// Build the exact snapshot before committing storage. A configuration that
 	// cannot decrypt or activate must never become the persisted desired state.
@@ -303,11 +340,28 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	if err := tx.Commit(); err != nil {
 		return PublicConfig{}, err
 	}
+	// Re-read the global gate after commit. It may have changed since the
+	// transaction acquired its share lock; the installed snapshot must reflect
+	// the latest observable value rather than a stale process-local value.
+	if m.settings != nil {
+		if values, getErr := m.settings.GetMultiple(ctx, []string{SettingKeyRiskControl}); getErr == nil {
+			latestRiskControlEnabled := values[SettingKeyRiskControl] == "true"
+			if latestRiskControlEnabled != riskControlEnabled {
+				riskControlEnabled = latestRiskControlEnabled
+				active, err = ActiveFromStorage(next, riskControlEnabled, m.encryptor)
+				if err != nil {
+					return PublicConfig{}, err
+				}
+			}
+		}
+	}
+	previous := m.snapshot.Load()
 	nextSnapshot := &activeConfigSnapshot{storage: cloneStorageConfig(next), active: cloneActiveConfig(active), loadedAt: m.clock.Now()}
 	if m.installSnapshotIfNewer(nextSnapshot) {
 		m.updateExpectedState(next.ConfigVersion, active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
 		m.configUntrusted.Store(false)
 		m.clearLoadError()
+		m.logInvalidTokenEndpoints(previous, active)
 	}
 	LogInfo(EventConfigUpdated, map[string]any{
 		"config_version": next.ConfigVersion, "status": "updated",
@@ -319,7 +373,7 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 			})
 		}
 	}
-	return PublicFromStorage(next, active.RiskControlEnabled), nil
+	return PublicFromStorage(next, active.RiskControlEnabled, active.InvalidTokenEndpointIDs()), nil
 }
 
 func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfigRequest, actorID int64) (storageConfig, error) {
@@ -353,6 +407,10 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		case endpoint.ClearToken:
 			stored.TokenCiphertext = ""
 		case strings.TrimSpace(endpoint.Token) != "":
+			if !m.persistentKeyConfigured {
+				return storageConfig{}, infraerrors.BadRequest(ErrorCodeEncryptionKeyRequired,
+					"未配置固定加密密钥，审计节点 Token 将在服务重启后失效。请先设置 TOTP_ENCRYPTION_KEY 环境变量（64 位十六进制）并重启服务")
+			}
 			ciphertext, err := m.encryptor.Encrypt(strings.TrimSpace(endpoint.Token))
 			if err != nil {
 				return storageConfig{}, fmt.Errorf("encrypt prompt audit endpoint token: %w", err)

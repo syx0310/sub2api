@@ -19,6 +19,9 @@ const (
 	ErrorCodeConfigUnavailable = "prompt_audit_config_unavailable"
 	ErrorCodeRequiresEnabled   = "prompt_guard_requires_audit_enabled"
 	ErrorCodeEncryptionKey     = "prompt_audit_encryption_key_required"
+	// ErrorCodeEncryptionKeyRequired is the upstream name for the same stable
+	// API reason retained by this fork as ErrorCodeEncryptionKey.
+	ErrorCodeEncryptionKeyRequired = ErrorCodeEncryptionKey
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"
 )
