@@ -132,7 +132,14 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	}
 
 	itemType, _ := inputItem["type"].(string)
-	if strings.TrimSpace(itemType) != "reasoning" {
+	switch strings.TrimSpace(itemType) {
+	case "compaction", "compaction_summary":
+		if _, encrypted := inputItem["encrypted_content"]; encrypted {
+			return nil, true, false
+		}
+		return item, false, true
+	case "reasoning":
+	default:
 		return item, false, true
 	}
 
@@ -809,6 +816,28 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact, responsesLite boo
 	}
 
 	return normalized, changed, nil
+}
+
+func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byte) string {
+	if !isOpenAICodexModel(reqModel) {
+		return ""
+	}
+
+	instructions := gjson.GetBytes(body, "instructions")
+	if !instructions.Exists() {
+		return ""
+	}
+	if instructions.Type != gjson.String {
+		return "instructions_not_string"
+	}
+	if strings.TrimSpace(instructions.String()) == "" {
+		return "instructions_empty"
+	}
+	return ""
+}
+
+func isOpenAICodexModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
 }
 
 // extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,

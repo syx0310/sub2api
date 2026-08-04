@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -60,6 +61,24 @@ type APIKeyConcurrencyCache interface {
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error)
 }
+
+// APIKeyConcurrencySnapshotCache exposes an index-backed view of API keys that
+// currently have regular request slots or Live turn leases. Implementations
+// must not include idle client WebSocket ingress leases.
+type APIKeyConcurrencySnapshotCache interface {
+	GetActiveAPIKeyConcurrency(ctx context.Context) (*APIKeyConcurrencySnapshot, error)
+}
+
+// APIKeyConcurrencySnapshot is a point-in-time, sparse API-key concurrency view.
+// Complete is false while a newly introduced active index is warming up or if
+// the repository had to cap the number of index candidates it inspected.
+type APIKeyConcurrencySnapshot struct {
+	Counts      map[int64]int
+	Complete    bool
+	CollectedAt time.Time
+}
+
+var ErrAPIKeyConcurrencyUnavailable = errors.New("api key concurrency is unavailable")
 
 // OpenAIWSIngressLeaseCache owns the short-lived distributed lease used to
 // bound live client WebSocket sessions. It is deliberately independent of the
@@ -225,6 +244,7 @@ const (
 	maxAccountLoadBatchCacheEntries = 256
 	apiKeyConcurrencyFetchTimeout   = 3 * time.Second
 	apiKeySlotTrackTimeout          = 2 * time.Second
+	apiKeySnapshotCacheTTL          = 500 * time.Millisecond
 )
 
 // ConcurrencyService 管理账号和用户的并发限制。
@@ -235,10 +255,19 @@ type ConcurrencyService struct {
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
 	accountLoadGroup    singleflight.Group
+
+	apiKeySnapshotMu    sync.RWMutex
+	apiKeySnapshotCache cachedAPIKeyConcurrencySnapshot
+	apiKeySnapshotGroup singleflight.Group
 }
 
 type cachedAccountLoadBatch struct {
 	loadMap   map[int64]*AccountLoadInfo
+	expiresAt time.Time
+}
+
+type cachedAPIKeyConcurrencySnapshot struct {
+	snapshot  *APIKeyConcurrencySnapshot
 	expiresAt time.Time
 }
 
@@ -449,24 +478,15 @@ func (s *ConcurrencyService) TrackAPIKeySlot(ctx context.Context, apiKeyID int64
 }
 
 // GetAPIKeyConcurrencyBatch gets real-time active request counts for API keys.
-// Stats are best-effort: missing Redis support or Redis errors return zeroes.
+// Stats are best-effort for existing user-facing callers: missing Redis support
+// or Redis errors return zeroes. Admin monitoring must use the strict variant so
+// an outage cannot be presented as a real all-zero result.
 func (s *ConcurrencyService) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
 	result := zeroAPIKeyConcurrencyMap(apiKeyIDs)
 	if len(apiKeyIDs) == 0 {
 		return result, nil
 	}
-	if s == nil || s.cache == nil {
-		return result, nil
-	}
-	cache, ok := s.cache.(APIKeyConcurrencyCache)
-	if !ok {
-		return result, nil
-	}
-
-	redisCtx, cancel := context.WithTimeout(context.Background(), apiKeyConcurrencyFetchTimeout)
-	defer cancel()
-
-	counts, err := cache.GetAPIKeyConcurrencyBatch(redisCtx, apiKeyIDs)
+	counts, err := s.GetAPIKeyConcurrencyBatchExact(ctx, apiKeyIDs)
 	if err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: get api key concurrency batch failed: %v", err)
 		return result, nil
@@ -475,6 +495,137 @@ func (s *ConcurrencyService) GetAPIKeyConcurrencyBatch(ctx context.Context, apiK
 		result[apiKeyID] = counts[apiKeyID]
 	}
 	return result, nil
+}
+
+// GetAPIKeyConcurrencyBatchExact returns authoritative counts for the requested
+// API keys. Unlike the legacy best-effort method, unavailable Redis state is an
+// error and must be surfaced by monitoring callers instead of becoming zeroes.
+func (s *ConcurrencyService) GetAPIKeyConcurrencyBatchExact(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	apiKeyIDs = uniquePositiveInt64s(apiKeyIDs)
+	if len(apiKeyIDs) == 0 {
+		return map[int64]int{}, nil
+	}
+	if s == nil || s.cache == nil {
+		return nil, ErrAPIKeyConcurrencyUnavailable
+	}
+	cache, ok := s.cache.(APIKeyConcurrencyCache)
+	if !ok {
+		return nil, fmt.Errorf("%w: cache does not support API-key counters", ErrAPIKeyConcurrencyUnavailable)
+	}
+
+	baseCtx := context.Background()
+	if ctx != nil {
+		baseCtx = ctx
+	}
+	redisCtx, cancel := context.WithTimeout(baseCtx, apiKeyConcurrencyFetchTimeout)
+	defer cancel()
+
+	counts, err := cache.GetAPIKeyConcurrencyBatch(redisCtx, apiKeyIDs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrAPIKeyConcurrencyUnavailable, err)
+	}
+	result := zeroAPIKeyConcurrencyMap(apiKeyIDs)
+	for _, apiKeyID := range apiKeyIDs {
+		result[apiKeyID] = counts[apiKeyID]
+	}
+	return result, nil
+}
+
+// GetActiveAPIKeyConcurrency returns a short-lived cached, sparse snapshot.
+// The repository's active index bounds work by recently active keys rather
+// than the total number of API keys in the database.
+func (s *ConcurrencyService) GetActiveAPIKeyConcurrency(ctx context.Context) (*APIKeyConcurrencySnapshot, error) {
+	if s == nil || s.cache == nil {
+		return nil, ErrAPIKeyConcurrencyUnavailable
+	}
+	cache, ok := s.cache.(APIKeyConcurrencySnapshotCache)
+	if !ok {
+		return nil, fmt.Errorf("%w: cache does not support the active API-key index", ErrAPIKeyConcurrencyUnavailable)
+	}
+
+	now := time.Now()
+	if cached := s.getCachedAPIKeyConcurrencySnapshot(now); cached != nil {
+		return cached, nil
+	}
+
+	value, err, _ := s.apiKeySnapshotGroup.Do("active", func() (any, error) {
+		now := time.Now()
+		if cached := s.getCachedAPIKeyConcurrencySnapshot(now); cached != nil {
+			return cached, nil
+		}
+		baseCtx := context.Background()
+		if ctx != nil {
+			// The result is shared by concurrent callers. One disconnected admin
+			// request must not cancel the singleflight fetch for every waiter.
+			baseCtx = context.WithoutCancel(ctx)
+		}
+		redisCtx, cancel := context.WithTimeout(baseCtx, apiKeyConcurrencyFetchTimeout)
+		defer cancel()
+		snapshot, fetchErr := cache.GetActiveAPIKeyConcurrency(redisCtx)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrAPIKeyConcurrencyUnavailable, fetchErr)
+		}
+		if snapshot == nil {
+			return nil, fmt.Errorf("%w: empty active-index result", ErrAPIKeyConcurrencyUnavailable)
+		}
+		cached := cloneAPIKeyConcurrencySnapshot(snapshot)
+		s.apiKeySnapshotMu.Lock()
+		s.apiKeySnapshotCache = cachedAPIKeyConcurrencySnapshot{
+			snapshot:  cached,
+			expiresAt: time.Now().Add(apiKeySnapshotCacheTTL),
+		}
+		s.apiKeySnapshotMu.Unlock()
+		return cloneAPIKeyConcurrencySnapshot(cached), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	snapshot, _ := value.(*APIKeyConcurrencySnapshot)
+	if snapshot == nil {
+		return nil, fmt.Errorf("%w: invalid active-index result", ErrAPIKeyConcurrencyUnavailable)
+	}
+	return snapshot, nil
+}
+
+func (s *ConcurrencyService) getCachedAPIKeyConcurrencySnapshot(now time.Time) *APIKeyConcurrencySnapshot {
+	s.apiKeySnapshotMu.RLock()
+	cached := s.apiKeySnapshotCache
+	s.apiKeySnapshotMu.RUnlock()
+	if cached.snapshot == nil || !now.Before(cached.expiresAt) {
+		return nil
+	}
+	return cloneAPIKeyConcurrencySnapshot(cached.snapshot)
+}
+
+func cloneAPIKeyConcurrencySnapshot(snapshot *APIKeyConcurrencySnapshot) *APIKeyConcurrencySnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	counts := make(map[int64]int, len(snapshot.Counts))
+	for apiKeyID, count := range snapshot.Counts {
+		counts[apiKeyID] = count
+	}
+	return &APIKeyConcurrencySnapshot{
+		Counts:      counts,
+		Complete:    snapshot.Complete,
+		CollectedAt: snapshot.CollectedAt,
+	}
+}
+
+func uniquePositiveInt64s(ids []int64) []int64 {
+	seen := make(map[int64]struct{}, len(ids))
+	unique := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func zeroAPIKeyConcurrencyMap(apiKeyIDs []int64) map[int64]int {

@@ -1028,7 +1028,7 @@ func TestOpenAIGatewayService_Forward_WSv2ConnectionLimitReachedRetryThenFallbac
 	require.Equal(t, int32(openAIWSReconnectRetryLimit+1), wsAttempts.Load())
 }
 
-func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversByDroppingPreviousResponseID(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundIsReturnedWithoutReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var wsAttempts atomic.Int32
@@ -1129,23 +1129,21 @@ func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversByDrop
 
 	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_missing","input":[{"type":"input_text","text":"hello"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, "resp_ws_prev_recover_ok", result.RequestID)
+	require.Error(t, err)
+	require.Nil(t, result)
 	require.Nil(t, upstream.lastReq, "previous_response_not_found 不应回退 HTTP")
-	require.Equal(t, int32(2), wsAttempts.Load(), "previous_response_not_found 应触发一次去掉 previous_response_id 的恢复重试")
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "resp_ws_prev_recover_ok", gjson.Get(rec.Body.String(), "id").String())
+	require.Equal(t, int32(1), wsAttempts.Load(), "代理不应删除续链锚点后把增量输入当成完整历史重放")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, strings.ToLower(rec.Body.String()), "previous response not found")
 
 	wsRequestMu.Lock()
 	requests := append([][]byte(nil), wsRequestPayloads...)
 	wsRequestMu.Unlock()
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 1)
 	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应保留 previous_response_id")
-	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
 }
 
-func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversForSelfContainedFunctionCallOutput(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundDoesNotReplayToolDelta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var wsAttempts atomic.Int32
@@ -1246,21 +1244,19 @@ func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundRecoversForSel
 
 	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_missing","input":[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, "resp_ws_prev_recover_tool_ok", result.RequestID)
+	require.Error(t, err)
+	require.Nil(t, result)
 	require.Nil(t, upstream.lastReq, "self-contained function_call_output previous_response_not_found 不应回退 HTTP")
-	require.Equal(t, int32(2), wsAttempts.Load(), "自洽 tool replay 应触发一次去掉 previous_response_id 的恢复重试")
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int32(1), wsAttempts.Load(), "局部 tool 配对不代表拥有完整会话历史")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	wsRequestMu.Lock()
 	requests := append([][]byte(nil), wsRequestPayloads...)
 	wsRequestMu.Unlock()
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 1)
 	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应保留 previous_response_id")
-	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
-	require.Equal(t, "function_call", gjson.GetBytes(requests[1], "input.0.type").String())
-	require.Equal(t, "function_call_output", gjson.GetBytes(requests[1], "input.1.type").String())
+	require.Equal(t, "function_call", gjson.GetBytes(requests[0], "input.0.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(requests[0], "input.1.type").String())
 }
 
 func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundSkipsRecoveryForFunctionCallOutput(t *testing.T) {
@@ -1458,7 +1454,7 @@ func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundSkipsRecoveryW
 	require.False(t, gjson.GetBytes(requests[0], "previous_response_id").Exists())
 }
 
-func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundOnlyRecoversOnce(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundNeverReplays(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var wsAttempts atomic.Int32
@@ -1545,15 +1541,14 @@ func TestOpenAIGatewayService_Forward_WSv2PreviousResponseNotFoundOnlyRecoversOn
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Nil(t, upstream.lastReq, "WS 模式下 previous_response_not_found 不应回退 HTTP")
-	require.Equal(t, int32(2), wsAttempts.Load(), "应只允许一次自动恢复重试")
+	require.Equal(t, int32(1), wsAttempts.Load(), "previous_response_not_found 不应由代理自动重放")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	wsRequestMu.Lock()
 	requests := append([][]byte(nil), wsRequestPayloads...)
 	wsRequestMu.Unlock()
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 1)
 	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应包含 previous_response_id")
-	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
 }
 
 func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentRecoversOnce(t *testing.T) {
@@ -1655,7 +1650,7 @@ func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentRecoversOnce(t 
 		},
 	}
 
-	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_encrypted","input":[{"type":"reasoning","encrypted_content":"gAAA"},{"type":"input_text","text":"hello"}]}`)
+	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_encrypted","input":[{"type":"reasoning","encrypted_content":"gAAA"},{"type":"compaction","encrypted_content":"cAAA"},{"type":"input_text","text":"hello"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -1671,6 +1666,7 @@ func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentRecoversOnce(t 
 	require.Len(t, requests, 2)
 	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应保留 previous_response_id")
 	require.True(t, gjson.GetBytes(requests[0], `input.0.encrypted_content`).Exists(), "首轮请求应保留 encrypted reasoning")
+	require.True(t, gjson.GetBytes(requests[0], `input.1.encrypted_content`).Exists(), "首轮请求应保留 encrypted compaction")
 	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
 	require.False(t, gjson.GetBytes(requests[1], `input.0.encrypted_content`).Exists(), "恢复重试应移除 encrypted reasoning item")
 	require.Equal(t, "input_text", gjson.GetBytes(requests[1], `input.0.type`).String())

@@ -291,36 +291,6 @@ func shouldForceNewConnOnStoreDisabled(mode, lastFailureReason string) bool {
 	}
 }
 
-func dropPreviousResponseIDFromRawPayload(payload []byte) ([]byte, bool, error) {
-	return dropPreviousResponseIDFromRawPayloadWithDeleteFn(payload, sjson.DeleteBytes)
-}
-
-func dropPreviousResponseIDFromRawPayloadWithDeleteFn(
-	payload []byte,
-	deleteFn func([]byte, string) ([]byte, error),
-) ([]byte, bool, error) {
-	if len(payload) == 0 {
-		return payload, false, nil
-	}
-	if !gjson.GetBytes(payload, "previous_response_id").Exists() {
-		return payload, false, nil
-	}
-	if deleteFn == nil {
-		deleteFn = sjson.DeleteBytes
-	}
-
-	updated := payload
-	for i := 0; i < openAIWSMaxPrevResponseIDDeletePasses &&
-		gjson.GetBytes(updated, "previous_response_id").Exists(); i++ {
-		next, err := deleteFn(updated, "previous_response_id")
-		if err != nil {
-			return payload, false, err
-		}
-		updated = next
-	}
-	return updated, !gjson.GetBytes(updated, "previous_response_id").Exists(), nil
-}
-
 func setPreviousResponseIDToRawPayload(payload []byte, previousResponseID string) ([]byte, error) {
 	normalizedPrevID := strings.TrimSpace(previousResponseID)
 	if len(payload) == 0 || normalizedPrevID == "" {
@@ -370,36 +340,6 @@ func shouldInferIngressFunctionCallOutputPreviousResponseID(
 	return strings.TrimSpace(expectedPreviousResponseID) != ""
 }
 
-func alignStoreDisabledPreviousResponseID(
-	payload []byte,
-	expectedPreviousResponseID string,
-) ([]byte, bool, error) {
-	if len(payload) == 0 {
-		return payload, false, nil
-	}
-	expected := strings.TrimSpace(expectedPreviousResponseID)
-	if expected == "" {
-		return payload, false, nil
-	}
-	current := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
-	if current == "" || current == expected {
-		return payload, false, nil
-	}
-
-	withoutPrev, removed, dropErr := dropPreviousResponseIDFromRawPayload(payload)
-	if dropErr != nil {
-		return payload, false, dropErr
-	}
-	if !removed {
-		return payload, false, nil
-	}
-	updated, setErr := setPreviousResponseIDToRawPayload(withoutPrev, expected)
-	if setErr != nil {
-		return payload, false, setErr
-	}
-	return updated, true, nil
-}
-
 func cloneOpenAIWSPayloadBytes(payload []byte) []byte {
 	if len(payload) == 0 {
 		return nil
@@ -440,23 +380,6 @@ func normalizeOpenAIWSJSONForCompareOrRaw(raw []byte) []byte {
 	return normalized
 }
 
-func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) ([]byte, error) {
-	if len(payload) == 0 {
-		return nil, errors.New("payload is empty")
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil, err
-	}
-	delete(decoded, "input")
-	delete(decoded, "previous_response_id")
-	// Match the official Codex websocket reuse semantics: metadata and stream
-	// delivery options do not change the context referenced by a response ID.
-	delete(decoded, "client_metadata")
-	delete(decoded, "stream_options")
-	return json.Marshal(decoded)
-}
-
 func openAIWSExtractNormalizedInputSequence(payload []byte) ([]json.RawMessage, bool, error) {
 	if len(payload) == 0 {
 		return nil, false, nil
@@ -483,38 +406,6 @@ func openAIWSExtractNormalizedInputSequence(payload []byte) ([]json.RawMessage, 
 	return []json.RawMessage{json.RawMessage(inputValue.Raw)}, true, nil
 }
 
-func openAIWSInputIsPrefixExtended(previousPayload, currentPayload []byte) (bool, error) {
-	previousItems, previousExists, prevErr := openAIWSExtractNormalizedInputSequence(previousPayload)
-	if prevErr != nil {
-		return false, prevErr
-	}
-	currentItems, currentExists, currentErr := openAIWSExtractNormalizedInputSequence(currentPayload)
-	if currentErr != nil {
-		return false, currentErr
-	}
-	if !previousExists && !currentExists {
-		return true, nil
-	}
-	if !previousExists {
-		return len(currentItems) == 0, nil
-	}
-	if !currentExists {
-		return len(previousItems) == 0, nil
-	}
-	if len(currentItems) < len(previousItems) {
-		return false, nil
-	}
-
-	for idx := range previousItems {
-		previousNormalized := normalizeOpenAIWSJSONForCompareOrRaw(previousItems[idx])
-		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(currentItems[idx])
-		if !bytes.Equal(previousNormalized, currentNormalized) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 func openAIWSRawItemsHasPrefix(items []json.RawMessage, prefix []json.RawMessage) bool {
 	if len(prefix) == 0 {
 		return true
@@ -526,47 +417,6 @@ func openAIWSRawItemsHasPrefix(items []json.RawMessage, prefix []json.RawMessage
 		previousNormalized := normalizeOpenAIWSJSONForCompareOrRaw(prefix[idx])
 		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(items[idx])
 		if !bytes.Equal(previousNormalized, currentNormalized) {
-			return false
-		}
-	}
-	return true
-}
-
-func openAIWSRawItemsHasFunctionCallOutput(items []json.RawMessage) bool {
-	for _, item := range items {
-		if isCodexToolCallOutputItemType(gjson.GetBytes(item, "type").String()) {
-			return true
-		}
-	}
-	return false
-}
-
-func openAIWSRawItemsHaveToolCallContextForOutputs(items []json.RawMessage) bool {
-	if len(items) == 0 {
-		return false
-	}
-	contextCallIDs := make(map[string]struct{})
-	outputCallIDs := make(map[string]struct{})
-	for _, item := range items {
-		itemType := gjson.GetBytes(item, "type").String()
-		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		switch {
-		case isCodexToolCallContextItemType(itemType):
-			if callID != "" {
-				contextCallIDs[callID] = struct{}{}
-			}
-		case isCodexToolCallOutputItemType(itemType):
-			if callID == "" {
-				return false
-			}
-			outputCallIDs[callID] = struct{}{}
-		}
-	}
-	if len(outputCallIDs) == 0 || len(contextCallIDs) == 0 {
-		return false
-	}
-	for callID := range outputCallIDs {
-		if _, ok := contextCallIDs[callID]; !ok {
 			return false
 		}
 	}
@@ -641,93 +491,4 @@ func setOpenAIWSPayloadInputSequence(
 		return nil, marshalErr
 	}
 	return sjson.SetRawBytes(payload, "input", inputRaw)
-}
-
-func shouldKeepIngressPreviousResponseID(
-	previousPayload []byte,
-	currentPayload []byte,
-	lastTurnResponseID string,
-	hasFunctionCallOutput bool,
-) (bool, string, error) {
-	if hasFunctionCallOutput {
-		return true, "has_function_call_output", nil
-	}
-	currentPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
-	if currentPreviousResponseID == "" {
-		return false, "missing_previous_response_id", nil
-	}
-	expectedPreviousResponseID := strings.TrimSpace(lastTurnResponseID)
-	if expectedPreviousResponseID == "" {
-		return false, "missing_last_turn_response_id", nil
-	}
-	if currentPreviousResponseID != expectedPreviousResponseID {
-		return false, "previous_response_id_mismatch", nil
-	}
-	if len(previousPayload) == 0 {
-		return false, "missing_previous_turn_payload", nil
-	}
-
-	previousComparable, previousComparableErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(previousPayload)
-	if previousComparableErr != nil {
-		return false, "non_input_compare_error", previousComparableErr
-	}
-	currentComparable, currentComparableErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(currentPayload)
-	if currentComparableErr != nil {
-		return false, "non_input_compare_error", currentComparableErr
-	}
-	if !bytes.Equal(previousComparable, currentComparable) {
-		return false, "non_input_changed", nil
-	}
-	return true, "strict_incremental_ok", nil
-}
-
-type openAIWSIngressPreviousTurnStrictState struct {
-	nonInputComparable []byte
-}
-
-func buildOpenAIWSIngressPreviousTurnStrictState(payload []byte) (*openAIWSIngressPreviousTurnStrictState, error) {
-	if len(payload) == 0 {
-		return nil, nil
-	}
-	nonInputComparable, nonInputErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload)
-	if nonInputErr != nil {
-		return nil, nonInputErr
-	}
-	return &openAIWSIngressPreviousTurnStrictState{
-		nonInputComparable: nonInputComparable,
-	}, nil
-}
-
-func shouldKeepIngressPreviousResponseIDWithStrictState(
-	previousState *openAIWSIngressPreviousTurnStrictState,
-	currentPayload []byte,
-	lastTurnResponseID string,
-	hasFunctionCallOutput bool,
-) (bool, string, error) {
-	if hasFunctionCallOutput {
-		return true, "has_function_call_output", nil
-	}
-	currentPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
-	if currentPreviousResponseID == "" {
-		return false, "missing_previous_response_id", nil
-	}
-	expectedPreviousResponseID := strings.TrimSpace(lastTurnResponseID)
-	if expectedPreviousResponseID == "" {
-		return false, "missing_last_turn_response_id", nil
-	}
-	if currentPreviousResponseID != expectedPreviousResponseID {
-		return false, "previous_response_id_mismatch", nil
-	}
-	if previousState == nil {
-		return false, "missing_previous_turn_payload", nil
-	}
-
-	currentComparable, currentComparableErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(currentPayload)
-	if currentComparableErr != nil {
-		return false, "non_input_compare_error", currentComparableErr
-	}
-	if !bytes.Equal(previousState.nonInputComparable, currentComparable) {
-		return false, "non_input_changed", nil
-	}
-	return true, "strict_incremental_ok", nil
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestOpenAIGatewayService_APIKeyPassthrough_StripsInvalidInputItemIDs(t *testing.T) {
+func TestOpenAIGatewayService_APIKeyPassthrough_UsesCodexPrefixedItemIDRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
@@ -35,8 +35,8 @@ func TestOpenAIGatewayService_APIKeyPassthrough_StripsInvalidInputItemIDs(t *tes
 		"model":"gpt-5.6-sol",
 		"stream":false,
 		"input":[
-			{"type":"message","id":"item_bad_message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
-			{"type":"function_call","id":"item_bad_call","call_id":"call_123","name":"exec_command","arguments":"{}"},
+			{"type":"message","id":"legacy-message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
+			{"type":"function_call","id":"legacy-call","call_id":"call_123","name":"exec_command","arguments":"{}"},
 			{"type":"message","id":"msg_valid","role":"user","content":[{"type":"input_text","text":"continue"}]},
 			{"type":"function_call","id":"fc_valid","call_id":"call_456","name":"apply_patch","arguments":"{}"},
 			{"type":"function_call_output","id":"item_output","call_id":"call_123","output":"done"},
@@ -67,7 +67,7 @@ func TestSanitizeOpenAIResponsesInputItemIDs_AllocationGrowthIsLinear(t *testing
 	makeBody := func(itemCount int) []byte {
 		items := make([]string, itemCount)
 		for i := range items {
-			items[i] = fmt.Sprintf(`{"type":"message","id":"item_%d","role":"user","content":[{"type":"input_text","text":"hello"}]}`, i)
+			items[i] = fmt.Sprintf(`{"type":"message","id":"legacy-%d","role":"user","content":[{"type":"input_text","text":"hello"}]}`, i)
 		}
 		return []byte(`{"model":"gpt-5.6-sol","input":[` + strings.Join(items, ",") + `]}`)
 	}

@@ -430,6 +430,20 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	if len(keys) > 0 && h.concurrencyService != nil {
+		ids := make([]int64, 0, len(keys))
+		for i := range keys {
+			ids = append(ids, keys[i].ID)
+		}
+		counts, concurrencyErr := h.concurrencyService.GetAPIKeyConcurrencyBatchExact(c.Request.Context(), ids)
+		if concurrencyErr != nil {
+			writeAPIKeyConcurrencyUnavailable(c, concurrencyErr)
+			return
+		}
+		for i := range keys {
+			keys[i].CurrentConcurrency = counts[keys[i].ID]
+		}
+	}
 
 	out := make([]dto.APIKey, 0, len(keys))
 	for i := range keys {

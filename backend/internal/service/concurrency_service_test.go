@@ -34,6 +34,10 @@ type stubConcurrencyCacheForTest struct {
 	apiKeyReleaseErr     error
 	apiKeyConcurrency    map[int64]int
 	apiKeyConcurrencyErr error
+	apiKeyConcurrencyIDs []int64
+	apiKeySnapshot       *APIKeyConcurrencySnapshot
+	apiKeySnapshotErr    error
+	apiKeySnapshotCalls  atomic.Int64
 
 	// 记录调用
 	releasedAccountIDs       []int64
@@ -137,6 +141,7 @@ func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKe
 	return c.apiKeyReleaseErr
 }
 func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	c.apiKeyConcurrencyIDs = append([]int64(nil), apiKeyIDs...)
 	if c.apiKeyConcurrencyErr != nil {
 		return nil, c.apiKeyConcurrencyErr
 	}
@@ -145,6 +150,13 @@ func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Contex
 		result[apiKeyID] = c.apiKeyConcurrency[apiKeyID]
 	}
 	return result, nil
+}
+func (c *stubConcurrencyCacheForTest) GetActiveAPIKeyConcurrency(_ context.Context) (*APIKeyConcurrencySnapshot, error) {
+	c.apiKeySnapshotCalls.Add(1)
+	if c.apiKeySnapshotErr != nil {
+		return nil, c.apiKeySnapshotErr
+	}
+	return cloneAPIKeyConcurrencySnapshot(c.apiKeySnapshot), nil
 }
 func (c *stubConcurrencyCacheForTest) IncrementWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
 	return c.waitAllowed, c.waitErr
@@ -323,6 +335,58 @@ func TestGetAPIKeyConcurrencyBatch_Fallbacks(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, map[int64]int{1: 3, 2: 0}, counts)
 	})
+}
+
+func TestGetAPIKeyConcurrencyBatchExact(t *testing.T) {
+	t.Run("unavailable is not converted to zeroes", func(t *testing.T) {
+		svc := &ConcurrencyService{}
+		counts, err := svc.GetAPIKeyConcurrencyBatchExact(context.Background(), []int64{1})
+		require.Nil(t, counts)
+		require.ErrorIs(t, err, ErrAPIKeyConcurrencyUnavailable)
+	})
+
+	t.Run("redis error remains unavailable", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{apiKeyConcurrencyErr: errors.New("redis down")}
+		counts, err := NewConcurrencyService(cache).GetAPIKeyConcurrencyBatchExact(context.Background(), []int64{1})
+		require.Nil(t, counts)
+		require.ErrorIs(t, err, ErrAPIKeyConcurrencyUnavailable)
+	})
+
+	t.Run("deduplicates and ignores non-positive IDs", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{apiKeyConcurrency: map[int64]int{1: 3, 2: 4}}
+		counts, err := NewConcurrencyService(cache).GetAPIKeyConcurrencyBatchExact(context.Background(), []int64{1, 1, 0, -1, 2})
+		require.NoError(t, err)
+		require.Equal(t, []int64{1, 2}, cache.apiKeyConcurrencyIDs)
+		require.Equal(t, map[int64]int{1: 3, 2: 4}, counts)
+	})
+}
+
+func TestGetActiveAPIKeyConcurrency_CachesAndClones(t *testing.T) {
+	collectedAt := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	cache := &stubConcurrencyCacheForTest{apiKeySnapshot: &APIKeyConcurrencySnapshot{
+		Counts:      map[int64]int{10: 2},
+		Complete:    true,
+		CollectedAt: collectedAt,
+	}}
+	svc := NewConcurrencyService(cache)
+
+	first, err := svc.GetActiveAPIKeyConcurrency(context.Background())
+	require.NoError(t, err)
+	first.Counts[10] = 99
+	second, err := svc.GetActiveAPIKeyConcurrency(context.Background())
+	require.NoError(t, err)
+
+	require.Equal(t, map[int64]int{10: 2}, second.Counts)
+	require.True(t, second.Complete)
+	require.Equal(t, collectedAt, second.CollectedAt)
+	require.Equal(t, int64(1), cache.apiKeySnapshotCalls.Load())
+}
+
+func TestGetActiveAPIKeyConcurrency_Unavailable(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{apiKeySnapshotErr: errors.New("redis down")}
+	snapshot, err := NewConcurrencyService(cache).GetActiveAPIKeyConcurrency(context.Background())
+	require.Nil(t, snapshot)
+	require.ErrorIs(t, err, ErrAPIKeyConcurrencyUnavailable)
 }
 
 func TestAcquireOpenAIWSIngressLease(t *testing.T) {

@@ -8,12 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestFilterCodexInput_StripsFunctionCallItemID_WhenPreservingReferences
-// verifies that function_call items with non-fc id (e.g. item_*) have their
-// id stripped even when PreserveReferences is true. OpenAI upstream requires
-// function_call ids to begin with "fc" and rejects item_* with 400:
-// "Expected an ID that begins with 'fc'." (#3785)
-func TestFilterCodexInput_StripsFunctionCallItemID_WhenPreservingReferences(t *testing.T) {
+func TestFilterCodexInput_KeepsPrefixedFunctionCallItemID_WhenPreservingReferences(t *testing.T) {
 	input := []any{
 		map[string]any{
 			"type":    "function_call",
@@ -37,8 +32,7 @@ func TestFilterCodexInput_StripsFunctionCallItemID_WhenPreservingReferences(t *t
 	fc, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "function_call", fc["type"])
-	_, hasID := fc["id"]
-	require.False(t, hasID, "item_* id should be stripped from function_call")
+	require.Equal(t, "item_A9v0SNfS3VaLrfX0j3y4xhyK", fc["id"])
 	require.Equal(t, "fc_abc123", fc["call_id"], "call_id must be preserved")
 	require.Equal(t, "bash", fc["name"])
 }
@@ -100,16 +94,17 @@ func TestFilterCodexInput_KeepsTypedToolCallIDs_WhenPreservingReferences(t *test
 	}
 }
 
-func TestFilterCodexInput_StripsMismatchedToolCallIDs_WhenPreservingReferences(t *testing.T) {
+func TestFilterCodexInput_UsesGenericPrefixRuleForToolCallIDs(t *testing.T) {
 	tests := []struct {
 		name string
 		typ  string
 		id   string
+		keep bool
 	}{
-		{name: "function output prefix on call", typ: "function_call", id: "fco_wrong"},
-		{name: "function prefix on local shell", typ: "local_shell_call", id: "fc_wrong"},
-		{name: "custom prefix on tool search", typ: "tool_search_call", id: "ctc_wrong"},
-		{name: "unprefixed uuid", typ: "custom_tool_call", id: "018f9e15-7a6a-7000-8000-000000000001"},
+		{name: "function output prefix on call", typ: "function_call", id: "fco_wrong", keep: true},
+		{name: "function prefix on local shell", typ: "local_shell_call", id: "fc_wrong", keep: true},
+		{name: "custom prefix on tool search", typ: "tool_search_call", id: "ctc_wrong", keep: true},
+		{name: "unprefixed uuid", typ: "custom_tool_call", id: "018f9e15-7a6a-7000-8000-000000000001", keep: false},
 	}
 
 	for _, tt := range tests {
@@ -128,15 +123,16 @@ func TestFilterCodexInput_StripsMismatchedToolCallIDs_WhenPreservingReferences(t
 			require.Len(t, filtered, 1)
 			item, ok := filtered[0].(map[string]any)
 			require.True(t, ok)
-			_, hasID := item["id"]
-			require.False(t, hasID)
+			id, hasID := item["id"]
+			require.Equal(t, tt.keep, hasID)
+			if tt.keep {
+				require.Equal(t, tt.id, id)
+			}
 		})
 	}
 }
 
-// TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes verifies that
-// item_* ids are stripped from all call-input types (not output types).
-func TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes(t *testing.T) {
+func TestFilterCodexInput_KeepsLegacyPrefixedIDForAllToolCallInputTypes(t *testing.T) {
 	types := []string{"function_call", "tool_call", "local_shell_call", "tool_search_call", "custom_tool_call", "mcp_tool_call"}
 
 	for _, typ := range types {
@@ -154,19 +150,17 @@ func TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes(t *testing.T) {
 		require.Len(t, filtered, 1)
 		item, ok := filtered[0].(map[string]any)
 		require.True(t, ok)
-		_, hasID := item["id"]
-		require.False(t, hasID, "item_* id should be stripped from %s", typ)
+		require.Equal(t, "item_xyz", item["id"])
 	}
 }
 
-// TestFilterCodexInput_OutputTypeKeepsItemID ensures tool-output items
-// (e.g. function_call_output) keep their id — only call-input types have
-// the fc* constraint.
+// TestFilterCodexInput_OutputTypeKeepsTypedItemID ensures tool-output items
+// use the same typed-ID contract as the Codex client.
 func TestFilterCodexInput_OutputTypeKeepsItemID(t *testing.T) {
 	input := []any{
 		map[string]any{
 			"type":    "function_call_output",
-			"id":      "o1",
+			"id":      "fco_1",
 			"call_id": "fc_abc",
 			"output":  "done",
 		},
@@ -179,7 +173,7 @@ func TestFilterCodexInput_OutputTypeKeepsItemID(t *testing.T) {
 	require.Len(t, filtered, 1)
 	out, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "o1", out["id"], "output item id should be preserved")
+	require.Equal(t, "fco_1", out["id"], "typed output item id should be preserved")
 }
 
 // TestFilterCodexInput_NonToolCallItemKeepsID ensures items subject to neither

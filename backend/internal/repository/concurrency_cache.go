@@ -50,6 +50,14 @@ const (
 	// member 是账号/用户 ID，score 是“预计仍需关注到”的 Redis Unix 秒时间戳。
 	accountActiveIndexKey = "concurrency:account:active_index" // ZSET member=accountID, score=expireAtUnixSeconds
 	userActiveIndexKey    = "concurrency:user:active_index"    // ZSET member=userID, score=expireAtUnixSeconds
+	apiKeyActiveIndexKey  = "concurrency:api_key:active_index" // ZSET member=apiKeyID, score=expireAtUnixSeconds
+
+	// The epoch starts when the sparse endpoint is first queried. Until a full
+	// regular-slot TTL has elapsed, pre-index slots from an older deployment may
+	// still exist, so the endpoint reports complete=false.
+	apiKeyActiveIndexEpochKey          = "concurrency:api_key:active_index:epoch:v1"
+	apiKeyActiveIndexMaxCandidates     = 10000
+	apiKeyConcurrencyPipelineChunkSize = 500
 
 	// 后台清理只按批处理索引候选，避免单次任务占用 Redis 太久。
 	activeIndexCleanupBatchSize  = 1000
@@ -135,17 +143,21 @@ var (
 		local userRegular = KEYS[3]
 		local userLive = KEYS[4]
 		local apiLive = KEYS[5]
+		local apiActiveIndex = KEYS[6]
 		local accountMax = tonumber(ARGV[1])
 		local userMax = tonumber(ARGV[2])
 		local ttl = tonumber(ARGV[3])
 		local leaseID = ARGV[4]
 		local replacing = tonumber(ARGV[5])
+		local apiIndexTTL = tonumber(ARGV[6])
+		local apiKeyID = ARGV[7]
 		local now = tonumber(redis.call('TIME')[1])
 		local liveExpireBefore = now - ttl
 		redis.call('ZREMRANGEBYSCORE', accountLive, '-inf', liveExpireBefore)
 		redis.call('ZREMRANGEBYSCORE', userLive, '-inf', liveExpireBefore)
 		redis.call('ZREMRANGEBYSCORE', apiLive, '-inf', liveExpireBefore)
 		if redis.call('ZSCORE', accountLive, leaseID) ~= false then
+			redis.call('ZADD', apiActiveIndex, now + apiIndexTTL, apiKeyID)
 			return 1
 		end
 		local accountCount = redis.call('ZCARD', accountRegular) + redis.call('ZCARD', accountLive)
@@ -160,6 +172,7 @@ var (
 		redis.call('EXPIRE', accountLive, ttl)
 		redis.call('EXPIRE', userLive, ttl)
 		redis.call('EXPIRE', apiLive, ttl)
+		redis.call('ZADD', apiActiveIndex, now + apiIndexTTL, apiKeyID)
 		return 1
 	`)
 
@@ -167,23 +180,30 @@ var (
 		redis.replicate_commands()
 		local ttl = tonumber(ARGV[1])
 		local leaseID = ARGV[2]
+		local apiIndexTTL = tonumber(ARGV[3])
+		local apiKeyID = ARGV[4]
+		local apiActiveIndex = KEYS[4]
 		local now = tonumber(redis.call('TIME')[1])
 		local expireBefore = now - ttl
-		for _, key in ipairs(KEYS) do
+		for index, key in ipairs(KEYS) do
+			if index == 4 then break end
 			redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 			if redis.call('ZSCORE', key, leaseID) == false then return 0 end
 		end
-		for _, key in ipairs(KEYS) do
+		for index, key in ipairs(KEYS) do
+			if index == 4 then break end
 			redis.call('ZADD', key, now, leaseID)
 			redis.call('EXPIRE', key, ttl)
 		end
+		redis.call('ZADD', apiActiveIndex, now + apiIndexTTL, apiKeyID)
 		return 1
 	`)
 
 	// trackSlotScript 记录 stats-only 槽位，不做并发上限判断。
-	// KEYS[1] = 有序集合键
+	// KEYS[1] = 有序集合键，KEYS[2] = API Key 活跃索引
 	// ARGV[1] = TTL（秒）
 	// ARGV[2] = requestID
+	// ARGV[3] = apiKeyID
 	trackSlotScript = redis.NewScript(`
 		-- Redis 3.2-4.x compat: opt into effects replication so redis.call('TIME')
 		-- replicates correctly. No-op on Redis 5.0+ (effects replication is default).
@@ -191,6 +211,7 @@ var (
 		local key = KEYS[1]
 		local ttl = tonumber(ARGV[1])
 		local requestID = ARGV[2]
+		local apiKeyID = ARGV[3]
 
 		local timeResult = redis.call('TIME')
 		local now = tonumber(timeResult[1])
@@ -199,6 +220,7 @@ var (
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 		redis.call('ZADD', key, now, requestID)
 		redis.call('EXPIRE', key, ttl)
+		redis.call('ZADD', KEYS[2], now + ttl, apiKeyID)
 		return 1
 	`)
 
@@ -741,7 +763,7 @@ func (c *concurrencyCache) GetUserConcurrency(ctx context.Context, userID int64)
 
 func (c *concurrencyCache) TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
 	key := apiKeySlotKey(apiKeyID)
-	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, requestID).Result()
+	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key, apiKeyActiveIndexKey}, c.slotTTLSeconds, requestID, apiKeyID).Result()
 	return err
 }
 
@@ -815,7 +837,8 @@ func (c *concurrencyCache) AcquireLiveLease(
 		userSlotKey(userID),
 		liveUserSlotKey(userID),
 		liveAPIKeySlotKey(apiKeyID),
-	}, accountMax, userMax, liveLeaseTTLSeconds, leaseID, replacing).Int()
+		apiKeyActiveIndexKey,
+	}, accountMax, userMax, liveLeaseTTLSeconds, leaseID, replacing, c.slotTTLSeconds, apiKeyID).Int()
 	return result == 1, err
 }
 
@@ -827,7 +850,8 @@ func (c *concurrencyCache) RefreshLiveLease(ctx context.Context, accountID, user
 		liveAccountSlotKey(accountID),
 		liveUserSlotKey(userID),
 		liveAPIKeySlotKey(apiKeyID),
-	}, liveLeaseTTLSeconds, leaseID).Int()
+		apiKeyActiveIndexKey,
+	}, liveLeaseTTLSeconds, leaseID, c.slotTTLSeconds, apiKeyID).Int()
 	return result == 1, err
 }
 
@@ -852,36 +876,116 @@ func (c *concurrencyCache) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKey
 	if err != nil {
 		return nil, fmt.Errorf("redis TIME: %w", err)
 	}
-	cutoffTime := now.Unix() - int64(c.slotTTLSeconds)
+	return c.getAPIKeyConcurrencyBatchAt(ctx, apiKeyIDs, now.Unix())
+}
 
-	pipe := c.rdb.Pipeline()
-	type apiKeyCmd struct {
-		apiKeyID int64
-		zcardCmd *redis.IntCmd
-		liveCmd  *redis.IntCmd
-	}
-	cmds := make([]apiKeyCmd, 0, len(apiKeyIDs))
+func (c *concurrencyCache) getAPIKeyConcurrencyBatchAt(ctx context.Context, apiKeyIDs []int64, nowUnix int64) (map[int64]int, error) {
+	cutoffTime := nowUnix - int64(c.slotTTLSeconds)
+	liveCutoffTime := nowUnix - liveLeaseTTLSeconds
+
+	uniqueIDs := make([]int64, 0, len(apiKeyIDs))
+	seen := make(map[int64]struct{}, len(apiKeyIDs))
 	for _, apiKeyID := range apiKeyIDs {
-		slotKey := apiKeySlotKeyPrefix + strconv.FormatInt(apiKeyID, 10)
-		liveKey := liveAPIKeySlotKeyPrefix + strconv.FormatInt(apiKeyID, 10)
-		pipe.ZRemRangeByScore(ctx, slotKey, "-inf", strconv.FormatInt(cutoffTime, 10))
-		pipe.ZRemRangeByScore(ctx, liveKey, "-inf", strconv.FormatInt(now.Unix()-liveLeaseTTLSeconds, 10))
-		cmds = append(cmds, apiKeyCmd{
-			apiKeyID: apiKeyID,
-			zcardCmd: pipe.ZCard(ctx, slotKey),
-			liveCmd:  pipe.ZCard(ctx, liveKey),
-		})
+		if apiKeyID <= 0 {
+			continue
+		}
+		if _, exists := seen[apiKeyID]; exists {
+			continue
+		}
+		seen[apiKeyID] = struct{}{}
+		uniqueIDs = append(uniqueIDs, apiKeyID)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return nil, fmt.Errorf("pipeline exec: %w", err)
-	}
-
-	result := make(map[int64]int, len(apiKeyIDs))
-	for _, cmd := range cmds {
-		result[cmd.apiKeyID] = int(cmd.zcardCmd.Val() + cmd.liveCmd.Val())
+	result := make(map[int64]int, len(uniqueIDs))
+	for start := 0; start < len(uniqueIDs); start += apiKeyConcurrencyPipelineChunkSize {
+		end := start + apiKeyConcurrencyPipelineChunkSize
+		if end > len(uniqueIDs) {
+			end = len(uniqueIDs)
+		}
+		pipe := c.rdb.Pipeline()
+		type apiKeyCmd struct {
+			apiKeyID   int64
+			regularCmd *redis.IntCmd
+			liveCmd    *redis.IntCmd
+		}
+		cmds := make([]apiKeyCmd, 0, end-start)
+		for _, apiKeyID := range uniqueIDs[start:end] {
+			slotKey := apiKeySlotKeyPrefix + strconv.FormatInt(apiKeyID, 10)
+			liveKey := liveAPIKeySlotKeyPrefix + strconv.FormatInt(apiKeyID, 10)
+			cmds = append(cmds, apiKeyCmd{
+				apiKeyID:   apiKeyID,
+				regularCmd: pipe.ZCount(ctx, slotKey, "("+strconv.FormatInt(cutoffTime, 10), "+inf"),
+				liveCmd:    pipe.ZCount(ctx, liveKey, "("+strconv.FormatInt(liveCutoffTime, 10), "+inf"),
+			})
+		}
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("pipeline exec: %w", err)
+		}
+		for _, cmd := range cmds {
+			result[cmd.apiKeyID] = int(cmd.regularCmd.Val() + cmd.liveCmd.Val())
+		}
 	}
 	return result, nil
+}
+
+// GetActiveAPIKeyConcurrency returns only non-zero API-key counts. Candidate
+// discovery is index-backed, so its cost is proportional to recently active
+// keys rather than every API key stored in the database.
+func (c *concurrencyCache) GetActiveAPIKeyConcurrency(ctx context.Context) (*service.APIKeyConcurrencySnapshot, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("redis client is unavailable")
+	}
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis TIME: %w", err)
+	}
+	nowUnix := now.Unix()
+
+	pipe := c.rdb.Pipeline()
+	pipe.SetNX(ctx, apiKeyActiveIndexEpochKey, strconv.FormatInt(nowUnix, 10), 0)
+	epochCmd := pipe.Get(ctx, apiKeyActiveIndexEpochKey)
+	membersCmd := pipe.ZRevRangeByScore(ctx, apiKeyActiveIndexKey, &redis.ZRangeBy{
+		Max:    "+inf",
+		Min:    "(" + strconv.FormatInt(nowUnix, 10),
+		Offset: 0,
+		Count:  apiKeyActiveIndexMaxCandidates + 1,
+	})
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("active index pipeline: %w", err)
+	}
+
+	epoch, err := epochCmd.Int64()
+	if err != nil {
+		return nil, fmt.Errorf("active index epoch: %w", err)
+	}
+	members := membersCmd.Val()
+	truncated := len(members) > apiKeyActiveIndexMaxCandidates
+	if truncated {
+		members = members[:apiKeyActiveIndexMaxCandidates]
+	}
+	ids := make([]int64, 0, len(members))
+	for _, member := range members {
+		id, parseErr := strconv.ParseInt(member, 10, 64)
+		if parseErr == nil && id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	counts, err := c.getAPIKeyConcurrencyBatchAt(ctx, ids, nowUnix)
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[int64]int)
+	for apiKeyID, count := range counts {
+		if count > 0 {
+			active[apiKeyID] = count
+		}
+	}
+
+	return &service.APIKeyConcurrencySnapshot{
+		Counts:      active,
+		Complete:    !truncated && nowUnix-epoch >= int64(c.slotTTLSeconds),
+		CollectedAt: now.UTC(),
+	}, nil
 }
 
 // Wait queue operations
@@ -1085,14 +1189,38 @@ func (c *concurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accou
 	return err
 }
 
-// CleanupExpiredAccountSlotKeys 处理账号与用户两个活跃索引中已到期的候选。
-// （方法名中的 Account 是历史遗留，保留以避免接口变更；实际同时回收两个索引，
-// 否则 user 索引的过期成员没有任何清理路径，会无界累积。）
+// CleanupExpiredAccountSlotKeys 处理账号、用户与 API Key 活跃索引中的到期候选。
+// （方法名中的 Account 是历史遗留，保留以避免接口变更。）
 func (c *concurrencyCache) CleanupExpiredAccountSlotKeys(ctx context.Context) error {
 	if err := c.reconcileExpiredIndexCandidates(ctx, accountSlotIndex); err != nil {
 		return err
 	}
-	return c.reconcileExpiredIndexCandidates(ctx, userSlotIndex)
+	if err := c.reconcileExpiredIndexCandidates(ctx, userSlotIndex); err != nil {
+		return err
+	}
+	now, err := c.redisUnixSeconds(ctx)
+	if err != nil {
+		return err
+	}
+	members, err := c.rdb.ZRangeByScore(ctx, apiKeyActiveIndexKey, &redis.ZRangeBy{
+		Min:   "-inf",
+		Max:   strconv.FormatInt(now, 10),
+		Count: activeIndexCleanupBatchSize,
+	}).Result()
+	if err != nil {
+		return fmt.Errorf("read expired API-key active index members: %w", err)
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	if err := c.rdb.ZRem(ctx, apiKeyActiveIndexKey, args...).Err(); err != nil {
+		return fmt.Errorf("remove expired API-key active index members: %w", err)
+	}
+	return nil
 }
 
 // reconcileExpiredIndexCandidates 处理单个活跃索引中 score 已到期的候选：
@@ -1139,8 +1267,8 @@ func (c *concurrencyCache) reconcileExpiredIndexCandidates(ctx context.Context, 
 // CleanupStaleProcessSlots 启动时清理非当前进程前缀的槽位。
 // 清理范围来自活跃索引（含 score 已过期的成员——它们往往正是崩溃进程留下的残留），
 // 避免在 Redis 上 SCAN 全部 concurrency:* 键；另有一次性迁移清扫兜底索引机制上线前的遗留等待计数。
-// API Key 槽位（concurrency:api_key:*）是 stats-only 数据：每次 Track/读取都会按分数
-// 裁剪过期成员，key 自带 TTL，可在一个 slot TTL 内自愈，因此不参与启动清理。
+// API Key 槽位（concurrency:api_key:*）是 stats-only 数据：Track 会裁剪过期成员，
+// key 自带 TTL，可在一个 slot TTL 内自愈，因此不参与启动清理。监控读取保持只读。
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
 	if activeRequestPrefix == "" {
 		return nil

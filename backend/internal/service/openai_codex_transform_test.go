@@ -16,7 +16,7 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 		"model": "gpt-5.2",
 		"input": []any{
 			map[string]any{"type": "item_reference", "id": "ref1", "text": "x"},
-			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok", "id": "o1"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok", "id": "fco_1"},
 		},
 		"tool_choice": "auto",
 	}
@@ -41,7 +41,7 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 	// 校验 input[1] 为 map，确保后续字段断言安全。
 	second, ok := input[1].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "o1", second["id"])
+	require.Equal(t, "fco_1", second["id"])
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
@@ -78,7 +78,7 @@ func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *te
 	require.NotContains(t, reqBody, "prompt_cache_key")
 }
 
-func TestApplyCodexOAuthTransform_ToolContinuationDropsReasoningItemReferenceIDs(t *testing.T) {
+func TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReasoningIDs(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
 		"input": []any{
@@ -92,11 +92,15 @@ func TestApplyCodexOAuthTransform_ToolContinuationDropsReasoningItemReferenceIDs
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 1)
+	require.Len(t, input, 2)
 
 	first, ok := input[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "msg_0", first["id"])
+
+	second, ok := input[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "rs_123", second["id"])
 }
 
 func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly(t *testing.T) {
@@ -554,8 +558,8 @@ func TestApplyCodexOAuthTransform_CompactForcesNonStreaming(t *testing.T) {
 	require.True(t, result.Modified)
 }
 
-func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(t *testing.T) {
-	// 非续链场景：未设置 store 时默认 false，并移除 input 中的 id。
+func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsInvalidIDs(t *testing.T) {
+	// 非续链场景：未设置 store 时默认 false；无类型前缀的遗留 id 会被移除。
 
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -1930,7 +1934,7 @@ func TestIsInstructionsEmpty(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
+func TestFilterCodexInput_PreservesTypedReasoningID(t *testing.T) {
 	encrypted := testGPTReasoningEncryptedContent()
 	build := func() []any {
 		return []any{
@@ -1956,8 +1960,7 @@ func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, "reasoning", item["type"])
 			require.Equal(t, encrypted, item["encrypted_content"])
-			_, hasID := item["id"]
-			require.False(t, hasID)
+			require.Equal(t, "rs_0672f12450da0b9c0169f07220a6c08198b68c2455ced99344", item["id"])
 			require.Equal(t, "completed", item["status"])
 			summary, ok := item["summary"].([]any)
 			require.True(t, ok)
@@ -1966,7 +1969,7 @@ func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary(t *testing.T) {
+func TestFilterCodexInput_BareReasoningPreservesTypedIDBackfillsSummary(t *testing.T) {
 	input := []any{
 		map[string]any{
 			"type": "reasoning",
@@ -1980,8 +1983,7 @@ func TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary(t *testing.T) {
 	item, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "reasoning", item["type"])
-	_, hasID := item["id"]
-	require.False(t, hasID)
+	require.Equal(t, "rs_0672f12450da0b9c0169f07220a6c08198b68c2455ced99344", item["id"])
 	summary, ok := item["summary"].([]any)
 	require.True(t, ok)
 	require.Len(t, summary, 0)
@@ -2005,6 +2007,7 @@ func TestFilterCodexInput_ReasoningBackfillsMissingSummary(t *testing.T) {
 	summary, ok := item["summary"].([]any)
 	require.True(t, ok)
 	require.Len(t, summary, 0)
+	require.Equal(t, "rs_abc", item["id"])
 	require.Equal(t, encrypted, item["encrypted_content"])
 }
 
@@ -2034,8 +2037,7 @@ func TestFilterCodexInput_PreservesReasoningSummaryAndContent(t *testing.T) {
 	require.Equal(t, summary, item["summary"])
 	require.Equal(t, content, item["content"])
 	require.Equal(t, encrypted, item["encrypted_content"])
-	_, hasID := item["id"]
-	require.False(t, hasID)
+	require.Equal(t, "rs_abc", item["id"])
 }
 
 func TestFilterCodexInput_PreservesReasoningInMixedInput(t *testing.T) {
@@ -2073,16 +2075,11 @@ func TestFilterCodexInput_PreservesReasoningInMixedInput(t *testing.T) {
 				require.True(t, ok)
 				typ, _ := item["type"].(string)
 				byType[typ] = append(byType[typ], item)
-				if id, ok := item["id"].(string); ok {
-					require.False(t, strings.HasPrefix(id, "rs_"),
-						"no item carrying an rs_* id should survive the filter")
-				}
 			}
 
 			require.Len(t, byType["reasoning"], 2)
-			for _, r := range byType["reasoning"] {
-				_, hasID := r["id"]
-				require.False(t, hasID)
+			for idx, r := range byType["reasoning"] {
+				require.Equal(t, fmt.Sprintf("rs_%d", idx+1), r["id"])
 				_, hasSummary := r["summary"]
 				require.True(t, hasSummary)
 			}
@@ -2113,14 +2110,14 @@ func TestFilterCodexInput_PreservesOpaqueEncryptedContent(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "reasoning", emptyItem["type"])
 	require.NotContains(t, emptyItem, "encrypted_content")
-	require.NotContains(t, emptyItem, "id")
+	require.Equal(t, "rs_empty", emptyItem["id"])
 	require.Contains(t, emptyItem, "summary")
 
 	summaryItem, ok := filtered[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "reasoning", summaryItem["type"])
 	require.Equal(t, "claude#EgAA", summaryItem["encrypted_content"])
-	require.NotContains(t, summaryItem, "id")
+	require.Equal(t, "rs_summary", summaryItem["id"])
 	require.Contains(t, summaryItem, "summary")
 }
 

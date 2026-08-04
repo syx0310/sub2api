@@ -20,6 +20,7 @@ import (
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	clearGrokResponsesClientToolMapping(c)
+	clearOpenAIResponsesNamespaceNames(c)
 	startTime := time.Now()
 	// 固定渠道映射后的请求级 canonical body；账号 normalize/strip 不得改写跨 failover hint。
 	canonicalImageIntentBody := body
@@ -62,10 +63,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
-	// Gin context is reused across account attempts. Clear any namespace map
-	// left by a failed OAuth attempt before deciding how this attempt forwards.
-	resetOpenAIResponsesNamespaceNames(c)
-	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled) {
+	compactPath := isOpenAIResponsesCompactPath(c)
+	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
@@ -76,7 +75,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 	if shouldStripOpenAIResponsesInputNamespaces(account, wsDecision.Transport, passthroughEnabled) {
-		body, err = stripOpenAIResponsesInputNamespaces(body)
+		keepToolCallNamespaces := shouldKeepOpenAIResponsesToolCallNamespaces(
+			account, wsDecision.Transport, passthroughEnabled, compactPath,
+		)
+		body, err = stripOpenAIResponsesInputNamespaces(body, keepToolCallNamespaces)
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -277,7 +279,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("model", billingModel)
 	}
 	upstreamModel := billingModel
-	isCompactRequest := isOpenAIResponsesCompactPath(c)
+	isCompactRequest := compactPath
 	compactMapped := false
 	if isCompactRequest {
 		compactMappedModel := resolveOpenAICompactForwardModel(account, billingModel)
@@ -572,51 +574,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var wsErr error
 		wsLastFailureReason := ""
 		agentTaskRecoveryTried := false
-		wsPrevResponseRecoveryTried := false
 		wsInvalidEncryptedContentRecoveryTried := false
-		recoverPrevResponseNotFound := func(attempt int) bool {
-			if wsPrevResponseRecoveryTried {
-				return false
-			}
-			previousResponseID := openAIWSPayloadString(wsReqBody, "previous_response_id")
-			if previousResponseID == "" {
-				logOpenAIWSModeInfo(
-					"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=missing_previous_response_id previous_response_id_present=false",
-					account.ID,
-					attempt,
-				)
-				return false
-			}
-			if HasFunctionCallOutput(wsReqBody) {
-				selfContained, selfContainedReason := OpenAIWSPayloadToolReplaySelfContained(body)
-				if selfContained {
-					logOpenAIWSModeInfo(
-						"reconnect_prev_response_recovery_self_contained account_id=%d attempt=%d previous_response_id_present=true reason=%s",
-						account.ID,
-						attempt,
-						normalizeOpenAIWSLogValue(selfContainedReason),
-					)
-				} else {
-					logOpenAIWSModeInfo(
-						"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=has_function_call_output previous_response_id_present=true self_contained_reason=%s",
-						account.ID,
-						attempt,
-						normalizeOpenAIWSLogValue(selfContainedReason),
-					)
-					return false
-				}
-			}
-			delete(wsReqBody, "previous_response_id")
-			wsPrevResponseRecoveryTried = true
-			logOpenAIWSModeInfo(
-				"reconnect_prev_response_recovery account_id=%d attempt=%d action=drop_previous_response_id retry=1 previous_response_id=%s previous_response_id_kind=%s",
-				account.ID,
-				attempt,
-				truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
-				normalizeOpenAIWSLogValue(ClassifyOpenAIPreviousResponseIDKind(previousResponseID)),
-			)
-			return true
-		}
 		recoverInvalidEncryptedContent := func(attempt int) bool {
 			if wsInvalidEncryptedContentRecoveryTried {
 				return false
@@ -684,11 +642,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if reason != "" {
 				wsLastFailureReason = reason
 			}
-			// previous_response_not_found 说明续链锚点不可用：
-			// 对非 function_call_output 场景，允许一次“去掉 previous_response_id 后重放”。
-			if reason == "previous_response_not_found" && recoverPrevResponseNotFound(attempt) {
-				continue
-			}
+			// previous_response_not_found must be returned to the client unchanged.
+			// Only the client owns the full logical history required to replace an
+			// incremental previous_response_id request without losing context.
 			if reason == "invalid_encrypted_content" && recoverInvalidEncryptedContent(attempt) {
 				continue
 			}

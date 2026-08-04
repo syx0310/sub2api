@@ -273,7 +273,8 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		result.Modified = true
 	}
 
-	// 续链场景保留 item_reference 与 id，避免 call_id 上下文丢失。
+	// item_reference 只在续链场景保留。带非空前缀、下划线和非空后缀的
+	// Responses item id 在完整请求与增量请求中都保留，与 Codex 客户端一致。
 	if input, ok := reqBody["input"].([]any); ok {
 		if normalizedInput, modified := normalizeCodexToolRoleMessages(input); modified {
 			input = normalizedInput
@@ -1391,8 +1392,9 @@ type codexInputFilterOptions struct {
 	PreserveCallIDs    bool
 }
 
-// filterCodexInput 按需过滤 item_reference 与 id。
-// preserveReferences 为 true 时保持引用与 id，以满足续链请求对上下文的依赖。
+// filterCodexInput 按需过滤 item_reference，并移除不符合 Codex 通用前缀规则的 item id。
+// 合法 prefixed id 无论是否为增量续链都保留；preserveReferences 只控制
+// item_reference，因为完整重试也会携带 Codex 已持久化的 prefixed id。
 func filterCodexInput(input []any, preserveReferences bool) []any {
 	return filterCodexInputWithOptions(input, codexInputFilterOptions{
 		PreserveReferences: preserveReferences,
@@ -1434,9 +1436,6 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		}
 
 		if typ == "item_reference" {
-			if id, ok := m["id"].(string); ok && strings.HasPrefix(strings.TrimSpace(id), "rs_") {
-				continue
-			}
 			if !opts.PreserveReferences {
 				continue
 			}
@@ -1505,10 +1504,7 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			}
 		}
 
-		if !opts.PreserveReferences {
-			ensureCopy()
-			delete(newItem, "id")
-		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
+		if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
 			ensureCopy()
 			delete(newItem, "id")
 		}
@@ -1521,14 +1517,10 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 func sanitizeCodexReasoningInputItem(item map[string]any) (map[string]any, bool) {
 	next := make(map[string]any, len(item))
 	for key, value := range item {
-		switch key {
-		case "id":
-			// rs_* ids are server-side item anchors. The OAuth transform forces
-			// store=false, so replaying those anchors can trigger item-not-found.
-			continue
-		default:
-			next[key] = value
-		}
+		next[key] = value
+	}
+	if id, ok := next["id"].(string); ok && shouldStripOpenAIResponsesInputItemID("reasoning", id) {
+		delete(next, "id")
 	}
 
 	if summary, ok := next["summary"]; !ok || summary == nil {

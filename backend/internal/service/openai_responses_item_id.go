@@ -8,20 +8,17 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Invalid replayed IDs are removed rather than rewritten because a fabricated
-// msg/fc ID may point at a different upstream object.
-func shouldStripOpenAIResponsesInputItemID(itemType, id string) bool {
-	if id == "" {
-		return false
-	}
-	if itemType == "message" {
-		return !strings.HasPrefix(id, "msg")
-	}
-	if expectedPrefix, ok := codexToolCallInputIDPrefix(itemType); ok {
-		return !strings.HasPrefix(id, expectedPrefix+"_") &&
-			!strings.HasPrefix(id, expectedPrefix+"-")
-	}
-	return false
+// Codex only forwards replayed item IDs that have a non-empty prefix and
+// suffix separated by an underscore. It intentionally does not require the
+// prefix to match the concrete item variant so legacy server IDs and future
+// item types remain replayable.
+func shouldStripOpenAIResponsesInputItemID(_ string, id string) bool {
+	return !isOpenAIResponsesPrefixedItemID(id)
+}
+
+func isOpenAIResponsesPrefixedItemID(id string) bool {
+	prefix, suffix, ok := strings.Cut(id, "_")
+	return ok && prefix != "" && suffix != ""
 }
 
 func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {

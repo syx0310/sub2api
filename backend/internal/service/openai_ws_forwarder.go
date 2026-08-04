@@ -44,7 +44,6 @@ const (
 	openAIWSStoreDisabledConnModeOff      = "off"
 
 	openAIWSIngressStagePreviousResponseNotFound = "previous_response_not_found"
-	openAIWSMaxPrevResponseIDDeletePasses        = 8
 )
 
 var openAIWSLogValueReplacer = strings.NewReplacer(
@@ -152,17 +151,6 @@ func openAIWSIngressTurnRetryReason(err error) string {
 		return "unknown"
 	}
 	return turnErr.stage
-}
-
-func isOpenAIWSIngressPreviousResponseNotFound(err error) bool {
-	var turnErr *openAIWSIngressTurnError
-	if !errors.As(err, &turnErr) || turnErr == nil {
-		return false
-	}
-	if strings.TrimSpace(turnErr.stage) != openAIWSIngressStagePreviousResponseNotFound {
-		return false
-	}
-	return !turnErr.wroteDownstream
 }
 
 // NewOpenAIWSClientCloseError 创建一个客户端 WS 关闭错误。
@@ -329,13 +317,6 @@ func (s *OpenAIGatewayService) openAIWSResponseStickyTTL() time.Duration {
 		}
 	}
 	return time.Hour
-}
-
-func (s *OpenAIGatewayService) openAIWSIngressPreviousResponseRecoveryEnabled() bool {
-	if s != nil && s.cfg != nil {
-		return s.cfg.Gateway.OpenAIWS.IngressPreviousResponseRecoveryEnabled
-	}
-	return true
 }
 
 func (s *OpenAIGatewayService) openAIWSReadTimeout() time.Duration {
