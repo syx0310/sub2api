@@ -19,7 +19,16 @@ func TestNormalizeOpenAICompactRequestBody_PreservesFullCodexPayload(t *testing.
 	require.JSONEq(t, string(body), string(normalized))
 }
 
-func TestOpenAIBuildUpstreamRequestCompactPreservesClientVersionHeader(t *testing.T) {
+func TestOpenAIBuildUpstreamRequestCompactUsesCanonicalCodexVersionHeader(t *testing.T) {
+	SetCodexIdentityEnforcementEnabled(true)
+	SetCodexCanonicalUserAgentResolver(func() string {
+		return "codex_cli_rs/0.200.1" + codexCLIUserAgentSuffix
+	})
+	t.Cleanup(func() {
+		SetCodexCanonicalUserAgentResolver(nil)
+		SetCodexIdentityEnforcementEnabled(true)
+	})
+
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -34,10 +43,20 @@ func TestOpenAIBuildUpstreamRequestCompactPreservesClientVersionHeader(t *testin
 
 	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5"}`), "token", false, "", true)
 	require.NoError(t, err)
-	require.Equal(t, "0.145.1", req.Header.Get("Version"))
+	require.Equal(t, "0.200.1", req.Header.Get("Version"))
+	require.Contains(t, req.Header.Get("User-Agent"), "codex_cli_rs/0.200.1")
 }
 
-func TestOpenAIBuildUpstreamRequestOpenAIPassthroughCompactPreservesClientVersionHeader(t *testing.T) {
+func TestOpenAIBuildUpstreamRequestOpenAIPassthroughCompactUsesCanonicalCodexVersionHeader(t *testing.T) {
+	SetCodexIdentityEnforcementEnabled(true)
+	SetCodexCanonicalUserAgentResolver(func() string {
+		return "codex_cli_rs/0.200.1" + codexCLIUserAgentSuffix
+	})
+	t.Cleanup(func() {
+		SetCodexCanonicalUserAgentResolver(nil)
+		SetCodexIdentityEnforcementEnabled(true)
+	})
+
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -49,5 +68,6 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughCompactPreservesClientVersio
 
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, []byte(`{"model":"gpt-5"}`), "token")
 	require.NoError(t, err)
-	require.Equal(t, "0.145.1", req.Header.Get("Version"))
+	require.Equal(t, "0.200.1", req.Header.Get("Version"))
+	require.Contains(t, req.Header.Get("User-Agent"), "codex_cli_rs/0.200.1")
 }

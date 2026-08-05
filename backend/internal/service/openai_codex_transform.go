@@ -1549,26 +1549,6 @@ func isCodexToolCallItemType(typ string) bool {
 	}
 }
 
-// codexToolCallInputIDPrefix 返回 call-input 类型（不含 output）的 item id
-// 前缀。tool_call 和 mcp_tool_call 是本地 legacy 类型，继续按 function_call
-// 的 fc 前缀处理。
-func codexToolCallInputIDPrefix(typ string) (string, bool) {
-	switch typ {
-	case "function_call",
-		"tool_call",
-		"mcp_tool_call":
-		return "fc", true
-	case "local_shell_call":
-		return "lsh", true
-	case "tool_search_call":
-		return "tsc", true
-	case "custom_tool_call":
-		return "ctc", true
-	default:
-		return "", false
-	}
-}
-
 func codexInputItemRequiresName(typ string) bool {
 	switch strings.TrimSpace(typ) {
 	case "function_call", "custom_tool_call", "mcp_tool_call":

@@ -16,7 +16,9 @@ func newAPIKeyConcurrencyTestCache(t *testing.T) (*concurrencyCache, *miniredis.
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	return NewConcurrencyCache(client, 15, 900).(*concurrencyCache), redisServer
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	return cache, redisServer
 }
 
 func TestAPIKeyConcurrencyBatch_IsReadOnlyAndIncludesLiveTurns(t *testing.T) {

@@ -147,6 +147,10 @@ func TestGetUserAPIKeys_OverlaysCurrentPageConcurrency(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, []int64{10}, cache.requested)
 	data := decodeAdminResponseData(t, recorder)
-	items := data["items"].([]any)
-	require.Equal(t, float64(4), items[0].(map[string]any)["current_concurrency"])
+	items, ok := data["items"].([]any)
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	item, ok := items[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(4), item["current_concurrency"])
 }
