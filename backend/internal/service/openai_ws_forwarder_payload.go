@@ -75,6 +75,8 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	turnState string,
 	turnMetadata string,
 	promptCacheKey string,
+	routingModel string,
+	routingServiceTier string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
 	headers := make(http.Header)
 	if account == nil || !account.IsOpenAIAgentIdentity() {
@@ -157,6 +159,16 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 覆盖所有 WS 模式（ctx_pool/dedicated/passthrough）的握手头。
 	account.ApplyHeaderOverrides(headers)
+	setOpenAICodexRoutingHint(headers, account, routingModel, routingServiceTier)
+	logOpenAIRoutingDiagnostics(
+		ctx,
+		account,
+		string(decision.Transport),
+		routingModel,
+		routingServiceTier,
+		strings.TrimSpace(headers.Get(openAICodexRoutingHintHeader)) != "",
+		"soft_routing_hint",
+	)
 
 	return headers, sessionResolution, nil
 }
@@ -379,6 +391,30 @@ func normalizeOpenAIWSJSONForCompareOrRaw(raw []byte) []byte {
 	return normalized
 }
 
+func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, errors.New("payload is empty")
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return nil, err
+	}
+	delete(decoded, "input")
+	delete(decoded, "previous_response_id")
+	// Codex changes transport-only metadata for every response.create. These fields
+	// do not alter the context referenced by previous_response_id and are excluded
+	// from Codex's own websocket reuse comparison.
+	delete(decoded, "client_metadata")
+	delete(decoded, "stream_options")
+	// Official Codex prewarms a connection with generate=false, then omits the
+	// field on the business request that continues from the prewarm response.
+	// Only normalize false so a meaningful generate=true change remains visible.
+	if generate, ok := decoded["generate"].(bool); ok && !generate {
+		delete(decoded, "generate")
+	}
+	return json.Marshal(decoded)
+}
+
 func openAIWSExtractNormalizedInputSequence(payload []byte) ([]json.RawMessage, bool, error) {
 	if len(payload) == 0 {
 		return nil, false, nil
@@ -490,4 +526,46 @@ func setOpenAIWSPayloadInputSequence(
 		return nil, marshalErr
 	}
 	return sjson.SetRawBytes(payload, "input", inputRaw)
+}
+
+// The comparison helpers are kept in sync with upstream for diagnostics and
+// tests. The ingress relay deliberately does not use them to rewrite a Codex
+// client's previous_response_id decision: only the client owns enough context
+// to rebuild a lossless full request after a continuation failure.
+func shouldKeepIngressPreviousResponseID(
+	previousPayload []byte,
+	currentPayload []byte,
+	lastTurnResponseID string,
+	hasFunctionCallOutput bool,
+) (bool, string, error) {
+	if hasFunctionCallOutput {
+		return true, "has_function_call_output", nil
+	}
+	currentPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
+	if currentPreviousResponseID == "" {
+		return false, "missing_previous_response_id", nil
+	}
+	expectedPreviousResponseID := strings.TrimSpace(lastTurnResponseID)
+	if expectedPreviousResponseID == "" {
+		return false, "missing_last_turn_response_id", nil
+	}
+	if currentPreviousResponseID != expectedPreviousResponseID {
+		return false, "previous_response_id_mismatch", nil
+	}
+	if len(previousPayload) == 0 {
+		return false, "missing_previous_turn_payload", nil
+	}
+
+	previousComparable, previousComparableErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(previousPayload)
+	if previousComparableErr != nil {
+		return false, "non_input_compare_error", previousComparableErr
+	}
+	currentComparable, currentComparableErr := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(currentPayload)
+	if currentComparableErr != nil {
+		return false, "non_input_compare_error", currentComparableErr
+	}
+	if !bytes.Equal(previousComparable, currentComparable) {
+		return false, "non_input_changed", nil
+	}
+	return true, "strict_incremental_ok", nil
 }

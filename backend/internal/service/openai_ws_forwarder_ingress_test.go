@@ -445,6 +445,33 @@ func TestNormalizeOpenAIWSJSONForCompareOrRaw(t *testing.T) {
 	require.Equal(t, `{"a":`, string(normalizeOpenAIWSJSONForCompareOrRaw([]byte(`{"a":`))))
 }
 
+func TestNormalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(
+		[]byte(`{"model":"gpt-5.1","input":[1],"previous_response_id":"resp_x","client_metadata":{"request_start_ms":"1"},"stream_options":{"include_usage":true},"generate":false,"metadata":{"b":2,"a":1}}`),
+	)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(normalized, "input").Exists())
+	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(normalized, "client_metadata").Exists())
+	require.False(t, gjson.GetBytes(normalized, "stream_options").Exists())
+	require.False(t, gjson.GetBytes(normalized, "generate").Exists())
+	require.Equal(t, float64(1), gjson.GetBytes(normalized, "metadata.a").Float())
+
+	normalized, err = normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(
+		[]byte(`{"model":"gpt-5.1","generate":true}`),
+	)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(normalized, "generate").Bool())
+
+	_, err = normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(nil)
+	require.Error(t, err)
+
+	_, err = normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID([]byte(`[]`))
+	require.Error(t, err)
+}
+
 func TestOpenAIWSExtractNormalizedInputSequence(t *testing.T) {
 	t.Parallel()
 
@@ -513,6 +540,150 @@ func TestOpenAIWSExtractNormalizedInputSequence(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, exists)
 		require.Nil(t, items)
+	})
+}
+
+func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	previousPayload := []byte(`{
+		"type":"response.create",
+		"model":"gpt-5.1",
+		"store":false,
+		"tools":[{"type":"function","name":"tool_a"}],
+		"input":[{"type":"input_text","text":"hello"}]
+	}`)
+	currentStrictPayload := []byte(`{
+		"type":"response.create",
+		"model":"gpt-5.1",
+		"store":false,
+		"tools":[{"name":"tool_a","type":"function"}],
+		"previous_response_id":"resp_turn_1",
+		"input":[{"text":"hello","type":"input_text"},{"type":"input_text","text":"world"}]
+	}`)
+
+	t.Run("strict_incremental_keep", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
+	})
+
+	t.Run("codex_prewarm_to_business_keep", func(t *testing.T) {
+		prewarmPayload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"generate":false,
+			"client_metadata":{"x-codex-ws-stream-request-start-ms":"100"},
+			"stream_options":{"include_usage":true},
+			"input":[{"type":"input_text","text":"hello"}]
+		}`)
+		businessPayload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"client_metadata":{"x-codex-ws-stream-request-start-ms":"200"},
+			"previous_response_id":"resp_prewarm",
+			"input":[{"type":"input_text","text":"hello"}]
+		}`)
+
+		keep, reason, err := shouldKeepIngressPreviousResponseID(
+			prewarmPayload,
+			businessPayload,
+			"resp_prewarm",
+			false,
+		)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
+	})
+
+	t.Run("missing_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "missing_previous_response_id", reason)
+	})
+
+	t.Run("missing_last_turn_response_id", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "", false)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "missing_last_turn_response_id", reason)
+	})
+
+	t.Run("previous_response_id_mismatch", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_other", false)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "previous_response_id_mismatch", reason)
+	})
+
+	t.Run("missing_previous_turn_payload", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID(nil, currentStrictPayload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "missing_previous_turn_payload", reason)
+	})
+
+	t.Run("non_input_changed", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1-mini",
+			"store":false,
+			"tools":[{"type":"function","name":"tool_a"}],
+			"previous_response_id":"resp_turn_1",
+			"input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]
+		}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "non_input_changed", reason)
+	})
+
+	t.Run("delta_input_keeps_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"tools":[{"type":"function","name":"tool_a"}],
+			"previous_response_id":"resp_turn_1",
+			"input":[{"type":"input_text","text":"different"}]
+		}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
+	})
+
+	t.Run("function_call_output_keeps_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"previous_response_id":"resp_external",
+			"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]
+		}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", true)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "has_function_call_output", reason)
+	})
+
+	t.Run("non_input_compare_error", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID([]byte(`[]`), currentStrictPayload, "resp_turn_1", false)
+		require.Error(t, err)
+		require.False(t, keep)
+		require.Equal(t, "non_input_compare_error", reason)
+	})
+
+	t.Run("current_payload_compare_error", func(t *testing.T) {
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, []byte(`{"previous_response_id":"resp_turn_1","input":[}`), "resp_turn_1", false)
+		require.Error(t, err)
+		require.False(t, keep)
+		require.Equal(t, "non_input_compare_error", reason)
 	})
 }
 
