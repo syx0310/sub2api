@@ -4,7 +4,13 @@ const ipGeoMocks = vi.hoisted(() => ({
   fetchBatch: vi.fn(),
 }))
 
+const appStoreMocks = vi.hoisted(() => ({
+  showSuccess: vi.fn(),
+  showError: vi.fn(),
+}))
+
 vi.mock('@/utils/ipGeoLookup', () => ipGeoMocks)
+vi.mock('@/stores/app', () => ({ useAppStore: () => appStoreMocks }))
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -49,15 +55,19 @@ const messages: Record<string, string> = {
   'usage.imageUnitPrice': 'Per-image price',
   'usage.imageTotalPrice': 'Image total price',
   'admin.usage.billingModeToken': 'Token',
-	  'admin.usage.billingModePerRequest': 'Per request',
-	  'admin.usage.billingModeImage': 'Image',
-	  'admin.usage.requestBodySize': 'Req',
-	  'admin.usage.responseBodySize': 'Resp',
-	  'usage.requestedModel': 'Requested',
-	  'usage.sentUpstreamModel': 'Sent upstream',
-	  'usage.upstreamResponseModel': 'Upstream response',
-	  'usage.modelVariant': 'Possible version variant',
-	  'usage.modelMismatch': 'Different model',
+  'admin.usage.billingModePerRequest': 'Per request',
+  'admin.usage.billingModeImage': 'Image',
+  'admin.usage.requestBodySize': 'Req',
+  'admin.usage.responseBodySize': 'Resp',
+  'admin.usage.requestIdCopied': 'Request ID copied',
+  'keys.copied': 'Copied',
+  'keys.copyToClipboard': 'Copy to clipboard',
+  'common.copyFailed': 'Copy failed',
+  'usage.requestedModel': 'Requested',
+  'usage.sentUpstreamModel': 'Sent upstream',
+  'usage.upstreamResponseModel': 'Upstream response',
+  'usage.modelVariant': 'Possible version variant',
+  'usage.modelMismatch': 'Different model',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -80,6 +90,7 @@ const DataTableStub = {
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-body_size" :row="row" />
+        <slot name="cell-request_id" :row="row" />
       </div>
     </div>
   `,
@@ -454,6 +465,40 @@ describe('admin UsageTable body size column', () => {
     expect(wrapper.text()).toContain('1.50 KB')
     expect(wrapper.text()).toContain('Resp:')
     expect(wrapper.text()).toContain('2.00 KB')
+  })
+})
+
+describe('admin UsageTable request ID column', () => {
+  beforeEach(() => {
+    appStoreMocks.showSuccess.mockReset()
+    appStoreMocks.showError.mockReset()
+  })
+
+  it('renders and copies the request ID', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ ...baseImageRow, request_id: 'req-admin-visible-id' }],
+        loading: false,
+        columns: [{ key: 'request_id', label: 'Request ID' }],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('req-admin-visible-id')
+    await wrapper.get('button[title="Copy to clipboard"]').trigger('click')
+
+    expect(writeText).toHaveBeenCalledWith('req-admin-visible-id')
+    expect(appStoreMocks.showSuccess).toHaveBeenCalledWith('Request ID copied')
   })
 })
 
