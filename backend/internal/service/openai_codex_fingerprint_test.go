@@ -589,7 +589,7 @@ func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testi
 	c.Request.Header.Set("originator", "codex_cli_rs")
 	c.Request.Header.Set("x-codex-turn-metadata", `{"installation_id":"real-install","session_id":"real-session","thread_id":"real-client-thread","turn_id":"real-client-turn","window_id":"real-client-thread:7","sandbox":"seatbelt"}`)
 
-	// 复刻 forwardOpenAIPassthrough 的解析+暂存 seam（默认 session 模式）
+	// 复刻 forwardOpenAIPassthrough 的解析+暂存 seam（显式 session 模式）
 	ids := resolveCodexFingerprintIDsFromRequest(account, c.Request.Header)
 	require.NotNil(t, ids)
 	stageCodexFingerprintIDs(c, ids)
@@ -601,8 +601,8 @@ func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testi
 	assert.Equal(t, ids.sessionID, req.Header.Get("session_id"), "session 模式下出站 session_id 应为账号级收敛值")
 	assert.Equal(t, ids.installationID, req.Header.Get("x-codex-installation-id"))
 	assert.Equal(t, "real-client-thread:7", req.Header.Get("x-codex-window-id"))
-	assert.Equal(t, "real-client-request", req.Header.Get("x-client-request-id"))
-	assert.Equal(t, "real-client-thread", req.Header.Get("thread-id"))
+	assert.Empty(t, req.Header.Get("x-client-request-id"), "session 模式不得额外合成深层 request ID")
+	assert.Empty(t, req.Header.Get("thread-id"), "session 模式不得额外合成 thread ID")
 	turnMetadata := req.Header.Get("x-codex-turn-metadata")
 	require.NotEmpty(t, turnMetadata)
 	assert.Contains(t, turnMetadata, ids.sessionID, "turn-metadata JSON 中的 session_id 应被收敛")

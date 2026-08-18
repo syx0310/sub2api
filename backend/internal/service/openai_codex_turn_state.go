@@ -26,8 +26,8 @@ type openAICodexTurnStateOrigin struct {
 }
 
 // openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
-// 客户端会话标识取自请求头（与指纹收敛的 thread 派生同源，见
-// extractClientSessionID），确保同一下游会话的记录/守卫两侧使用同一键。
+// 客户端会话标识直接取自原始请求头（见 extractClientSessionID），确保同一
+// 下游会话的记录/守卫两侧使用同一键；它不参与指纹 session 模式的深层 ID 改写。
 // 无会话标识时返回空串，表示不做跟踪（保持透传现状）。
 func openAICodexTurnStateSeed(c *gin.Context) string {
 	if c == nil || c.Request == nil {
