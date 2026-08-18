@@ -4840,6 +4840,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only_allow_app_server
   }
+  // device 是本 fork 默认值，不落键；off/session/full 需要显式保存。
   if (codexFingerprintMode.value !== 'device') {
     extra.codex_fingerprint_mode = codexFingerprintMode.value
   } else {

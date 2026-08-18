@@ -1,10 +1,13 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -422,4 +425,226 @@ func TestApplyCodexFingerprintClientMetadata_FullMode(t *testing.T) {
 
 	assert.Equal(t, convergedSession, cm["session_id"])
 	assert.Equal(t, convergedSession, cm["thread_id"], "full 模式 thread_id 应等于 session_id")
+}
+
+// --- extractClientSessionID ---
+
+func TestExtractClientSessionID(t *testing.T) {
+	tests := []struct {
+		name     string
+		headers  http.Header
+		expected string
+	}{
+		{"连字符形式优先", func() http.Header {
+			h := http.Header{}
+			h.Set("session-id", "hyphen-form")
+			h.Set("session_id", "underscore-form")
+			return h
+		}(), "hyphen-form"},
+		{"回退到下划线形式", func() http.Header {
+			h := http.Header{}
+			h.Set("session_id", "underscore-form")
+			return h
+		}(), "underscore-form"},
+		{"都没有", http.Header{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, extractClientSessionID(tt.headers))
+		})
+	}
+}
+
+// --- 透传路径：raw 字节版 client_metadata 改写 ---
+
+// rawVsMapClientMetadata 用同一份 ids 分别跑 map 版与 raw 字节版，
+// 返回两侧最终的 client_metadata 解码结果。
+func rawVsMapClientMetadata(t *testing.T, body []byte, ids *codexFingerprintIDs) (map[string]any, map[string]any) {
+	t.Helper()
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	applyCodexFingerprintClientMetadata(decoded, ids)
+	mapCM, _ := decoded["client_metadata"].(map[string]any)
+
+	rawBody, changed, err := applyCodexFingerprintClientMetadataRaw(body, ids)
+	require.NoError(t, err)
+	require.True(t, changed)
+	var rawDecoded map[string]any
+	require.NoError(t, json.Unmarshal(rawBody, &rawDecoded))
+	rawCM, _ := rawDecoded["client_metadata"].(map[string]any)
+	return mapCM, rawCM
+}
+
+func TestApplyCodexFingerprintClientMetadataRaw_MatchesMapVariant(t *testing.T) {
+	embedded := `{\"installation_id\":\"real-install\",\"session_id\":\"real-session\",\"sandbox\":\"seatbelt\"}`
+	bodies := map[string]string{
+		"no_client_metadata": `{"model":"gpt-5.6-sol","input":[],"stream":true}`,
+		"object_with_extras": `{"model":"gpt-5.6-sol","client_metadata":{"session_id":"client-session","traceparent":"00-abc-def-01","x-codex-turn-metadata":"` + embedded + `"},"stream":true}`,
+		"non_object_value":   `{"model":"gpt-5.6-sol","client_metadata":"bogus","stream":true}`,
+	}
+	for _, mode := range []codexFingerprintMode{codexFingerprintDevice, codexFingerprintSession, codexFingerprintFull} {
+		account := newTestOAuthAccount(4242, nil)
+		ids := resolveCodexFingerprintIDs(account, mode)
+		require.NotNil(t, ids)
+		for name, body := range bodies {
+			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				mapCM, rawCM := rawVsMapClientMetadata(t, []byte(body), ids)
+				assert.Equal(t, mapCM, rawCM, "raw 字节版与 map 版的 client_metadata 结果必须逐点一致")
+			})
+		}
+	}
+}
+
+func TestApplyCodexFingerprintClientMetadataRaw_PreservesUnrelatedFields(t *testing.T) {
+	account := newTestOAuthAccount(4243, nil)
+	ids := resolveCodexFingerprintIDs(account, codexFingerprintSession)
+	require.NotNil(t, ids)
+
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"hi"}],"stream":true,"prompt_cache_key":"pck-1"}`)
+	out, changed, err := applyCodexFingerprintClientMetadataRaw(body, ids)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.Equal(t, "gpt-5.6-sol", decoded["model"])
+	assert.Equal(t, "pck-1", decoded["prompt_cache_key"])
+	assert.Equal(t, true, decoded["stream"])
+	cm, _ := decoded["client_metadata"].(map[string]any)
+	require.NotNil(t, cm)
+	assert.Equal(t, ids.sessionID, cm["session_id"])
+	assert.NotContains(t, cm, "thread_id")
+	assert.NotContains(t, cm, "turn_id")
+	assert.NotContains(t, cm, "x-codex-window-id")
+}
+
+func TestApplyCodexFingerprintClientMetadataRaw_Noop(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol"}`)
+	out, changed, err := applyCodexFingerprintClientMetadataRaw(body, nil)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, body, out)
+
+	out, changed, err = applyCodexFingerprintClientMetadataRaw(nil, &codexFingerprintIDs{mode: codexFingerprintSession, installationID: "x"})
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, out)
+}
+
+// --- context 暂存与出站头应用（透传/非透传共用 seam）---
+
+func newFingerprintStageTestContext(t *testing.T) *gin.Context {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	return c
+}
+
+func TestStageCodexFingerprintIDs_NilOverwritesPreviousAccount(t *testing.T) {
+	c := newFingerprintStageTestContext(t)
+	accountA := newTestOAuthAccount(1001, nil)
+	idsA := resolveCodexFingerprintIDs(accountA, codexFingerprintSession)
+	require.NotNil(t, idsA)
+	stageCodexFingerprintIDs(c, idsA)
+
+	// failover 切到 off 模式账号：无条件覆写为 nil，上一账号 IDs 不得残留
+	stageCodexFingerprintIDs(c, nil)
+
+	h := http.Header{}
+	h.Set("session_id", "isolated-session")
+	accountB := newTestOAuthAccount(1002, map[string]any{"codex_fingerprint_mode": "off"})
+	applyStagedCodexFingerprintHeaders(c, accountB, h)
+	assert.Equal(t, "isolated-session", h.Get("session_id"), "off 账号不得应用上一账号的收敛 ID")
+	assert.Empty(t, h.Get("x-codex-installation-id"))
+}
+
+func TestApplyStagedCodexFingerprintHeaders_SkipsNonOAuthAccount(t *testing.T) {
+	c := newFingerprintStageTestContext(t)
+	oauthIDs := resolveCodexFingerprintIDs(newTestOAuthAccount(1003, nil), codexFingerprintSession)
+	require.NotNil(t, oauthIDs)
+	stageCodexFingerprintIDs(c, oauthIDs)
+
+	h := http.Header{}
+	apiKeyAccount := &Account{ID: 1004, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	applyStagedCodexFingerprintHeaders(c, apiKeyAccount, h)
+	assert.Empty(t, h.Get("x-codex-installation-id"), "stale 收敛 ID 不得应用到非 OAuth 账号")
+}
+
+func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	// 显式开启 session 后验证透传路径只收敛设备与会话。
+	account := newTestOAuthAccount(2001, map[string]any{
+		"openai_oauth_passthrough": true,
+		"codex_fingerprint_mode":   "session",
+	})
+
+	c := newFingerprintStageTestContext(t)
+	c.Request.Header.Set("session_id", "real-client-session")
+	c.Request.Header.Set("thread-id", "real-client-thread")
+	c.Request.Header.Set("x-client-request-id", "real-client-request")
+	c.Request.Header.Set("x-codex-window-id", "real-client-thread:7")
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("x-codex-turn-metadata", `{"installation_id":"real-install","session_id":"real-session","thread_id":"real-client-thread","turn_id":"real-client-turn","window_id":"real-client-thread:7","sandbox":"seatbelt"}`)
+
+	// 复刻 forwardOpenAIPassthrough 的解析+暂存 seam（默认 session 模式）
+	ids := resolveCodexFingerprintIDsFromRequest(account, c.Request.Header)
+	require.NotNil(t, ids)
+	stageCodexFingerprintIDs(c, ids)
+
+	body := []byte(`{"model":"gpt-5.6-sol","input":[],"stream":true}`)
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "test-token")
+	require.NoError(t, err)
+
+	assert.Equal(t, ids.sessionID, req.Header.Get("session_id"), "session 模式下出站 session_id 应为账号级收敛值")
+	assert.Equal(t, ids.installationID, req.Header.Get("x-codex-installation-id"))
+	assert.Equal(t, "real-client-thread:7", req.Header.Get("x-codex-window-id"))
+	assert.Equal(t, "real-client-request", req.Header.Get("x-client-request-id"))
+	assert.Equal(t, "real-client-thread", req.Header.Get("thread-id"))
+	turnMetadata := req.Header.Get("x-codex-turn-metadata")
+	require.NotEmpty(t, turnMetadata)
+	assert.Contains(t, turnMetadata, ids.sessionID, "turn-metadata JSON 中的 session_id 应被收敛")
+	assert.Contains(t, turnMetadata, `"thread_id":"real-client-thread"`)
+	assert.Contains(t, turnMetadata, `"turn_id":"real-client-turn"`)
+	assert.Contains(t, turnMetadata, `"window_id":"real-client-thread:7"`)
+	assert.Contains(t, turnMetadata, `"sandbox":"seatbelt"`, "turn-metadata 未指定字段应原样保留")
+}
+
+func TestBuildUpstreamRequestOpenAIPassthrough_OffModeKeepsIsolatedSession(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := newTestOAuthAccount(2002, map[string]any{
+		"openai_oauth_passthrough": true,
+		"codex_fingerprint_mode":   "off",
+	})
+
+	c := newFingerprintStageTestContext(t)
+	c.Request.Header.Set("session_id", "real-client-session")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+
+	ids := resolveCodexFingerprintIDsFromRequest(account, c.Request.Header)
+	require.Nil(t, ids)
+	stageCodexFingerprintIDs(c, ids)
+
+	body := []byte(`{"model":"gpt-5.6-sol","input":[],"stream":true}`)
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "test-token")
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, req.Header.Get("session_id"))
+	assert.NotEqual(t, resolveConvergedSessionID(account), req.Header.Get("session_id"), "off 模式不得收敛 session_id")
+	assert.Empty(t, req.Header.Get("x-codex-window-id"))
+}
+
+func TestApplyCodexFingerprintClientMetadataRaw_NonObjectBodyUntouched(t *testing.T) {
+	account := newTestOAuthAccount(4244, nil)
+	ids := resolveCodexFingerprintIDs(account, codexFingerprintSession)
+	require.NotNil(t, ids)
+
+	for _, body := range []string{`[1,2,3]`, `"plain string"`, `not json at all`} {
+		out, changed, err := applyCodexFingerprintClientMetadataRaw([]byte(body), ids)
+		require.NoError(t, err)
+		assert.False(t, changed, "非 JSON 对象 body 不应被改写: %s", body)
+		assert.Equal(t, []byte(body), out)
+	}
 }
