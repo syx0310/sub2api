@@ -14,8 +14,9 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-// v19 includes the local pricing snapshots, OpenAI reasoning/Live policies,
-// upstream profit-control fields, and Grok search/audio/video-model pricing.
+// v20 includes the local pricing snapshots, OpenAI reasoning/Live policies,
+// upstream profit-control fields, Grok search/audio/video-model pricing,
+// and group long-context/model pricing fields.
 const apiKeyAuthSnapshotVersion = 20
 
 type apiKeyAuthCacheConfig struct {

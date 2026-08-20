@@ -108,7 +108,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 			}
 			// Passthrough relay invokes both turn hooks, so per-turn profit checks,
-			// pricing snapshots, and usage accounting match the pooled ingress path.
+			// pricing snapshots, turn-start timestamps, and usage accounting match
+			// the pooled ingress path.
 			return s.proxyResponsesWebSocketV2Passthrough(
 				ctx,
 				c,

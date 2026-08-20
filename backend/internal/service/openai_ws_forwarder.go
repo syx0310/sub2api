@@ -238,10 +238,13 @@ type OpenAIWSIngressHooks struct {
 	// InitialRequestBodyBytes preserves the logical client payload size before
 	// channel/account model mapping mutates the first frame.
 	InitialRequestBodyBytes *int64
+	// InitialTurnStartedAt freezes when the first response.create was accepted.
+	InitialTurnStartedAt time.Time
 	// MaxReasoningEffort limits explicit reasoning effort values for this WS session.
 	MaxReasoningEffort string
 	// ReasoningEffortMappings rewrites explicit effort values for this WS session.
 	ReasoningEffortMappings []ReasoningEffortMapping
+	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
 	// MapRequestModel resolves the current turn's client model to the model
