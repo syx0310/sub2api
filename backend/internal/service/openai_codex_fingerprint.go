@@ -32,7 +32,7 @@ func stageCodexFingerprintIDs(c *gin.Context, ids *codexFingerprintIDs) {
 }
 
 func stagedCodexFingerprintIDs(c *gin.Context, account *Account) *codexFingerprintIDs {
-	if c == nil || account == nil || account.Type != AccountTypeOAuth {
+	if c == nil || account == nil || !account.UsesOpenAICodexProtocol() {
 		return nil
 	}
 	value, ok := c.Get(codexFingerprintIDsContextKey)
@@ -137,7 +137,7 @@ func codexFingerprintSeed(extra map[string]any) (string, bool) {
 
 func prepareCodexFingerprintExtraForCreate(platform, accountType string, extra map[string]any) map[string]any {
 	prepared := stripCodexFingerprintSeed(extra)
-	if platform != PlatformOpenAI || accountType != AccountTypeOAuth || !codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(prepared)) {
+	if platform != PlatformOpenAI || (accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken) || !codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(prepared)) {
 		return prepared
 	}
 	if prepared == nil {
@@ -149,7 +149,7 @@ func prepareCodexFingerprintExtraForCreate(platform, accountType string, extra m
 
 func prepareCodexFingerprintExtraForUpdate(account *Account, extra map[string]any) map[string]any {
 	prepared := stripCodexFingerprintSeed(extra)
-	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return prepared
 	}
 	if seed, ok := codexFingerprintSeed(account.Extra); ok {
@@ -190,7 +190,7 @@ func ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates map[string]any) boo
 // GetCodexFingerprintMode 从账号 extra JSON 读取指纹收敛模式。
 // 未设置或值无效时默认 device（仅设备收敛），显式设为 "off" 才关闭。
 func (a *Account) GetCodexFingerprintMode() codexFingerprintMode {
-	if a == nil || !a.IsOpenAIOAuth() {
+	if a == nil || !a.IsOpenAIOAuthLike() {
 		return codexFingerprintOff
 	}
 	return codexFingerprintModeFromExtra(a.Extra)

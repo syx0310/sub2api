@@ -739,7 +739,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_NamespaceNonStreamingResponse(t *
 	setOpenAIResponsesNamespaceNames(c, names)
 
 	result, err := (&OpenAIGatewayService{cfg: &config.Config{}}).handleNonStreamingResponsePassthrough(
-		context.Background(), resp, c, "gpt-5.5", "",
+		context.Background(), resp, c, &Account{ID: 91}, "gpt-5.5", "",
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -2126,6 +2126,12 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 	require.True(t, ok)
 	wantInstall := resolveConvergedInstallationID(account, seed)
 	wantSession := resolveConvergedSessionID(seed)
+	wantBodyThread := scopeCodexAccountIdentityValue(account, 0, "thread", "body-thread")
+	wantBodyTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "body-turn")
+	wantBodyWindow := scopeCodexAccountIdentityValue(account, 0, "window", "body-window")
+	wantHeaderThread := scopeCodexAccountIdentityValue(account, 0, "thread", "header-thread")
+	wantHeaderTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "header-turn")
+	wantHeaderWindow := scopeCodexAccountIdentityValue(account, 0, "window", "header-window")
 
 	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
@@ -2144,12 +2150,12 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 	headerTurnMetadata := upstream.lastReq.Header.Get("x-codex-turn-metadata")
 	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
 	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
-	require.Equal(t, "body-thread", gjson.Get(bodyTurnMetadata, "thread_id").String())
-	require.Equal(t, "body-turn", gjson.Get(bodyTurnMetadata, "turn_id").String())
-	require.Equal(t, "body-window", gjson.Get(bodyTurnMetadata, "window_id").String())
-	require.Equal(t, "header-thread", gjson.Get(headerTurnMetadata, "thread_id").String())
-	require.Equal(t, "header-turn", gjson.Get(headerTurnMetadata, "turn_id").String())
-	require.Equal(t, "header-window", gjson.Get(headerTurnMetadata, "window_id").String())
+	require.Equal(t, wantBodyThread, gjson.Get(bodyTurnMetadata, "thread_id").String())
+	require.Equal(t, wantBodyTurn, gjson.Get(bodyTurnMetadata, "turn_id").String())
+	require.Equal(t, wantBodyWindow, gjson.Get(bodyTurnMetadata, "window_id").String())
+	require.Equal(t, wantHeaderThread, gjson.Get(headerTurnMetadata, "thread_id").String())
+	require.Equal(t, wantHeaderTurn, gjson.Get(headerTurnMetadata, "turn_id").String())
+	require.Equal(t, wantHeaderWindow, gjson.Get(headerTurnMetadata, "window_id").String())
 }
 
 func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParityAndDefaultCacheKey(t *testing.T) {
@@ -2192,6 +2198,12 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 	require.True(t, ok)
 	wantInstall := resolveConvergedInstallationID(account, seed)
 	wantSession := resolveConvergedSessionID(seed)
+	wantBodyThread := scopeCodexAccountIdentityValue(account, 0, "thread", "body-thread")
+	wantBodyTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "body-turn")
+	wantBodyWindow := scopeCodexAccountIdentityValue(account, 0, "window", "body-window")
+	wantHeaderThread := scopeCodexAccountIdentityValue(account, 0, "thread", "header-thread")
+	wantHeaderTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "header-turn")
+	wantHeaderWindow := scopeCodexAccountIdentityValue(account, 0, "window", "header-window")
 
 	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
@@ -2210,12 +2222,12 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 	headerTurnMetadata := upstream.lastReq.Header.Get("x-codex-turn-metadata")
 	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
 	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
-	require.Equal(t, "body-thread", gjson.Get(bodyTurnMetadata, "thread_id").String())
-	require.Equal(t, "body-turn", gjson.Get(bodyTurnMetadata, "turn_id").String())
-	require.Equal(t, "body-window", gjson.Get(bodyTurnMetadata, "window_id").String())
-	require.Equal(t, "header-thread", gjson.Get(headerTurnMetadata, "thread_id").String())
-	require.Equal(t, "header-turn", gjson.Get(headerTurnMetadata, "turn_id").String())
-	require.Equal(t, "header-window", gjson.Get(headerTurnMetadata, "window_id").String())
+	require.Equal(t, wantBodyThread, gjson.Get(bodyTurnMetadata, "thread_id").String())
+	require.Equal(t, wantBodyTurn, gjson.Get(bodyTurnMetadata, "turn_id").String())
+	require.Equal(t, wantBodyWindow, gjson.Get(bodyTurnMetadata, "window_id").String())
+	require.Equal(t, wantHeaderThread, gjson.Get(headerTurnMetadata, "thread_id").String())
+	require.Equal(t, wantHeaderTurn, gjson.Get(headerTurnMetadata, "turn_id").String())
+	require.Equal(t, wantHeaderWindow, gjson.Get(headerTurnMetadata, "window_id").String())
 }
 
 func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyOrMetadata(t *testing.T) {

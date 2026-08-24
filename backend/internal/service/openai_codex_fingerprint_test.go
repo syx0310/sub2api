@@ -64,6 +64,8 @@ func TestGetCodexFingerprintMode(t *testing.T) {
 	}{
 		{"nil 账号", nil, codexFingerprintOff},
 		{"非 OAuth 账号", &Account{Platform: PlatformOpenAI, Type: "api_key"}, codexFingerprintOff},
+		{"OpenAI setup token", &Account{Platform: PlatformOpenAI, Type: AccountTypeSetupToken, Extra: map[string]any{codexFingerprintModeExtraKey: "session"}}, codexFingerprintSession},
+		{"Anthropic setup token", &Account{Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Extra: map[string]any{codexFingerprintModeExtraKey: "session"}}, codexFingerprintOff},
 		{"无 extra 默认 device", newTestOAuthAccount(1, nil), codexFingerprintDevice},
 		{"空值默认 device", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: ""}), codexFingerprintDevice},
 		{"非法值默认 device", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "invalid"}), codexFingerprintDevice},
@@ -867,18 +869,21 @@ func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testi
 	body := []byte(`{"model":"gpt-5.6-sol","input":[],"stream":true}`)
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "test-token")
 	require.NoError(t, err)
+	wantWindow := scopeCodexAccountIdentityValue(account, 0, "window", "real-client-thread:7")
+	wantThread := scopeCodexAccountIdentityValue(account, 0, "thread", "real-client-thread")
+	wantTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "real-client-turn")
 
 	assert.Equal(t, ids.sessionID, req.Header.Get("session_id"), "session 模式下出站 session_id 应为账号级收敛值")
 	assert.Equal(t, ids.installationID, req.Header.Get("x-codex-installation-id"))
-	assert.Equal(t, "real-client-thread:7", req.Header.Get("x-codex-window-id"))
+	assert.Equal(t, wantWindow, req.Header.Get("x-codex-window-id"))
 	assert.Empty(t, req.Header.Get("x-client-request-id"), "session 模式不得额外合成深层 request ID")
 	assert.Empty(t, req.Header.Get("thread-id"), "session 模式不得额外合成 thread ID")
 	turnMetadata := req.Header.Get("x-codex-turn-metadata")
 	require.NotEmpty(t, turnMetadata)
 	assert.Contains(t, turnMetadata, ids.sessionID, "turn-metadata JSON 中的 session_id 应被收敛")
-	assert.Contains(t, turnMetadata, `"thread_id":"real-client-thread"`)
-	assert.Contains(t, turnMetadata, `"turn_id":"real-client-turn"`)
-	assert.Contains(t, turnMetadata, `"window_id":"real-client-thread:7"`)
+	assert.Contains(t, turnMetadata, `"thread_id":"`+wantThread+`"`)
+	assert.Contains(t, turnMetadata, `"turn_id":"`+wantTurn+`"`)
+	assert.Contains(t, turnMetadata, `"window_id":"`+wantWindow+`"`)
 	assert.Contains(t, turnMetadata, `"sandbox":"seatbelt"`, "turn-metadata 未指定字段应原样保留")
 }
 
