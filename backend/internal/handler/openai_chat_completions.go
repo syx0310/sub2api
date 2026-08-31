@@ -271,6 +271,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			responseBodyBytes := usageResponseBodyBytesFromGin(c)
 			attachOpenAIUsageBodyBytes(res, requestBodyBytes, responseBodyBytes)
+			stampOpenAIRequestedReasoningEffort(res, c)
 			userAgent := c.GetHeader("User-Agent")
 			clientIP := ip.GetClientIP(c)
 			inboundEndpoint := GetInboundEndpoint(c)

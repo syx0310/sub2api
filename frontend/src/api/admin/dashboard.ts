@@ -55,6 +55,7 @@ export interface TrendParams {
   group_id?: number
   request_type?: UsageRequestType
   stream?: boolean
+  native_compaction_v2?: boolean | null
   billing_type?: number | null
 	upstream_model_mismatch?: boolean
 }
@@ -87,9 +88,10 @@ export interface ModelStatsParams {
   group_id?: number
   request_type?: UsageRequestType
   stream?: boolean
-	  billing_type?: number | null
-	  billing_mode?: string | null
-	  upstream_model_mismatch?: boolean
+  native_compaction_v2?: boolean | null
+  billing_type?: number | null
+  billing_mode?: string | null
+  upstream_model_mismatch?: boolean
 }
 
 export interface ModelStatsResponse {
@@ -117,6 +119,7 @@ export interface GroupStatsParams {
   group_id?: number
   request_type?: UsageRequestType
   stream?: boolean
+  native_compaction_v2?: boolean | null
   billing_type?: number | null
 	upstream_model_mismatch?: boolean
 }
@@ -181,6 +184,7 @@ export interface UserBreakdownParams {
   account_id?: number
   request_type?: UsageRequestType
   stream?: boolean
+  native_compaction_v2?: boolean | null
   billing_type?: number | null
 }
 

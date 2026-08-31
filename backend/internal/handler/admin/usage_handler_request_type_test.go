@@ -100,6 +100,32 @@ func TestAdminUsageListInvalidStream(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestAdminUsageListNativeCompactionFilter(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage?request_type=stream&native_compaction_v2=true", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, repo.listFilters.RequestType)
+	require.Equal(t, int16(service.RequestTypeStream), *repo.listFilters.RequestType)
+	require.NotNil(t, repo.listFilters.NativeCompactionV2)
+	require.True(t, *repo.listFilters.NativeCompactionV2)
+}
+
+func TestAdminUsageListInvalidNativeCompactionFilter(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage?native_compaction_v2=oops", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestAdminUsageListExactTotalTrue(t *testing.T) {
 	repo := &adminUsageRepoCapture{}
 	router := newAdminUsageRequestTypeTestRouter(repo)
@@ -152,6 +178,19 @@ func TestAdminUsageStatsRequestTypePriority(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"cache_creation_actual_cost":0`)
 	require.Contains(t, rec.Body.String(), `"cache_read_actual_cost":0`)
 	require.Contains(t, rec.Body.String(), `"other_actual_cost":0`)
+}
+
+func TestAdminUsageStatsNativeCompactionFilter(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage/stats?native_compaction_v2=true", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, repo.statsFilters.NativeCompactionV2)
+	require.True(t, *repo.statsFilters.NativeCompactionV2)
 }
 
 func TestAdminUsageStatsUsesRequestedModelForDisplayModelFilter(t *testing.T) {

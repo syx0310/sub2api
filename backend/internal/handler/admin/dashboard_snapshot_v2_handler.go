@@ -46,6 +46,7 @@ type dashboardSnapshotV2Filters struct {
 	ModelSource           string
 	RequestType           *int16
 	Stream                *bool
+	NativeCompactionV2    *bool
 	BillingType           *int8
 	BillingMode           string
 	UpstreamModelMismatch *bool
@@ -63,6 +64,7 @@ type dashboardSnapshotV2CacheKey struct {
 	ModelSource           string `json:"model_source"`
 	RequestType           *int16 `json:"request_type"`
 	Stream                *bool  `json:"stream"`
+	NativeCompactionV2    *bool  `json:"native_compaction_v2"`
 	BillingType           *int8  `json:"billing_type"`
 	BillingMode           string `json:"billing_mode"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
@@ -111,6 +113,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		ModelSource:           filters.ModelSource,
 		RequestType:           filters.RequestType,
 		Stream:                filters.Stream,
+		NativeCompactionV2:    filters.NativeCompactionV2,
 		BillingType:           filters.BillingType,
 		BillingMode:           filters.BillingMode,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
@@ -193,6 +196,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Model,
 			filters.RequestType,
 			filters.Stream,
+			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
 		)
@@ -215,6 +219,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.ModelSource,
 			filters.RequestType,
 			filters.Stream,
+			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.BillingMode,
 			filters.UpstreamModelMismatch,
@@ -236,6 +241,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.GroupID,
 			filters.RequestType,
 			filters.Stream,
+			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
 		)
@@ -311,6 +317,14 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 			return nil, err
 		}
 		filters.Stream = &streamVal
+	}
+
+	if nativeCompactionV2Str := strings.TrimSpace(c.Query("native_compaction_v2")); nativeCompactionV2Str != "" {
+		value, err := strconv.ParseBool(nativeCompactionV2Str)
+		if err != nil {
+			return nil, err
+		}
+		filters.NativeCompactionV2 = &value
 	}
 
 	if billingTypeStr := strings.TrimSpace(c.Query("billing_type")); billingTypeStr != "" {
