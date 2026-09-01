@@ -104,8 +104,10 @@ type CodexModelsManifest struct {
 
 // BuildGroupConfiguredCodexModelsManifest builds a Codex catalog exclusively
 // from the public model names configured on accounts in an OpenAI group. The
-// boolean result distinguishes "no explicit configuration" from a configured
-// catalog that becomes empty after group-level filtering.
+// boolean result distinguishes "no authoritative configuration" from a
+// configured catalog that becomes empty after group-level filtering. System-
+// managed Spark shadow mappings supplement an upstream catalog, but do not by
+// themselves make the configured catalog authoritative.
 func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	ctx context.Context,
 	group *Group,
@@ -119,10 +121,10 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	if err != nil {
 		return nil, false, fmt.Errorf("load group configured Codex models: %w", err)
 	}
-	configuredModels := openAIConfiguredCodexModelIDsForGroup(visible, group)
-	if len(configuredModels) == 0 {
+	if len(openAIAuthoritativeConfiguredCodexModelIDsForGroup(visible, group)) == 0 {
 		return nil, false, nil
 	}
+	configuredModels := openAIConfiguredCodexModelIDsForGroup(visible, group)
 
 	body, err := buildCodexModelsManifestForAccounts(
 		PlatformOpenAI,
@@ -286,6 +288,30 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 	}
 	sort.Strings(models)
 	return models
+}
+
+// openAIAuthoritativeConfiguredCodexModelIDsForGroup excludes system-managed
+// routing supplements from the decision to bypass upstream model discovery.
+// Spark shadows carry an exact model_mapping so the scheduler can isolate the
+// Spark quota lane; that mapping is not administrator intent to replace the
+// parent OAuth account's complete ChatGPT catalog.
+func openAIAuthoritativeConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []string {
+	authoritativeAccounts := make([]Account, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if isOpenAICodexCatalogSupplement(account) {
+			continue
+		}
+		authoritativeAccounts = append(authoritativeAccounts, *account)
+	}
+	return openAIConfiguredCodexModelIDsForGroup(authoritativeAccounts, group)
+}
+
+func isOpenAICodexCatalogSupplement(account *Account) bool {
+	return account != nil &&
+		account.Platform == PlatformOpenAI &&
+		account.IsShadow() &&
+		account.QuotaDimensionOrDefault() == QuotaDimensionSpark
 }
 
 const (

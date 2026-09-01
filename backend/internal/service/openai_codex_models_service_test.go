@@ -73,6 +73,19 @@ type splitCodexModelsAccountRepo struct {
 	catalog     map[int64][]Account
 }
 
+type codexModelsCredentialAccountRepo struct {
+	AccountRepository
+	account Account
+}
+
+func (r codexModelsCredentialAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	if r.account.ID != id {
+		return nil, ErrNoAvailableAccounts
+	}
+	account := r.account
+	return &account, nil
+}
+
 func (r splitCodexModelsAccountRepo) ListSchedulableByGroupID(_ context.Context, groupID int64) ([]Account, error) {
 	return append([]Account(nil), r.schedulable[groupID]...), nil
 }
@@ -971,6 +984,100 @@ func TestBuildGroupConfiguredCodexModelsManifestUsesAdministratorConfiguration(t
 	require.Equal(t, manifest.ETag, notModified.ETag)
 }
 
+// Scenario: Spark 影子的系统路由映射只补充母账号目录，不能单独触发本地独占目录。
+func TestBuildGroupConfiguredCodexModelsManifestFallsThroughForSparkShadowMapping(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 81
+	parentID := int64(51)
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:          parentID,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Schedulable: true,
+				},
+				{
+					ID:              52,
+					Platform:        PlatformOpenAI,
+					Type:            AccountTypeOAuth,
+					Status:          StatusActive,
+					Schedulable:     true,
+					ParentAccountID: &parentID,
+					QuotaDimension:  QuotaDimensionSpark,
+					Credentials: map[string]any{
+						"model_mapping": defaultSparkShadowModelMapping(),
+					},
+				},
+			},
+		},
+	}}
+
+	manifest, configured, err := svc.BuildGroupConfiguredCodexModelsManifest(
+		context.Background(),
+		&Group{ID: groupID, Platform: PlatformOpenAI},
+		"",
+	)
+	require.NoError(t, err)
+	require.False(t, configured)
+	require.Nil(t, manifest)
+}
+
+// Scenario: 真正的管理员映射触发本地目录时，Spark 补充模型仍应保留在结果中。
+func TestBuildGroupConfiguredCodexModelsManifestKeepsSparkSupplementWithAdministratorConfiguration(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 82
+	parentID := int64(61)
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:          60,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeAPIKey,
+					Status:      StatusActive,
+					Schedulable: true,
+					Credentials: map[string]any{
+						"model_mapping": map[string]any{"glm-5.3": "glm-5.3"},
+					},
+				},
+				{
+					ID:          parentID,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Schedulable: true,
+				},
+				{
+					ID:              62,
+					Platform:        PlatformOpenAI,
+					Type:            AccountTypeOAuth,
+					Status:          StatusActive,
+					Schedulable:     true,
+					ParentAccountID: &parentID,
+					QuotaDimension:  QuotaDimensionSpark,
+					Credentials: map[string]any{
+						"model_mapping": defaultSparkShadowModelMapping(),
+					},
+				},
+			},
+		},
+	}}
+
+	manifest, configured, err := svc.BuildGroupConfiguredCodexModelsManifest(
+		context.Background(),
+		&Group{ID: groupID, Platform: PlatformOpenAI},
+		"",
+	)
+	require.NoError(t, err)
+	require.True(t, configured)
+	require.Equal(t, []string{"glm-5.3", "gpt-5.3-codex-spark"}, codexManifestModelSlugs(t, manifest.Body))
+}
+
 // Scenario: OpenAI 通配映射展开组内精确选择，但不发布通配符 slug。
 func TestBuildGroupConfiguredCodexModelsManifestExpandsSelectedModelCoveredByWildcardMapping(t *testing.T) {
 	t.Parallel()
@@ -1390,6 +1497,44 @@ func TestFetchCodexModelsManifestPassthrough(t *testing.T) {
 	if gotClientVersion != "0.137.0" {
 		t.Errorf("client_version query: got %q", gotClientVersion)
 	}
+}
+
+func TestFetchCodexModelsManifestSparkShadowUsesParentCredentials(t *testing.T) {
+	manifestBody := `{"models":[{"slug":"gpt-5.6-sol"}]}`
+
+	var gotAuth, gotAccountID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAccountID = r.Header.Get("chatgpt-account-id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(manifestBody))
+	}))
+	defer server.Close()
+
+	original := chatgptCodexModelsURL
+	chatgptCodexModelsURL = server.URL
+	defer func() { chatgptCodexModelsURL = original }()
+
+	parent := *newCodexModelsTestAccount()
+	parent.ID = 51
+	parentID := parent.ID
+	shadow := &Account{
+		ID:              52,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+		Credentials: map[string]any{
+			"model_mapping": defaultSparkShadowModelMapping(),
+		},
+	}
+	svc := &OpenAIGatewayService{accountRepo: codexModelsCredentialAccountRepo{account: parent}}
+
+	manifest, err := svc.FetchCodexModelsManifest(context.Background(), shadow, "0.144.0", "")
+	require.NoError(t, err)
+	require.Equal(t, manifestBody, string(manifest.Body))
+	require.Equal(t, "Bearer test-access-token", gotAuth)
+	require.Equal(t, "acc-123", gotAccountID)
 }
 
 func TestFetchCodexModelsManifestAgentIdentityUsesAssertionWithoutOAuthToken(t *testing.T) {

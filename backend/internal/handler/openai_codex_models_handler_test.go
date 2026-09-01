@@ -356,6 +356,91 @@ func TestCodexModelsUsesConfiguredModelsBeforeUpstreamDiscovery(t *testing.T) {
 	}
 }
 
+// Scenario: Spark 影子的系统映射不会短路目录发现，并在发现完成后补充到结果中。
+func TestCodexModelsMergesSparkShadowIntoDiscoveredCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(45)
+	parentID := int64(2)
+	repo := &codexModelsFailoverAccountRepo{accounts: []service.Account{
+		{
+			ID:          1,
+			Name:        "catalog-source",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeAPIKey,
+			Status:      service.StatusActive,
+			Schedulable: true,
+			Priority:    0,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key":  "sk-catalog",
+				"base_url": "https://catalog.example/v1",
+			},
+		},
+		{
+			ID:          parentID,
+			Name:        "chatgpt-pro",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Status:      service.StatusActive,
+			Schedulable: true,
+			Priority:    10,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token": "oauth-test",
+			},
+		},
+		{
+			ID:              3,
+			Name:            "chatgpt-pro (Spark)",
+			Platform:        service.PlatformOpenAI,
+			Type:            service.AccountTypeOAuth,
+			Status:          service.StatusActive,
+			Schedulable:     true,
+			Priority:        10,
+			Concurrency:     1,
+			ParentAccountID: &parentID,
+			QuotaDimension:  service.QuotaDimensionSpark,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+				},
+			},
+		},
+	}}
+	upstream := &codexModelsFailoverHTTPUpstream{
+		firstBody: `{"models":[{"slug":"gpt-5.6-sol"}]}`,
+	}
+	gatewayService := service.NewOpenAIGatewayService(
+		repo,
+		nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
+		upstream,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
+
+	recorder := performCodexModelsRequestForGroup(t, handler, &service.Group{
+		ID:       groupID,
+		Platform: service.PlatformOpenAI,
+	}, "")
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, []int64{1}, upstream.calls())
+	require.Equal(t,
+		[]string{"gpt-5.6-sol", "gpt-5.3-codex-spark"},
+		codexHandlerManifestSlugs(t, recorder),
+	)
+	etag := recorder.Header().Get("ETag")
+	require.NotEmpty(t, etag)
+
+	notModified := performCodexModelsRequestForGroup(t, handler, &service.Group{
+		ID:       groupID,
+		Platform: service.PlatformOpenAI,
+	}, etag)
+	require.Equal(t, http.StatusNotModified, notModified.Code, notModified.Body.String())
+	require.Empty(t, notModified.Body.Bytes())
+	require.Equal(t, []int64{1}, upstream.calls(), "fresh source cache should avoid a second upstream request")
+}
+
 func TestCompositeCodexModelsReusesExistingManifestSelection(t *testing.T) {
 	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
 

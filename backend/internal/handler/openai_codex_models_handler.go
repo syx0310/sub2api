@@ -15,8 +15,9 @@ import (
 // Codex CLI and the Codex desktop app refresh their model picker from
 // GET {base_url}/models?client_version=... (custom provider mode) or
 // GET /backend-api/codex/models (chatgpt_base_url mode). Both routes land
-// here. Groups with explicit account model mappings are generated locally;
-// otherwise ChatGPT manifests are proxied verbatim and custom API key manifests
+// here. Groups with authoritative account model mappings are generated locally;
+// system-managed Spark shadow mappings only supplement discovered catalogs.
+// Otherwise ChatGPT manifests are proxied verbatim and custom API key manifests
 // receive provider-compatibility normalization plus short-lived caching.
 func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 	if c.Request.Context().Err() != nil {
