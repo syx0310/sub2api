@@ -210,11 +210,12 @@ func (s *OpenAIGatewayService) groupConfiguredCodexModelIDs(ctx context.Context,
 
 // loadCodexGroupCatalogAccounts separates picker membership from capability
 // intersection. visible accounts are currently schedulable and decide which
-// public aliases appear. catalog accounts are all non-deleted active group
-// members; their snapshots keep advertised capabilities from widening when a
-// mapped account is only temporarily unschedulable. If ListByGroup fails, the
-// catalog falls back to the schedulable set so a listing error does not fail
-// the client request.
+// public aliases appear. catalog accounts are persistently enabled group
+// members; the availability query ignores transient rate-limit, overload, and
+// temporary-unschedulable state so those conditions cannot widen advertised
+// capabilities. Persistently disabled accounts are excluded because routing
+// cannot select them. If the availability query fails, the catalog falls back
+// to the schedulable set so a listing error does not fail the client request.
 func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, groupID int64) (visible []Account, catalog []Account, err error) {
 	if repo == nil {
 		return nil, nil, nil
@@ -224,7 +225,21 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 		return nil, nil, err
 	}
 	catalog = visible
-	groupAccounts, listErr := repo.ListByGroup(ctx, groupID)
+	groupAccounts, listErr := repo.ListModelAvailabilityCandidates(
+		ctx,
+		&groupID,
+		[]string{
+			PlatformAnthropic,
+			PlatformOpenAI,
+			PlatformGemini,
+			PlatformAntigravity,
+			PlatformGrok,
+			PlatformKimi,
+			PlatformZhipu,
+			PlatformDeepseek,
+		},
+		false,
+	)
 	if listErr != nil {
 		return visible, catalog, nil
 	}
@@ -335,6 +350,12 @@ type configuredCodexTruncationPolicy struct {
 	Limit int64  `json:"limit"`
 }
 
+type configuredCodexServiceTier struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type configuredCodexModelMessages struct {
 	InstructionsTemplate  string `json:"instructions_template"`
 	InstructionsVariables any    `json:"instructions_variables"`
@@ -362,7 +383,7 @@ type configuredCodexModelDescriptor struct {
 	SupportedInAPI                    bool                            `json:"supported_in_api"`
 	Priority                          int                             `json:"priority"`
 	AdditionalSpeedTiers              []string                        `json:"additional_speed_tiers"`
-	ServiceTiers                      []any                           `json:"service_tiers"`
+	ServiceTiers                      []configuredCodexServiceTier    `json:"service_tiers"`
 	DefaultServiceTier                any                             `json:"default_service_tier"`
 	AvailabilityNUX                   any                             `json:"availability_nux"`
 	Upgrade                           any                             `json:"upgrade"`
@@ -418,7 +439,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		SupportedInAPI:                    true,
 		Priority:                          configuredCodexModelPriority,
 		AdditionalSpeedTiers:              []string{},
-		ServiceTiers:                      []any{},
+		ServiceTiers:                      []configuredCodexServiceTier{},
 		ModelMessages:                     configuredCodexModelMessages{InstructionsTemplate: openai.CodexBaseInstructionsForModel(modelID)},
 		SupportsReasoningSummaryParameter: true,
 		DefaultReasoningSummary:           "auto",
@@ -474,6 +495,15 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		descriptor.DisplayName = openaiCodexDisplayName(modelID)
 		descriptor.Description = "OpenAI GPT coding model routed through Sub2API."
 		descriptor.SupportsParallelToolCalls = true
+		if configuredCodexSupportsPriorityServiceTier(modelID) {
+			descriptor.ServiceTiers = []configuredCodexServiceTier{
+				{
+					ID:          "priority",
+					Name:        "Fast",
+					Description: "Priority processing for lower latency.",
+				},
+			}
+		}
 		if isOpenAICodexReasoningGPTModel(modelID) {
 			defaultReasoningLevel := "medium"
 			if getNormalizedCodexModel(modelID) == "gpt-5.6-sol" {
@@ -495,6 +525,10 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 	}
 
 	return descriptor
+}
+
+func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
+	return openAIModelFastPricingRatio(normalizeKnownOpenAICodexModel(modelID)) > 0
 }
 
 func configuredCodexGrokReasoningLevels(modelID string) []configuredCodexReasoningLevel {
@@ -583,6 +617,9 @@ func isOpenAICodexReasoningGPTModel(modelID string) bool {
 
 func isOpenAICodexImageInputModel(modelID string) bool {
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
+	if isCodexSparkModel(normalized) {
+		return false
+	}
 	return strings.HasPrefix(normalized, "gpt-5") ||
 		strings.HasPrefix(normalized, "gpt-4o") ||
 		strings.HasPrefix(normalized, "gpt-4.1") ||
@@ -1065,8 +1102,16 @@ func accountCodexModelSupportsImageInput(account *Account, upstreamModel string)
 	if account == nil {
 		return false
 	}
+	if isCodexSparkModel(upstreamModel) {
+		return false
+	}
 	switch account.Platform {
 	case PlatformOpenAI:
+		if metadata, ok := account.GetUpstreamModelMetadata(upstreamModel); ok {
+			if modalities := normalizeCodexInputModalities(metadata.InputModalities); len(modalities) > 0 {
+				return stringSliceContains(modalities, "image")
+			}
+		}
 		if !isOpenAICodexImageInputModel(upstreamModel) {
 			return false
 		}
@@ -1076,8 +1121,9 @@ func accountCodexModelSupportsImageInput(account *Account, upstreamModel string)
 		if !account.IsOpenAIApiKey() {
 			return false
 		}
-		baseURL := strings.TrimSpace(account.GetCredential("base_url"))
-		return baseURL == "" || isOfficialOpenAIModelsBaseURL(baseURL)
+		// Compatible model lists often omit modalities. Preserve the known GPT
+		// fallback unless a synced snapshot above explicitly narrows it.
+		return true
 	case PlatformGrok:
 		if !isOfficialGrokCodexBaseURL(account.GetGrokBaseURL()) {
 			return false
@@ -1180,6 +1226,14 @@ func mergeConfiguredCodexModelsManifest(
 			rawModel = visibleModel
 			changed = changed || visibilityChanged
 		}
+		if isCodexSparkModel(descriptor.Slug) {
+			textOnlyModel, capabilityChanged, err := codexModelWithTextOnlyInput(rawModel)
+			if err != nil {
+				return nil, false, err
+			}
+			rawModel = textOnlyModel
+			changed = changed || capabilityChanged
+		}
 		seen[descriptor.Slug] = struct{}{}
 		merged = append(merged, rawModel)
 	}
@@ -1246,6 +1300,39 @@ func codexModelWithVisibility(rawModel json.RawMessage, visibility string) (json
 		return nil, false, err
 	}
 	return updated, true, nil
+}
+
+func codexModelWithTextOnlyInput(rawModel json.RawMessage) (json.RawMessage, bool, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawModel, &fields); err != nil {
+		return nil, false, err
+	}
+	if !enforceCodexTextOnlyInput(fields) {
+		return rawModel, false, nil
+	}
+	updated, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false, err
+	}
+	return updated, true, nil
+}
+
+func enforceCodexTextOnlyInput(fields map[string]json.RawMessage) bool {
+	if fields == nil {
+		return false
+	}
+	changed := false
+	modalities := json.RawMessage(`["text"]`)
+	if !bytes.Equal(bytes.TrimSpace(fields["input_modalities"]), modalities) {
+		fields["input_modalities"] = modalities
+		changed = true
+	}
+	imageDetailOriginal := json.RawMessage("false")
+	if !bytes.Equal(bytes.TrimSpace(fields["supports_image_detail_original"]), imageDetailOriginal) {
+		fields["supports_image_detail_original"] = imageDetailOriginal
+		changed = true
+	}
+	return changed
 }
 
 type codexModelsManifestUpstreamError struct {
@@ -1741,7 +1828,7 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 	upstreamBody := body
 	convertedFromOpenAIModelList := false
 	if request.useAPIKeyUpstream {
-		convertedBody := convertOpenAIModelListToCodexManifest(body)
+		convertedBody := convertOpenAIModelListToCodexManifestForAccount(body, request.credentialAccount)
 		convertedFromOpenAIModelList = !bytes.Equal(convertedBody, body)
 		body = convertedBody
 	}
@@ -1760,7 +1847,7 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		body, err = completeAPIKeyCodexModelsManifestMetadata(
 			body,
 			false,
-			request.credentialAccount != nil && isOfficialOpenAIModelsBaseURL(request.credentialAccount.GetOpenAIBaseURL()),
+			request.credentialAccount,
 		)
 		if err != nil {
 			return nil, &codexModelsManifestUpstreamError{
@@ -1881,6 +1968,10 @@ func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
 // standard list shape, or yield no usable model IDs are returned unchanged so
 // envelope validation reports the original payload.
 func convertOpenAIModelListToCodexManifest(body []byte) []byte {
+	return convertOpenAIModelListToCodexManifestForAccount(body, nil)
+}
+
+func convertOpenAIModelListToCodexManifestForAccount(body []byte, account *Account) []byte {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
 		return body
@@ -1909,7 +2000,13 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 	if len(modelIDs) == 0 {
 		return body
 	}
-	converted, err := BuildCodexModelsManifest(modelIDs)
+	imageInputModels := make(map[string]bool, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if accountCodexModelSupportsImageInput(account, modelID) {
+			imageInputModels[modelID] = true
+		}
+	}
+	converted, err := buildCodexModelsManifest(modelIDs, imageInputModels, nil, nil)
 	if err != nil {
 		return body
 	}
@@ -1930,7 +2027,7 @@ func (s *OpenAIGatewayService) CompleteAPIKeyCodexModelsManifestForClient(manife
 	if len(manifest.upstreamSourceBody) > 0 {
 		body = append([]byte(nil), manifest.upstreamSourceBody...)
 		if manifest.convertedFromOpenAIModelList {
-			body = convertOpenAIModelListToCodexManifest(body)
+			body = convertOpenAIModelListToCodexManifestForAccount(body, account)
 		}
 	}
 	var err error
@@ -1941,7 +2038,7 @@ func (s *OpenAIGatewayService) CompleteAPIKeyCodexModelsManifestForClient(manife
 	body, err = completeAPIKeyCodexModelsManifestMetadata(
 		body,
 		true,
-		isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL()),
+		account,
 	)
 	if err != nil {
 		return err
@@ -2060,7 +2157,7 @@ func applySyncedAPIKeyCodexModelMetadata(body []byte, account *Account, overwrit
 	return updated, nil
 }
 
-func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll, officialOpenAI bool) ([]byte, error) {
+func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll bool, account *Account) ([]byte, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("decode JSON object: %w", err)
@@ -2070,6 +2167,7 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll, officia
 		return nil, fmt.Errorf("decode top-level models array: %w", err)
 	}
 
+	officialOpenAI := account != nil && isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL())
 	changed := false
 	if officialOpenAI {
 		filtered := make([]json.RawMessage, 0, len(models))
@@ -2105,11 +2203,15 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll, officia
 
 		completeDescriptor := completeAll || isDeepSeekCodexModel(slug)
 		forceOfficialImage := officialOpenAI && isOpenAICodexImageInputModel(slug)
-		if !completeDescriptor && !forceOfficialImage {
+		forceSparkText := isCodexSparkModel(slug)
+		if !completeDescriptor && !forceOfficialImage && !forceSparkText {
 			continue
 		}
 
 		descriptor := newConfiguredCodexModelDescriptor(slug)
+		if accountCodexModelSupportsImageInput(account, slug) {
+			descriptor.InputModalities = []string{"text", "image"}
+		}
 		if forceOfficialImage {
 			descriptor.InputModalities = []string{"text", "image"}
 			descriptor.SupportsImageDetailOriginal = true
@@ -2145,6 +2247,9 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll, officia
 				model["supports_image_detail_original"] = imageDetailOriginal
 				modelChanged = true
 			}
+		}
+		if forceSparkText && enforceCodexTextOnlyInput(model) {
+			modelChanged = true
 		}
 		if !modelChanged {
 			continue

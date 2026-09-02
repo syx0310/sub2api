@@ -1126,7 +1126,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						upstreamMessage = corrected
 					}
 				}
-				if err := writeClientMessage(upstreamMessage); err != nil {
+				// Only rewrite the downstream copy. Account health and terminal-event
+				// handling below must continue to inspect the original upstream payload.
+				clientMessage := upstreamMessage
+				if eventType == "error" || eventType == "response.failed" {
+					if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(clientMessage); changed {
+						clientMessage = rewritten
+					}
+				}
+				if err := writeClientMessage(clientMessage); err != nil {
 					writeErr := wrapOpenAIWSIngressTurnError(
 						"write_client",
 						fmt.Errorf("write client websocket event: %w", err),
@@ -1158,7 +1166,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				} else {
 					wroteDownstream = true
-					downstreamBytes += int64(len(upstreamMessage))
+					downstreamBytes += int64(len(clientMessage))
 					markOpenAIWSClientVisibleFailure(c, eventType, upstreamMessage)
 				}
 			}

@@ -102,7 +102,7 @@ func TestOpenAIRequestView_HasPatches(t *testing.T) {
 	require.False(t, view.HasPatches())
 }
 
-func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing.T) {
+func TestOpenAIGatewayService_Forward_APIKeyMissingInstructionsKeepsLargeInputRaw(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
@@ -142,6 +142,7 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
 	// not inject a Codex base prompt on behalf of the client.
 	expectedBody := `{"model":"gpt-5","stream":false,"reasoning":{"effort":"none"},"instructions":"","input":[{"type":"message","content":[{"type":"input_text","text":"hi","nonce":9007199254740993}]}]}`
 	require.JSONEq(t, expectedBody, string(upstream.lastBody))
+	require.Equal(t, "", gjson.GetBytes(upstream.lastBody, "instructions").String())
 	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.lastBody, "input.0.content.0.nonce").Raw)
 }
 
