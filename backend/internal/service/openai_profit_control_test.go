@@ -100,6 +100,19 @@ func TestResolveOpenAIProfitControlGate(t *testing.T) {
 		require.InDelta(t, expected, gate.threshold, 1e-9)
 		require.Equal(t, PlatformOpenAI, gate.platform)
 	})
+
+	t.Run("captures free fast billing intent from the billing group", func(t *testing.T) {
+		group := profitControlTestGroup(groupID, 0.3, 0)
+		group.ForceOpenAIFast = true
+		group.FreeOpenAIFast = true
+		base := WithOpenAIFastBillingIntent(profitControlTestCtx(group), "gpt-5.6-sol", "", "priority", false)
+		gate := svc.resolveOpenAIProfitControlGate(base, &groupID)
+		require.NotNil(t, gate)
+		require.True(t, gate.forceOpenAIFast)
+		require.True(t, gate.freeOpenAIFast)
+		require.Equal(t, "gpt-5.6-sol", gate.fastModel)
+		require.Equal(t, "priority", gate.fastServiceTier)
+	})
 }
 
 func TestOpenAIProfitControlVetoReason(t *testing.T) {
@@ -177,6 +190,54 @@ func TestOpenAIProfitControlVetoReason(t *testing.T) {
 			require.True(t, vetoed)
 			require.Equal(t, openAIProfitFilterReasonInvalidAccountRate, reason)
 		}
+	})
+
+	t.Run("free fast compares priority upstream cost against standard customer price", func(t *testing.T) {
+		account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(21), 0.4)
+		ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{
+			threshold:       0.7,
+			pricingAt:       now,
+			freeOpenAIFast:  true,
+			fastModel:       "gpt-5.6-sol",
+			fastServiceTier: "priority",
+		})
+		vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+		require.True(t, vetoed, "0.4 × 2 Fast cost must exceed the 0.7 Standard-price threshold")
+		require.Equal(t, openAIProfitFilterReasonThreshold, reason)
+	})
+
+	t.Run("free fast honors group force but not unsupported model families", func(t *testing.T) {
+		account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(22), 0.4)
+		gate := &openAIProfitControlGate{
+			threshold:       0.7,
+			pricingAt:       now,
+			freeOpenAIFast:  true,
+			forceOpenAIFast: true,
+			fastModel:       "gpt-5.5",
+		}
+		ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, gate)
+		vetoed, _ := openAIProfitControlVetoReason(ctx, account)
+		require.True(t, vetoed, "forced gpt-5.5 Fast cost uses the 2.5x ratio")
+
+		gate.fastModel = "gpt-5.3-codex-spark"
+		vetoed, _ = openAIProfitControlVetoReason(ctx, account)
+		require.False(t, vetoed, "Spark has no priority tier and must keep Standard cost")
+	})
+
+	t.Run("free fast uses the final account mapped model", func(t *testing.T) {
+		account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(23), 0.4)
+		account.Credentials = map[string]any{
+			"model_mapping": map[string]any{"public-fast": "gpt-5.6-terra"},
+		}
+		ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{
+			threshold:       0.7,
+			pricingAt:       now,
+			freeOpenAIFast:  true,
+			forceOpenAIFast: true,
+			fastModel:       "public-fast",
+		})
+		vetoed, _ := openAIProfitControlVetoReason(ctx, account)
+		require.True(t, vetoed)
 	})
 }
 

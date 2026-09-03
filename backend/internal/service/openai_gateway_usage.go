@@ -138,6 +138,27 @@ func openAIUsagePricingAt(input *OpenAIRecordUsageInput) time.Time {
 	return timezone.Now()
 }
 
+func groupBillsOpenAIFastAtStandard(apiKey *APIKey, account *Account, model, serviceTier string) bool {
+	if apiKey == nil || apiKey.Group == nil || !apiKey.Group.FreeOpenAIFast {
+		return false
+	}
+	if account == nil || !account.IsOpenAI() {
+		return false
+	}
+	if !groupSupportsOpenAIFast(apiKey.Group.Platform) {
+		return false
+	}
+	if !openAIModelSupportsPriorityServiceTier(model) {
+		return false
+	}
+	switch normalizeBillingServiceTier(serviceTier) {
+	case "priority", "fast":
+		return true
+	default:
+		return false
+	}
+}
+
 // RecordUsage records usage and deducts balance
 func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
 	if input == nil {
@@ -280,6 +301,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 				billingModels = responseModels
 				cost = responseCost
 			}
+		}
+	}
+
+	// Free Fast changes only the customer charge. Keep priority TotalCost and
+	// service_tier for upstream accounting, but evaluate ActualCost once more at
+	// the Standard tier using the same channel, peak, and long-context policy.
+	if groupBillsOpenAIFastAtStandard(apiKey, billingAccount, firstUsageBillingModel(billingModels), serviceTier) {
+		standardCost, standardErr := s.calculateOpenAIRecordUsageCost(
+			ctx,
+			result,
+			apiKey,
+			billingModels,
+			multiplier,
+			imageMultiplier,
+			videoMultiplier,
+			baseMultiplier,
+			tokens,
+			"",
+			longContextBillingGate,
+			pricingAt,
+		)
+		if standardErr != nil {
+			return standardErr
+		}
+		if cost != nil && standardCost != nil {
+			cost.ActualCost = standardCost.ActualCost
 		}
 	}
 

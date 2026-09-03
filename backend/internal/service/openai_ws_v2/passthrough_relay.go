@@ -656,17 +656,25 @@ func runUpstreamToClient(
 				}
 				completeTurn(pending, turnResponseBodyBytes)
 			}
+			graceful := isDisconnectError(err)
+			// A clean WebSocket close only describes the transport handshake. Once
+			// a Responses request has been admitted, success still requires a
+			// terminal protocol event. This includes closure before response.created.
+			if graceful && openAIWSRelayHasPendingTurn(state) {
+				graceful = false
+				err = errors.New("upstream websocket closed before terminal event: " + err.Error())
+			}
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:           "read_upstream_failed",
 				Direction:       "upstream_to_client",
 				Error:           err.Error(),
-				Graceful:        isDisconnectError(err),
+				Graceful:        graceful,
 				WroteDownstream: wroteDownstream,
 			})
 			exitCh <- relayExitSignal{
 				stage:           "read_upstream",
 				err:             err,
-				graceful:        isDisconnectError(err),
+				graceful:        graceful,
 				wroteDownstream: wroteDownstream,
 			}
 			return
@@ -1400,6 +1408,15 @@ func openAIWSRelayActiveTurnID(state *relayState) string {
 		}
 	}
 	return ""
+}
+
+func openAIWSRelayHasPendingTurn(state *relayState) bool {
+	if state == nil {
+		return false
+	}
+	state.requestMu.Lock()
+	defer state.requestMu.Unlock()
+	return len(state.pendingRequestSeq) > 0 || len(state.requestSeqByID) > 0
 }
 
 func openAIWSRelayCloneIntPtr(v *int) *int {

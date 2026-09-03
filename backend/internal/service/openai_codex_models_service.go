@@ -528,7 +528,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 }
 
 func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
-	return openAIModelFastPricingRatio(normalizeKnownOpenAICodexModel(modelID)) > 0
+	return openAIModelSupportsPriorityServiceTier(modelID)
 }
 
 func configuredCodexGrokReasoningLevels(modelID string) []configuredCodexReasoningLevel {

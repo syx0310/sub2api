@@ -82,7 +82,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
-	if cappedBody, changed := applyOpenAIReasoningEffortPolicyForRequest(c, apiKey, body); changed {
+	if cappedBody, changed, err := applyOpenAIReasoningEffortPolicyForRequest(c, apiKey, body); err != nil {
+		respondOpenAIReasoningEffortPolicyError(c, err, h.errorResponse)
+		return
+	} else if changed {
 		body = cappedBody
 	}
 	reqStream, ok := parseOpenAICompatibleStream(body)
@@ -155,7 +158,18 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
 	// 分组利润控制：chat completions 文本入口请求级装门并固定 pricingAt。
-	ccPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+	profitModel := reqModel
+	if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
+		profitModel = strings.TrimSpace(channelMapping.MappedModel)
+	}
+	ccPricingBaseCtx := service.WithOpenAIFastBillingIntent(
+		c.Request.Context(),
+		profitModel,
+		"",
+		gjson.GetBytes(body, "service_tier").String(),
+		false,
+	)
+	ccPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(ccPricingBaseCtx, apiKey.GroupID)
 	c.Request = c.Request.WithContext(ccPricingCtx)
 
 	for {

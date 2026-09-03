@@ -63,6 +63,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,32 @@ type openAIProfitControlSuppressCtxKey struct{}
 // 的高峰因子共用，保证一个请求从准入到扣费不中途变价。
 type openAIPricingAtCtxKey struct{}
 
+// openAIFastBillingIntent records the model/tier that will determine whether
+// Free OpenAI Fast changes the unit-price basis for this request. The handler
+// stores the channel-mapped model; account-level mapping is intentionally
+// resolved later in the per-account veto path.
+type openAIFastBillingIntent struct {
+	model          string
+	fallbackModel  string
+	serviceTier    string
+	requireCompact bool
+}
+
+type openAIFastBillingIntentCtxKey struct{}
+
+// WithOpenAIFastBillingIntent binds the request's client-visible Fast billing
+// intent before the profit gate is assembled. The final account model mapping
+// is evaluated by openAIProfitControlVetoReason, where the candidate account is
+// available.
+func WithOpenAIFastBillingIntent(ctx context.Context, model, fallbackModel, serviceTier string, requireCompact bool) context.Context {
+	return context.WithValue(ctx, openAIFastBillingIntentCtxKey{}, openAIFastBillingIntent{
+		model:          strings.TrimSpace(model),
+		fallbackModel:  strings.TrimSpace(fallbackModel),
+		serviceTier:    normalizeBillingServiceTier(serviceTier),
+		requireCompact: requireCompact,
+	})
+}
+
 // clampProfitControlThreshold 归一化利润门阈值。Validate/Normalize 已保证
 // margin+buffer < 1，这里只对存量脏数据兜底：阈值非有限或为负时按 0 处理
 // （等价于只放行免费上游）。装门点与 profit-preview 共用，避免口径漂移。
@@ -125,6 +152,16 @@ type openAIProfitControlGate struct {
 	threshold float64
 	// pricingAt 是本请求的统一定价时刻（D 侧）。
 	pricingAt time.Time
+	// Free Fast makes the customer pay the Standard model price while the
+	// selected OpenAI account still incurs Fast cost. Preserve the billing
+	// group's switches and request intent so each account can be checked using
+	// its final mapped model without adding repository work to the hot path.
+	freeOpenAIFast     bool
+	forceOpenAIFast    bool
+	fastModel          string
+	fastFallbackModel  string
+	fastServiceTier    string
+	fastRequireCompact bool
 }
 
 // WithOpenAIRequestPricingContext 在请求开始处装配请求级定价上下文：固定
@@ -261,11 +298,18 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 
 	deduction := group.ProfitMinMargin + group.ProfitSafetyBuffer
 	threshold := clampProfitControlThreshold(downstream * (1 - deduction))
+	fastIntent, _ := ctx.Value(openAIFastBillingIntentCtxKey{}).(openAIFastBillingIntent)
 	return &openAIProfitControlGate{
-		groupID:   *groupID,
-		platform:  group.Platform,
-		threshold: threshold,
-		pricingAt: pricingAt,
+		groupID:            *groupID,
+		platform:           group.Platform,
+		threshold:          threshold,
+		pricingAt:          pricingAt,
+		freeOpenAIFast:     billingGroup.FreeOpenAIFast && groupSupportsOpenAIFast(billingGroup.Platform),
+		forceOpenAIFast:    billingGroup.ForceOpenAIFast && groupSupportsOpenAIFast(billingGroup.Platform),
+		fastModel:          fastIntent.model,
+		fastFallbackModel:  fastIntent.fallbackModel,
+		fastServiceTier:    fastIntent.serviceTier,
+		fastRequireCompact: fastIntent.requireCompact,
 	}
 }
 
@@ -312,6 +356,21 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		return true, openAIProfitFilterReasonInvalidAccountRate
 	}
 	upstream := *account.RateMultiplier
+	if gate.freeOpenAIFast && account.IsOpenAI() {
+		upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, gate.fastModel, gate.fastRequireCompact)
+		if gate.fastFallbackModel != "" {
+			mappedModel, matched := account.ResolveMappedModel(gate.fastModel)
+			if !matched {
+				mappedModel = gate.fastFallbackModel
+			}
+			upstreamModel = normalizeOpenAIModelForUpstream(account, mappedModel)
+		}
+		fastRatio := openAIModelFastPricingRatio(normalizeKnownOpenAICodexModel(upstreamModel))
+		fastRequested := gate.fastServiceTier == "priority" || gate.fastServiceTier == "fast" || gate.forceOpenAIFast
+		if fastRequested && fastRatio > 0 {
+			upstream *= fastRatio
+		}
+	}
 	if profitControlOverThreshold(upstream, gate.threshold) {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold

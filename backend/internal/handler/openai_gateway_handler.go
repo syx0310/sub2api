@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -58,6 +59,12 @@ type openAIWSTurnRequestSnapshot struct {
 	requestedModel     string
 	requestPayloadHash string
 	requestBodyBytes   *int64
+}
+
+type openAIWSFastBillingIntentSnapshot struct {
+	turn        int
+	model       string
+	serviceTier string
 }
 
 var errOpenAIWSUnsupportedModelSwitch = errors.New("selected account does not support websocket model switch")
@@ -189,6 +196,15 @@ func resolveOpenAIMessagesDispatchMappedModel(c *gin.Context, apiKey *service.AP
 		}
 	}
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
+}
+
+func openAIAnthropicFastServiceTier(betaHeader string) string {
+	for _, token := range strings.Split(betaHeader, ",") {
+		if strings.TrimSpace(token) == claude.BetaFastMode {
+			return "priority"
+		}
+	}
+	return ""
 }
 
 type openAIModelBodyReplaceFunc func([]byte, string) []byte
@@ -446,8 +462,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
-	if cappedBody, changed := applyOpenAIReasoningEffortPolicyForRequest(c, apiKey, body); changed {
+	if cappedBody, changed, err := applyOpenAIReasoningEffortPolicyForRequest(c, apiKey, body); err != nil {
+		respondOpenAIReasoningEffortPolicyError(c, err, h.errorResponse)
+		return
+	} else if changed {
 		body = cappedBody
+	}
+	if normalizedBody, changed := normalizeCodexAutomationBootstrap(body); changed {
+		body = normalizedBody
+		reqLog.Info("openai.codex_automation_bootstrap_normalized",
+			zap.String("normalization", "call_output_to_user_message"),
+		)
 	}
 	if normalizedBody, changed := normalizeCodexDelegationBootstrap(body); changed {
 		body = normalizedBody
@@ -614,7 +639,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// D 与计费高峰因子，选号、槽位终检与全部 failover 重入共用同一门与阈值。
 	// 生图意图只影响能力路由与图片计费，不关门：混合 /v1/responses 请求的
 	// token 计费部分仍受利润门保护，独立图片/视频端点才在门外。
-	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+	pricingBaseCtx := service.WithOpenAIFastBillingIntent(
+		c.Request.Context(),
+		forwardModel,
+		"",
+		gjson.GetBytes(forwardBody, "service_tier").String(),
+		legacyCompact,
+	)
+	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(pricingBaseCtx, apiKey.GroupID)
 	c.Request = c.Request.WithContext(pricingCtx)
 
 	for {
@@ -1232,7 +1264,18 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	effectiveMappedModel := preferredMappedModel
 
 	// 分组利润控制：Messages 文本入口同样请求级装门并固定 pricingAt。
-	msgPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+	msgProfitModel := reqModel
+	if channelMappingMsg.Mapped && strings.TrimSpace(channelMappingMsg.MappedModel) != "" {
+		msgProfitModel = strings.TrimSpace(channelMappingMsg.MappedModel)
+	}
+	msgPricingBaseCtx := service.WithOpenAIFastBillingIntent(
+		c.Request.Context(),
+		msgProfitModel,
+		effectiveMappedModel,
+		openAIAnthropicFastServiceTier(c.GetHeader("anthropic-beta")),
+		false,
+	)
+	msgPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(msgPricingBaseCtx, apiKey.GroupID)
 	c.Request = c.Request.WithContext(msgPricingCtx)
 
 	for {
@@ -1620,6 +1663,14 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 }
 
 func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
+	return normalizeCodexCallOutputBootstrap(body, isCodexDelegationCandidate)
+}
+
+func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
+	return normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate)
+}
+
+func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool) ([]byte, bool) {
 	if !hasUniqueJSONMembers(body) {
 		return body, false
 	}
@@ -1658,7 +1709,7 @@ func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
 			if exists && (!isString || strings.TrimSpace(callID) != "") {
 				return body, false
 			}
-			if !isCodexDelegationCandidate(item) {
+			if !isCandidate(item) {
 				return body, false
 			}
 		}
@@ -1667,11 +1718,11 @@ func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
 	changed := false
 	for i, raw := range input {
 		item, ok := raw.(map[string]any)
-		if !ok || !isCodexDelegationCandidate(item) {
+		if !ok || !isCandidate(item) {
 			continue
 		}
 		output, ok := item["output"].(string)
-		if !ok || !validCodexDelegationEnvelope(output) {
+		if !ok {
 			continue
 		}
 		input[i] = map[string]any{
@@ -1761,6 +1812,16 @@ func isCodexDelegationCandidate(item map[string]any) bool {
 	return ok && validCodexDelegationEnvelope(output)
 }
 
+func isCodexAutomationCandidate(item map[string]any) bool {
+	if stringField(item, "type") != "function_call_output" ||
+		stringField(item, "namespace") != "codex_app" ||
+		stringField(item, "name") != "automation_update" {
+		return false
+	}
+	output, ok := item["output"].(string)
+	return ok && validCodexAutomationBootstrap(output)
+}
+
 func stringField(item map[string]any, key string) string {
 	value, _ := item[key].(string)
 	return value
@@ -1769,6 +1830,71 @@ func stringField(item map[string]any, key string) string {
 func isCodexDelegationTool(namespace, name string) bool {
 	return (namespace == "codex_app" || namespace == "codex_tui") &&
 		(name == "create_thread" || name == "send_message_to_thread")
+}
+
+func validCodexAutomationBootstrap(value string) bool {
+	normalized := strings.ReplaceAll(value, "\r\n", "\n")
+	if strings.ContainsRune(normalized, '\r') {
+		return false
+	}
+	lines := strings.Split(normalized, "\n")
+	if len(lines) < 6 {
+		return false
+	}
+	if _, ok := codexAutomationHeaderValue(lines[0], "Automation: "); !ok {
+		return false
+	}
+	automationID, ok := codexAutomationHeaderValue(lines[1], "Automation ID: ")
+	if !ok || !validCodexAutomationID(automationID) {
+		return false
+	}
+	expectedMemory := "Automation memory: $CODEX_HOME/automations/" + automationID + "/memory.md"
+	if lines[2] != expectedMemory {
+		return false
+	}
+	lastRun, ok := codexAutomationHeaderValue(lines[3], "Last run: ")
+	if !ok || !validCodexAutomationLastRun(lastRun) || lines[4] != "" {
+		return false
+	}
+	return strings.TrimSpace(strings.Join(lines[5:], "\n")) != ""
+}
+
+func codexAutomationHeaderValue(line, prefix string) (string, bool) {
+	if !strings.HasPrefix(line, prefix) {
+		return "", false
+	}
+	value := strings.TrimPrefix(line, prefix)
+	return value, value != "" && strings.TrimSpace(value) == value
+}
+
+func validCodexAutomationID(value string) bool {
+	if len(value) == 0 || len(value) > 128 || value == "." || value == ".." {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validCodexAutomationLastRun(value string) bool {
+	if value == "never" {
+		return true
+	}
+	separator := strings.LastIndex(value, " (")
+	if separator <= 0 || !strings.HasSuffix(value, ")") {
+		return false
+	}
+	runAt, err := time.Parse(time.RFC3339Nano, value[:separator])
+	if err != nil {
+		return false
+	}
+	epochMillis, err := strconv.ParseInt(value[separator+2:len(value)-1], 10, 64)
+	return err == nil && runAt.UnixMilli() == epochMillis
 }
 
 func validCodexDelegationEnvelope(value string) bool {
@@ -2417,7 +2543,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	// 并按最新门复核当前账号（准入与计费同源），峰前建连保活不能让后续 turn
 	// 继续按建连时刻的谷价计费。生图意图只影响能力路由与图片计费，不关门。
 	// 建连时刻只用于选号/准入，不作为任何 turn 的计费定价时刻。
-	wsPricingCtx, _ := h.gatewayService.WithOpenAIRequestPricingContext(ctx, apiKey.GroupID)
+	wsPricingBaseCtx := service.WithOpenAIFastBillingIntent(
+		ctx,
+		wsForwardModel,
+		"",
+		gjson.GetBytes(firstMessage, "service_tier").String(),
+		false,
+	)
+	wsPricingCtx, _ := h.gatewayService.WithOpenAIRequestPricingContext(wsPricingBaseCtx, apiKey.GroupID)
 	ctx = wsPricingCtx
 
 	for {
@@ -2559,7 +2692,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.Int("candidate_count", scheduleDecision.CandidateCount),
 		)
 
-		maxReasoningEffort, reasoningEffortMappings, _ := openAIReasoningEffortPolicyForRequest(c, apiKey)
+		maxReasoningEffort, reasoningEffortMappings, maxReasoningEffortOverLimit, _ := openAIReasoningEffortPolicyForRequest(c, apiKey)
 		var turnScheduleResultReported atomic.Bool
 		firstRequestBodyBytes := usageBodyBytesPtr(len(firstMessage))
 		var turnStartsMu sync.Mutex
@@ -2590,17 +2723,24 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			requestPayloadHash: service.HashUsageRequestPayload(firstMessage),
 			requestBodyBytes:   firstRequestBodyBytes,
 		})
+		var turnFastBillingIntent atomic.Pointer[openAIWSFastBillingIntentSnapshot]
+		turnFastBillingIntent.Store(&openAIWSFastBillingIntentSnapshot{
+			turn:        1,
+			model:       wsForwardModel,
+			serviceTier: gjson.GetBytes(firstMessage, "service_tier").String(),
+		})
 		// BeforeTurn 使用最新价格快照执行利润复核；实际用量优先按
 		// TurnStarted 捕获的所属 turn 开始时刻计价，缺失时才回退到复核时刻。
 		var turnPricing openAIWSTurnPricing
 		hooks := &service.OpenAIWSIngressHooks{
-			ClientLifecycleContext:  clientLifecycleCtx,
-			InitialRequestModel:     reqModel,
-			InitialRequestBodyBytes: firstRequestBodyBytes,
-			InitialTurnStartedAt:    firstTurnStartedAt,
-			MaxReasoningEffort:      maxReasoningEffort,
-			ReasoningEffortMappings: reasoningEffortMappings,
-			TurnStarted:             recordTurnStart,
+			ClientLifecycleContext:      clientLifecycleCtx,
+			InitialRequestModel:         reqModel,
+			InitialRequestBodyBytes:     firstRequestBodyBytes,
+			InitialTurnStartedAt:        firstTurnStartedAt,
+			MaxReasoningEffort:          maxReasoningEffort,
+			MaxReasoningEffortOverLimit: maxReasoningEffortOverLimit,
+			ReasoningEffortMappings:     reasoningEffortMappings,
+			TurnStarted:                 recordTurnStart,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
 				c.Set(securityAuditWSTurnContextKey, turn)
 				service.BeginOpsStreamTurn(c, turn)
@@ -2625,6 +2765,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if model == "" {
 					model = reqModel
 				}
+				turnFastBillingIntent.Store(&openAIWSFastBillingIntentSnapshot{
+					turn:        turn,
+					model:       model,
+					serviceTier: gjson.GetBytes(payload, "service_tier").String(),
+				})
 				turnRequestSnapshot.Store(&openAIWSTurnRequestSnapshot{
 					turn:               turn,
 					requestedModel:     model,
@@ -2652,6 +2797,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return "", newOpenAIWSUnsupportedModelSwitchError(mapping.MappedModel)
 				}
 				turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: turn, mapping: mapping})
+				fastModel := model
+				if mapping.Mapped && strings.TrimSpace(mapping.MappedModel) != "" {
+					fastModel = strings.TrimSpace(mapping.MappedModel)
+				}
+				previousFastIntent := turnFastBillingIntent.Load()
+				fastServiceTier := ""
+				if previousFastIntent != nil && previousFastIntent.turn == turn {
+					fastServiceTier = previousFastIntent.serviceTier
+				}
+				turnFastBillingIntent.Store(&openAIWSFastBillingIntentSnapshot{
+					turn:        turn,
+					model:       fastModel,
+					serviceTier: fastServiceTier,
+				})
 				return mapping.MappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
@@ -2663,7 +2822,17 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				// 长连接跨峰谷/倍率刷新防护：每个 turn 按当前时刻重装门并复核
 				// 当前账号，越线即要求客户端重连重选（连接绑定单一上游账号，
 				// 无法中途换号）。本 turn 的准入与计费共用同一 pricingAt。
-				turnCtx, turnAt := h.gatewayService.WithOpenAITurnPricingContext(ctx, apiKey.GroupID)
+				turnPricingBaseCtx := ctx
+				if fastIntent := turnFastBillingIntent.Load(); fastIntent != nil && fastIntent.turn == turn {
+					turnPricingBaseCtx = service.WithOpenAIFastBillingIntent(
+						turnPricingBaseCtx,
+						fastIntent.model,
+						"",
+						fastIntent.serviceTier,
+						false,
+					)
+				}
+				turnCtx, turnAt := h.gatewayService.WithOpenAITurnPricingContext(turnPricingBaseCtx, apiKey.GroupID)
 				if _, vetoed, reason := h.gatewayService.ProfitControlVetoLatest(turnCtx, account); vetoed {
 					reqLog.Info("openai.websocket_turn_profit_vetoed",
 						zap.Int("turn", turn),

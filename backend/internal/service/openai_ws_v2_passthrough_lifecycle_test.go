@@ -738,6 +738,66 @@ func TestPassthroughLifecycle_RejectedRequestDoesNotStartTurn(t *testing.T) {
 	}
 }
 
+func TestPassthroughLifecycle_FollowupWithoutModelUsesSessionModelForReasoningMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	upstream := newStagedPassthroughConn()
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_reasoning_1","model":"client-model","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	hooks := &OpenAIWSIngressHooks{ReasoningEffortMappings: []ReasoningEffortMapping{{
+		From: "max", To: "low", MatchType: "exact", Model: "client-model",
+	}}}
+	server, serverErr := startPassthroughLifecycleServerWithHooks(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
+		passthroughLifecycleAccount(),
+		func(*gin.Context) *OpenAIWSIngressHooks { return hooks },
+	)
+	defer server.Close()
+
+	clientConn := dialPassthroughLifecycleClientWithPayload(
+		t,
+		server,
+		`{"type":"response.create","model":"client-model","stream":false}`,
+	)
+	defer func() { _ = clientConn.CloseNow() }()
+	require.Equal(t, "client-model", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "model").String())
+
+	completed, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_reasoning_1", gjson.GetBytes(completed, "response.id").String())
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","previous_response_id":"resp_reasoning_1","reasoning":{"effort":"max"}}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	followup := requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
+	require.Equal(t, "client-model", gjson.GetBytes(followup, "model").String())
+	require.Equal(t, "low", gjson.GetBytes(followup, "reasoning.effort").String())
+
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_reasoning_2","model":"client-model"}}`)
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_reasoning_2","model":"client-model","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	created, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "response.created", gjson.GetBytes(created, "type").String())
+	completed, err = readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_reasoning_2", gjson.GetBytes(completed, "response.id").String())
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+
+	select {
+	case proxyErr := <-serverErr:
+		require.NoError(t, proxyErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough reasoning mapping session did not exit")
+	}
+}
+
 func TestPassthroughLifecycle_ActiveTurnActivityRefreshesReadTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())
