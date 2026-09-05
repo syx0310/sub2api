@@ -11,6 +11,7 @@ import (
 )
 
 var codexModelMap = map[string]string{
+	"gpt-6-astra":          "gpt-6-astra",
 	"gpt-5.6-sol":          "gpt-5.6-sol",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
@@ -187,6 +188,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 			result.Modified = true
 		}
 		result.NormalizedModel = normalizedModel
+	}
+	if isOpenAIGPT6AstraModel(normalizedModel) && normalizeGPT6AstraRequestMap(reqBody, false) {
+		result.Modified = true
 	}
 
 	if opts.IsCompact {

@@ -34,3 +34,11 @@ func TestUsageBillingModelCandidates_BareGPT56IncludesSol(t *testing.T) {
 		usageBillingModelCandidates("openai/gpt-5.6"),
 	)
 }
+
+func TestNormalizeKnownOpenAICodexModel_GPT6AstraIsExactOnly(t *testing.T) {
+	require.Equal(t, "gpt-6-astra", normalizeKnownOpenAICodexModel("gpt-6-astra"))
+	require.Equal(t, "gpt-6-astra", normalizeKnownOpenAICodexModel("openai/gpt-6-astra"))
+	require.Empty(t, normalizeKnownOpenAICodexModel("gpt-6"))
+	require.Empty(t, normalizeKnownOpenAICodexModel("gpt-6.0"))
+	require.Empty(t, normalizeKnownOpenAICodexModel("gpt-6-astra-wm"))
+}

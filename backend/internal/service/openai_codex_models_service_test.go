@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/http2"
 )
 
@@ -357,6 +358,33 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.Equal(t, "low", *gpt56.DefaultVerbosity)
 	require.True(t, gpt56.SupportsReasoningSummaryParameter)
 	require.Equal(t, "none", gpt56.DefaultReasoningSummary)
+
+	astra := newConfiguredCodexModelDescriptor("gpt-6-astra")
+	require.Equal(t, "GPT-6-Astra", astra.DisplayName)
+	require.Equal(t, "low", *astra.DefaultReasoningLevel)
+	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, effortsFromConfiguredCodexLevels(astra.SupportedReasoningLevels))
+	require.NotNil(t, astra.MultiAgentReasoningEffort)
+	require.Equal(t, "xhigh", *astra.MultiAgentReasoningEffort)
+	require.Equal(t, int64(272_000), astra.ContextWindow)
+	require.Equal(t, int64(872_000), astra.MaxContextWindow)
+	require.Equal(t, "unified_exec", astra.ShellType)
+	require.Equal(t, "list", astra.Visibility)
+	require.Equal(t, "0.153.0", astra.MinimalClientVersion)
+	require.Equal(t, []string{"text", "image"}, astra.InputModalities)
+	require.True(t, astra.SupportsImageDetailOriginal)
+	require.True(t, astra.SupportsParallelToolCalls)
+	require.True(t, astra.UseResponsesLite)
+	require.Equal(t, []string{"fast"}, astra.AdditionalSpeedTiers)
+	require.Len(t, astra.ServiceTiers, 1)
+	require.Equal(t, "priority", astra.ServiceTiers[0].ID)
+	require.NotEmpty(t, astra.ModelMessages.InstructionsTemplate)
+	require.NotNil(t, astra.ModelMessages.ConfirmationPolicies)
+	require.NotNil(t, astra.ModelMessages.PersistentInstructions)
+	require.Nil(t, astra.ModelMessages.Tools)
+	astraJSON, err := json.Marshal(astra)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(astraJSON, "model_messages.tools").Exists())
+	require.Equal(t, gjson.Null, gjson.GetBytes(astraJSON, "model_messages.tools").Type)
 
 	gpt56Luna := newConfiguredCodexModelDescriptor("gpt-5.6-luna")
 	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, effortsFromConfiguredCodexLevels(gpt56Luna.SupportedReasoningLevels))
@@ -1261,6 +1289,23 @@ func TestBuildGroupConfiguredCodexModelsManifestKeepsSparkSupplementWithAdminist
 	require.NoError(t, err)
 	require.True(t, configured)
 	require.Equal(t, []string{"glm-5.3", "gpt-5.3-codex-spark"}, codexManifestModelSlugs(t, manifest.Body))
+}
+
+func TestObservedGPT6AstraCatalogSupplementsGroupManifest(t *testing.T) {
+	now := time.Now().UTC()
+	accounts := []Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{UpstreamModelMetadataExtraKey: UpstreamModelMetadataSnapshot{
+			SyncedAt: now.Format(time.RFC3339),
+			ModelIDs: []string{"gpt-5.6-sol", "gpt-6-astra"},
+		}},
+	}}
+
+	require.Equal(t, []string{"gpt-6-astra"}, openAIConfiguredAndObservedCodexModelIDsForGroup(accounts, &Group{}))
+	require.Empty(t, openAIConfiguredAndObservedCodexModelIDsForGroup(accounts, &Group{
+		ModelsListConfig: GroupModelsListConfig{Enabled: true, Models: []string{"gpt-5.6-sol"}},
+	}))
 }
 
 // Scenario: OpenAI 通配映射展开组内精确选择，但不发布通配符 slug。
@@ -2357,8 +2402,8 @@ func TestAdjustAPIKeyCodexModelsManifest(t *testing.T) {
 	}{
 		{
 			name: "affected models disable responses lite and preserve unknown fields",
-			body: `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":true,"unknown_model":{"enabled":true}},{"slug":"gpt-5.6-terra","use_responses_lite":true},{"slug":"gpt-5.6-luna","use_responses_lite":true}],"unknown_top":{"version":1}}`,
-			want: `{"models":[{"slug":"gpt-5.6-sol","unknown_model":{"enabled":true},"use_responses_lite":false},{"slug":"gpt-5.6-terra","use_responses_lite":false},{"slug":"gpt-5.6-luna","use_responses_lite":false}],"unknown_top":{"version":1}}`,
+			body: `{"models":[{"slug":"gpt-6-astra","use_responses_lite":true},{"slug":"gpt-5.6-sol","use_responses_lite":true,"unknown_model":{"enabled":true}},{"slug":"gpt-5.6-terra","use_responses_lite":true},{"slug":"gpt-5.6-luna","use_responses_lite":true}],"unknown_top":{"version":1}}`,
+			want: `{"models":[{"slug":"gpt-6-astra","use_responses_lite":false},{"slug":"gpt-5.6-sol","unknown_model":{"enabled":true},"use_responses_lite":false},{"slug":"gpt-5.6-terra","use_responses_lite":false},{"slug":"gpt-5.6-luna","use_responses_lite":false}],"unknown_top":{"version":1}}`,
 		},
 		{
 			name: "unaffected model unchanged",

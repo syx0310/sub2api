@@ -643,6 +643,119 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	require.Equal(t, int64(len(firstCreated)+len(firstTerminal)+len(secondCreated)+len(secondTerminal)), outcome.result.ResponseBodyBytes)
 }
 
+func TestRelay_ResponseSteerTracksAutomaticContinuation(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-6-astra","input":"draft a plan"}`)
+	steerPayload := []byte(`{"type":"response.steer","previous_response_id":"resp_initial","input":"keep it to two weeks"}`)
+
+	type relayOutcome struct {
+		result RelayResult
+		exit   *RelayExit
+	}
+	turns := make(chan RelayTurnResult, 2)
+	automaticTurns := make(chan RelayAutomaticTurn, 1)
+	outcomeCh := make(chan relayOutcome, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+			OnTurnComplete: func(turn RelayTurnResult) { turns <- turn },
+			BeforeAutomaticTurn: func(turn RelayAutomaticTurn) error {
+				automaticTurns <- turn
+				return nil
+			},
+		})
+		outcomeCh <- relayOutcome{result: result, exit: relayExit}
+	}()
+
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_initial","model":"gpt-6-astra"}}`)}
+	clientConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: steerPayload}
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 2 }, time.Second, 10*time.Millisecond)
+
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.steer.accepted","steer":{"id":"steer_1","previous_response_id":"resp_initial"}}`)}
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.incomplete","response":{"id":"resp_initial","incomplete_details":{"reason":"steered"},"usage":{"input_tokens":10,"output_tokens":2}}}`)}
+	firstTurn := <-turns
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_successor","model":"gpt-6-astra"}}`)}
+	automaticTurn := <-automaticTurns
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_successor","model":"gpt-6-astra","usage":{"input_tokens":12,"output_tokens":4}}}`)}
+	secondTurn := <-turns
+	require.NoError(t, upstreamConn.Close())
+
+	var outcome relayOutcome
+	select {
+	case outcome = <-outcomeCh:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not finish after steered continuation")
+	}
+
+	require.Nil(t, outcome.exit)
+	require.Equal(t, "resp_initial", firstTurn.RequestID)
+	require.Equal(t, "response.incomplete", firstTurn.TerminalEventType)
+	require.Equal(t, "resp_successor", secondTurn.RequestID)
+	require.Equal(t, "response.completed", secondTurn.TerminalEventType)
+	require.Equal(t, "steer_1", automaticTurn.SteerID)
+	require.Equal(t, "resp_initial", automaticTurn.PreviousResponseID)
+	require.Equal(t, "gpt-6-astra", automaticTurn.RequestModel)
+	require.JSONEq(t, string(steerPayload), string(automaticTurn.ClientPayload))
+	require.Equal(t, 22, outcome.result.Usage.InputTokens)
+	require.Equal(t, 6, outcome.result.Usage.OutputTokens)
+	require.Zero(t, outcome.result.DroppedDownstreamFrames)
+	require.Len(t, clientConn.Writes(), 5)
+}
+
+func TestRelay_ResponseSteerPendingUsesExplicitToolResultContinuation(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-6-astra","input":"check status"}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	turns := make(chan RelayTurnResult, 2)
+	automaticCalls := atomic.Int32{}
+	type relayOutcome struct {
+		result RelayResult
+		exit   *RelayExit
+	}
+	outcomeCh := make(chan relayOutcome, 1)
+	go func() {
+		result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+			OnTurnComplete: func(turn RelayTurnResult) { turns <- turn },
+			BeforeAutomaticTurn: func(RelayAutomaticTurn) error {
+				automaticCalls.Add(1)
+				return nil
+			},
+		})
+		outcomeCh <- relayOutcome{result: result, exit: relayExit}
+	}()
+
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_tool"}}`)}
+	clientConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.steer","previous_response_id":"resp_tool","input":"also keep it concise"}`)}
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 2 }, time.Second, 10*time.Millisecond)
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.steer.accepted","steer":{"id":"steer_tool","previous_response_id":"resp_tool"}}`)}
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_tool","usage":{"input_tokens":4,"output_tokens":1}}}`)}
+	<-turns
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.steer.pending","steer":{"id":"steer_tool","previous_response_id":"resp_tool"},"reason":"waiting_for_required_input"}`)}
+	clientConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.create","model":"gpt-6-astra","previous_response_id":"resp_tool","input":[{"type":"function_call_output","call_id":"call_status","output":"done"}]}`)}
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 3 }, time.Second, 10*time.Millisecond)
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_after_tool"}}`)}
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_after_tool","usage":{"input_tokens":6,"output_tokens":2}}}`)}
+	secondTurn := <-turns
+	require.NoError(t, upstreamConn.Close())
+
+	outcome := <-outcomeCh
+	require.Nil(t, outcome.exit)
+	require.Equal(t, "resp_after_tool", secondTurn.RequestID)
+	require.Zero(t, automaticCalls.Load(), "an explicit response.create must claim the accepted steer")
+	require.Equal(t, 10, outcome.result.Usage.InputTokens)
+	require.Equal(t, 3, outcome.result.Usage.OutputTokens)
+	require.Zero(t, outcome.result.DroppedDownstreamFrames)
+}
+
 func TestRelay_TerminalWriteFailureStillEmitsTurnUsage(t *testing.T) {
 	t.Parallel()
 

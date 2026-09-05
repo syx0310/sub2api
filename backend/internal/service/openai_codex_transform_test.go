@@ -1940,6 +1940,36 @@ func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *test
 	}
 }
 
+func TestApplyCodexOAuthTransform_GPT6AstraPreservesConfigurationUpdate(t *testing.T) {
+	reqBody := map[string]any{
+		"model":              "gpt-6-astra",
+		"temperature":        0.2,
+		"top_p":              0.9,
+		"top_logprobs":       5,
+		"truncation":         "auto",
+		"context_management": []any{map[string]any{"type": "compaction", "compact_threshold": 200000}},
+		"include":            []any{"reasoning.encrypted_content", "message.output_text.logprobs"},
+		"reasoning":          map[string]any{"effort": "none"},
+		"input": []any{
+			map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "high"}},
+			map[string]any{"role": "user", "content": "analyze"},
+		},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+	require.True(t, result.Modified)
+	require.Equal(t, "low", reqBody["reasoning"].(map[string]any)["effort"])
+	require.NotContains(t, reqBody, "temperature")
+	require.NotContains(t, reqBody, "top_p")
+	require.NotContains(t, reqBody, "top_logprobs")
+	require.NotContains(t, reqBody, "truncation")
+	require.NotContains(t, reqBody, "context_management")
+	require.Equal(t, []any{"reasoning.encrypted_content"}, reqBody["include"])
+	input := reqBody["input"].([]any)
+	require.Equal(t, "configuration_update", input[0].(map[string]any)["type"])
+	require.Equal(t, "high", input[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+}
+
 func TestApplyCodexOAuthTransform_NormalizesPromptAndCommands(t *testing.T) {
 	reqBody := map[string]any{
 		"model":    "gpt-5.5",

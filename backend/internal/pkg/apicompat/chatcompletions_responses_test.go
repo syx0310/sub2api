@@ -735,6 +735,21 @@ func TestChatCompletionsToResponses_TemperatureStrippedForReasoningModel(t *test
 	assert.NotContains(t, string(b), `"top_p"`)
 }
 
+func TestChatCompletionsToResponses_TemperatureStrippedForGPT6Astra(t *testing.T) {
+	temp := 0.7
+	req := &ChatCompletionsRequest{
+		Model:       "gpt-6-astra",
+		Messages:    []ChatMessage{{Role: "user", Content: json.RawMessage(`"Hi"`)}},
+		Temperature: &temp,
+		TopP:        &temp,
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+	assert.Nil(t, resp.Temperature)
+	assert.Nil(t, resp.TopP)
+}
+
 func TestChatCompletionsToResponses_TemperaturePreservedForNonReasoningModel(t *testing.T) {
 	temp := 0.7
 	req := &ChatCompletionsRequest{

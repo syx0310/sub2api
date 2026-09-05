@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,7 +125,7 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	if len(openAIAuthoritativeConfiguredCodexModelIDsForGroup(visible, group)) == 0 {
 		return nil, false, nil
 	}
-	configuredModels := openAIConfiguredCodexModelIDsForGroup(visible, group)
+	configuredModels := openAIConfiguredAndObservedCodexModelIDsForGroup(visible, group)
 
 	body, err := buildCodexModelsManifestForAccounts(
 		PlatformOpenAI,
@@ -205,7 +206,7 @@ func (s *OpenAIGatewayService) groupConfiguredCodexModelIDs(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return openAIConfiguredCodexModelIDsForGroup(accounts, group), nil
+	return openAIConfiguredAndObservedCodexModelIDsForGroup(accounts, group), nil
 }
 
 // loadCodexGroupCatalogAccounts separates picker membership from capability
@@ -305,6 +306,36 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 	return models
 }
 
+// openAIConfiguredAndObservedCodexModelIDsForGroup supplements administrator
+// mappings with rollout-gated models observed in fresh per-account catalogs.
+// Astra is intentionally exact-only; future GPT-6 aliases are not inferred.
+func openAIConfiguredAndObservedCodexModelIDsForGroup(accounts []Account, group *Group) []string {
+	models := openAIConfiguredCodexModelIDsForGroup(accounts, group)
+	seen := make(map[string]struct{}, len(models)+1)
+	for _, modelID := range models {
+		seen[modelID] = struct{}{}
+	}
+	if group != nil && group.CustomModelsListEnabled() && !stringSliceContains(group.ModelsListConfig.Models, openai.GPT6AstraModelID) {
+		return models
+	}
+	now := time.Now()
+	for i := range accounts {
+		account := &accounts[i]
+		if account.Platform != PlatformOpenAI || !account.IsModelSupported(openai.GPT6AstraModelID) {
+			continue
+		}
+		if supported, known := account.UpstreamModelCatalogSupports(openai.GPT6AstraModelID, now); !known || !supported {
+			continue
+		}
+		if _, exists := seen[openai.GPT6AstraModelID]; !exists {
+			models = append(models, openai.GPT6AstraModelID)
+		}
+		break
+	}
+	sort.Strings(models)
+	return models
+}
+
 // openAIAuthoritativeConfiguredCodexModelIDsForGroup excludes system-managed
 // routing supplements from the decision to bypass upstream model discovery.
 // Spark shadows carry an exact model_mapping so the scheduler can isolate the
@@ -357,15 +388,18 @@ type configuredCodexServiceTier struct {
 }
 
 type configuredCodexModelMessages struct {
-	InstructionsTemplate  string `json:"instructions_template"`
-	InstructionsVariables any    `json:"instructions_variables"`
-	Approvals             any    `json:"approvals"`
-	CollaborationModes    any    `json:"collaboration_modes"`
-	AutoReview            any    `json:"auto_review"`
-	Permissions           any    `json:"permissions"`
-	MultiAgent            any    `json:"multi_agent"`
-	TokenBudget           any    `json:"token_budget"`
-	GuardianV2            any    `json:"guardian_v2"`
+	InstructionsTemplate   string `json:"instructions_template"`
+	InstructionsVariables  any    `json:"instructions_variables"`
+	Approvals              any    `json:"approvals"`
+	CollaborationModes     any    `json:"collaboration_modes"`
+	AutoReview             any    `json:"auto_review"`
+	Permissions            any    `json:"permissions"`
+	MultiAgent             any    `json:"multi_agent"`
+	TokenBudget            any    `json:"token_budget"`
+	GuardianV2             any    `json:"guardian_v2"`
+	ConfirmationPolicies   any    `json:"confirmation_policies"`
+	PersistentInstructions any    `json:"persistent_instructions"`
+	Tools                  any    `json:"tools"`
 }
 
 // configuredCodexModelDescriptor is the minimum complete ModelInfo contract
@@ -374,6 +408,7 @@ type configuredCodexModelMessages struct {
 // requires them to be present.
 type configuredCodexModelDescriptor struct {
 	Slug                              string                          `json:"slug"`
+	PreferWebsockets                  bool                            `json:"prefer_websockets,omitempty"`
 	DisplayName                       string                          `json:"display_name"`
 	Description                       string                          `json:"description"`
 	DefaultReasoningLevel             *string                         `json:"default_reasoning_level,omitempty"`
@@ -404,7 +439,7 @@ type configuredCodexModelDescriptor struct {
 	MaxContextWindow                  int64                           `json:"max_context_window"`
 	AutoCompactTokenLimit             any                             `json:"auto_compact_token_limit"`
 	CompHash                          any                             `json:"comp_hash"`
-	EffectiveContextWindowPercent     int64                           `json:"effective_context_window_percent"`
+	EffectiveContextWindowPercent     int64                           `json:"effective_context_window_percent,omitempty"`
 	ExperimentalSupportedTools        []string                        `json:"experimental_supported_tools"`
 	InputModalities                   []string                        `json:"input_modalities"`
 	SupportsSearchTool                bool                            `json:"supports_search_tool"`
@@ -415,6 +450,33 @@ type configuredCodexModelDescriptor struct {
 	ModelSpecialty                    any                             `json:"model_specialty"`
 	ToolMode                          any                             `json:"tool_mode"`
 	MultiAgentVersion                 any                             `json:"multi_agent_version"`
+	MultiAgentReasoningEffort         *string                         `json:"multi_agent_reasoning_effort,omitempty"`
+	MinimalClientVersion              string                          `json:"minimal_client_version,omitempty"`
+	AvailableInPlans                  []string                        `json:"available_in_plans,omitempty"`
+	RequiresSandboxedReview           bool                            `json:"requires_sandboxed_review,omitempty"`
+	SupportsReasoningSummaries        bool                            `json:"supports_reasoning_summaries,omitempty"`
+}
+
+// gpt6AstraCodexModelJSON is pinned from openai/codex commit
+// a97cf1b72eaad05aa49847bc81d09ceac9327754. OAuth manifests still come from
+// the authenticated upstream verbatim; this snapshot supplies complete model
+// metadata only when Sub2API must synthesize a Codex manifest.
+//
+//go:embed openai_codex_gpt6_astra_model.json
+var gpt6AstraCodexModelJSON []byte
+
+var (
+	gpt6AstraCodexModelOnce       sync.Once
+	gpt6AstraCodexModelDescriptor configuredCodexModelDescriptor
+)
+
+func configuredGPT6AstraModelDescriptor() configuredCodexModelDescriptor {
+	gpt6AstraCodexModelOnce.Do(func() {
+		if err := json.Unmarshal(gpt6AstraCodexModelJSON, &gpt6AstraCodexModelDescriptor); err != nil {
+			panic(fmt.Sprintf("decode embedded GPT-6 Astra Codex model descriptor: %v", err))
+		}
+	})
+	return gpt6AstraCodexModelDescriptor
 }
 
 type codexModelMetadataOverride struct {
@@ -425,6 +487,11 @@ type codexModelMetadataOverride struct {
 
 func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescriptor {
 	modelID = strings.TrimSpace(modelID)
+	if isOpenAIGPT6AstraModel(modelID) {
+		descriptor := configuredGPT6AstraModelDescriptor()
+		descriptor.Slug = modelID
+		return descriptor
+	}
 	noReasoningLevel := "none"
 	descriptor := configuredCodexModelDescriptor{
 		Slug:                  modelID,
@@ -587,13 +654,13 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
 		{Effort: "xhigh", Description: "Extra-high reasoning depth for difficult tasks"},
 	}
 	normalized := getNormalizedCodexModel(modelID)
-	if isOpenAIGPT56Model(modelID) {
+	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6AstraModel(modelID) {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "max",
 			Description: "Maximum reasoning depth for complex tasks",
 		})
 	}
-	if normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
+	if normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" || normalized == openai.GPT6AstraModelID {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "ultra",
 			Description: "Maximum reasoning with automatic task delegation",
@@ -612,7 +679,7 @@ func isOpenAICodexGPTModel(modelID string) bool {
 
 func isOpenAICodexReasoningGPTModel(modelID string) bool {
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
-	return strings.HasPrefix(normalized, "gpt-5")
+	return strings.HasPrefix(normalized, "gpt-5") || normalized == openai.GPT6AstraModelID
 }
 
 func isOpenAICodexImageInputModel(modelID string) bool {
@@ -620,7 +687,8 @@ func isOpenAICodexImageInputModel(modelID string) bool {
 	if isCodexSparkModel(normalized) {
 		return false
 	}
-	return strings.HasPrefix(normalized, "gpt-5") ||
+	return normalized == openai.GPT6AstraModelID ||
+		strings.HasPrefix(normalized, "gpt-5") ||
 		strings.HasPrefix(normalized, "gpt-4o") ||
 		strings.HasPrefix(normalized, "gpt-4.1") ||
 		strings.HasPrefix(normalized, "gpt-4.5") ||
@@ -1901,6 +1969,7 @@ func CodexModelsManifestETag(body []byte) string {
 }
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
+	"gpt-6-astra":   {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},
 	"gpt-5.6-luna":  {},

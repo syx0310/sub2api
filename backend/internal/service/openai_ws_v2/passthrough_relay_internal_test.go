@@ -47,6 +47,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			newPassthroughTestFrameConn(nil, true),
 			nil,
 			nil,
+			time.Now,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			func() {},
 			nil,
@@ -70,6 +71,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			nil,
+			time.Now,
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
 			func() {},
 			nil,
@@ -95,6 +97,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			nil,
+			time.Now,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			func() {},
 			forwarded,
@@ -109,6 +112,53 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		require.Equal(t, int64(1), forwarded.Load())
 		require.NotEmpty(t, traces)
 	})
+}
+
+func TestRelaySteerStateOnlyMatchingExplicitContinuationConsumesAcceptedSteer(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{requestModel: "gpt-6-astra"}
+	registerRelaySteerSubmission(
+		state,
+		[]byte(`{"type":"response.steer","previous_response_id":"resp_target","input":"update"}`),
+		time.Now(),
+	)
+	acceptRelaySteer(
+		state,
+		[]byte(`{"type":"response.steer.accepted","steer":{"id":"steer_1","previous_response_id":"resp_target"}}`),
+		time.Now(),
+	)
+	require.Len(t, state.acceptedSteers, 1)
+
+	registerRelayRequest(state, []byte(`{"type":"response.create","model":"gpt-6-astra","input":"independent"}`))
+	require.Len(t, state.acceptedSteers, 1, "an unrelated response.create must not claim queued steering")
+
+	registerRelayRequest(state, []byte(`{"type":"response.create","model":"gpt-6-astra","previous_response_id":"resp_target","input":[]}`))
+	require.Empty(t, state.acceptedSteers, "the matching tool-result continuation must claim queued steering")
+}
+
+func TestRelaySteerFailedClearsAcceptedContinuation(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{requestModel: "gpt-6-astra"}
+	registerRelaySteerSubmission(
+		state,
+		[]byte(`{"type":"response.steer","previous_response_id":"resp_target","input":"update"}`),
+		time.Now(),
+	)
+	acceptRelaySteer(
+		state,
+		[]byte(`{"type":"response.steer.accepted","steer":{"id":"steer_1","previous_response_id":"resp_target"}}`),
+		time.Now(),
+	)
+
+	failRelaySteer(
+		state,
+		[]byte(`{"type":"response.steer.failed","steer":{"id":"steer_1","previous_response_id":"resp_target","input":"update"},"error":{"code":"invalid_input"}}`),
+	)
+	require.Empty(t, state.acceptedSteers)
+	_, promoted := promoteRelayAcceptedSteer(state, time.Now())
+	require.False(t, promoted, "failed steering must never create an automatic turn")
 }
 
 func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
@@ -136,7 +186,9 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			drop,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -176,7 +228,9 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			drop,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -219,10 +273,12 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			drop,
 			nil,
 			nil,
 			dropped,
+			nil,
 			nil,
 			func() {},
 			nil,

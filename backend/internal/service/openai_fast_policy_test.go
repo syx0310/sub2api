@@ -105,6 +105,27 @@ func TestEvaluateOpenAIFastPolicy_DefaultPassesKnownTiers(t *testing.T) {
 	require.Equal(t, BetaPolicyActionPass, action)
 }
 
+func TestGPT6AstraEUResidencyFiltersFastAndDisablesGroupForce(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"compute_residency": "EU"},
+	}
+	svc := &OpenAIGatewayService{}
+	action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-6-astra", OpenAIFastTierPriority)
+	require.Equal(t, BetaPolicyActionFilter, action)
+
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, ForceOpenAIFast: true,
+	})
+	require.False(t, openAIGroupForcesFast(ctx, account, "gpt-6-astra"))
+	require.True(t, account.IsOpenAIEUDataResidency())
+
+	account.Extra["compute_residency"] = "us"
+	require.False(t, account.IsOpenAIEUDataResidency())
+	require.True(t, openAIGroupForcesFast(ctx, account, "gpt-6-astra"))
+}
+
 func TestEvaluateOpenAIFastPolicy_BlockRuleCarriesMessage(t *testing.T) {
 	settings := &OpenAIFastPolicySettings{
 		Rules: []OpenAIFastPolicyRule{{

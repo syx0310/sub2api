@@ -169,6 +169,11 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if isOpenAIGPT6AstraModel(upstreamModel) {
+		if normalized, normalize := normalizeGPT6AstraReasoningEffort(chatReq.ReasoningEffort); normalize {
+			chatReq.ReasoningEffort = normalized
+		}
+	}
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
@@ -202,6 +207,16 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		responsesBody, err = sjson.SetBytes(body, "model", upstreamModel)
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)
+		}
+		if isOpenAIGPT6AstraModel(upstreamModel) {
+			responsesBody, _, err = normalizeGPT6AstraRequestBody(responsesBody, false)
+			if err != nil {
+				return nil, fmt.Errorf("normalize GPT-6 Astra responses-shape request: %w", err)
+			}
+			responsesBody, _, err = filterGPT6AstraPromptCacheOptionsForAccount(responsesBody, account, upstreamModel)
+			if err != nil {
+				return nil, fmt.Errorf("filter GPT-6 Astra prompt cache options: %w", err)
+			}
 		}
 		// Strip Responses API parameters that no Codex upstream accepts.
 		// Because this branch forwards the raw body (the normal path rebuilds

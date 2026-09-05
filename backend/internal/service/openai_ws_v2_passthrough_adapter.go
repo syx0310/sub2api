@@ -226,6 +226,37 @@ func (m *openAIWSPassthroughUsageMeta) turnModels(fallback string) (string, stri
 	return requestModel, upstreamModel
 }
 
+func buildOpenAIWSAutomaticSteerTurnPayload(
+	automatic openaiwsv2.RelayAutomaticTurn,
+	usageMeta *openAIWSPassthroughUsageMeta,
+	requestModel string,
+) ([]byte, error) {
+	steer := make(map[string]any)
+	if len(automatic.ClientPayload) > 0 {
+		if err := decodeOpenAIJSONUseNumber(automatic.ClientPayload, &steer); err != nil {
+			return nil, err
+		}
+	}
+	payload := map[string]any{
+		"type":                 "response.create",
+		"model":                strings.TrimSpace(requestModel),
+		"previous_response_id": strings.TrimSpace(automatic.PreviousResponseID),
+		"input":                steer["input"],
+	}
+	if payload["input"] == nil {
+		payload["input"] = []any{}
+	}
+	if usageMeta != nil {
+		if tier := usageMeta.serviceTier.Load(); tier != nil && strings.TrimSpace(*tier) != "" {
+			payload["service_tier"] = strings.TrimSpace(*tier)
+		}
+		if effort := usageMeta.reasoningEffort.Load(); effort != nil && strings.TrimSpace(*effort) != "" {
+			payload["reasoning"] = map[string]any{"effort": strings.TrimSpace(*effort)}
+		}
+	}
+	return marshalOpenAIUpstreamJSON(payload)
+}
+
 func openAIWSTrimmedStringPtr(value string) *string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -327,6 +358,10 @@ func (l *openAIWSPassthroughTurnLifecycle) beginResponseCreate(onAccepted func()
 		onAccepted()
 	}
 	return true
+}
+
+func (l *openAIWSPassthroughTurnLifecycle) beginAutomaticContinuation(onAccepted func()) bool {
+	return l.beginResponseCreate(onAccepted)
 }
 
 func (l *openAIWSPassthroughTurnLifecycle) cancelResponseCreate() {
@@ -488,6 +523,10 @@ func (c *openAIWSPassthroughFirstOutputFrameConn) Close() error {
 }
 
 func (c *openAIWSPassthroughFirstOutputFrameConn) armDeadline(payload []byte) uint64 {
+	return c.armDeadlineAt(payload, time.Time{})
+}
+
+func (c *openAIWSPassthroughFirstOutputFrameConn) armDeadlineAt(payload []byte, startedAt time.Time) uint64 {
 	if c == nil || c.resolveDeadline == nil {
 		return 0
 	}
@@ -495,7 +534,9 @@ func (c *openAIWSPassthroughFirstOutputFrameConn) armDeadline(payload []byte) ui
 	if deadline.timeout <= 0 {
 		return 0
 	}
-	if deadline.startedAt.IsZero() {
+	if !startedAt.IsZero() {
+		deadline.startedAt = startedAt
+	} else if deadline.startedAt.IsZero() {
 		deadline.startedAt = time.Now()
 	}
 	deadline.phase = openAIWSPassthroughDeadlinePhaseFirstSemantic
@@ -1172,6 +1213,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if isResponseCreate && model != "" && model != strings.TrimSpace(gjson.GetBytes(payload, "model").String()) {
 				payload = s.ReplaceModelInBody(payload, model)
 			}
+			if isResponseCreate && isOpenAIGPT6AstraModel(model) {
+				normalized, _, normalizeErr := normalizeGPT6AstraRequestBody(payload, false)
+				if normalizeErr != nil {
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid GPT-6 Astra websocket request payload", normalizeErr)
+				}
+				payload = normalized
+			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
@@ -1213,7 +1261,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				responseCreateAtCopy := responseCreateAt
 				acceptedTurnStartedAt.Store(&responseCreateAtCopy)
 				acceptedTurn = true
-			} else if policyErr == nil && blocked == nil {
+			} else if policyErr == nil && blocked == nil && eventType != "response.steer" {
 				addRequestBodyBytes(clientPayloadBytes)
 			}
 			return out, blocked, policyErr
@@ -1245,8 +1293,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if readErr != nil {
 				return msgType, payload, readErr
 			}
-			if (msgType == coderws.MessageText || msgType == coderws.MessageBinary) && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
-				return msgType, payload, nil
+			if msgType == coderws.MessageText || msgType == coderws.MessageBinary {
+				switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
+				case "response.create", "response.steer":
+					return msgType, payload, nil
+				}
 			}
 			if writeErr := upstreamFrameConn.WriteFrame(readCtx, msgType, payload); writeErr != nil {
 				return msgType, payload, writeErr
@@ -1294,6 +1345,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			},
 			OnUpstreamEventAccepted: relayUpstreamFrameConn.observeUpstreamActivity,
 			OnTerminalObserved:      sealRequestBodyBytes,
+			BeforeAutomaticTurn: func(automatic openaiwsv2.RelayAutomaticTurn) error {
+				turnHooksMu.Lock()
+				defer turnHooksMu.Unlock()
+				turnNo := int(completedTurns.Load()) + 1
+				requestModel, inheritedUpstreamModel := usageMeta.turnModels(initialRequestModel)
+				if requestModel == "" {
+					requestModel = strings.TrimSpace(automatic.RequestModel)
+				}
+				auditPayload, buildErr := buildOpenAIWSAutomaticSteerTurnPayload(automatic, usageMeta, requestModel)
+				if buildErr != nil {
+					return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid accepted steering payload", buildErr)
+				}
+				if hooks != nil && hooks.BeforeRequest != nil {
+					if err := hooks.BeforeRequest(turnNo, auditPayload, requestModel); err != nil {
+						return err
+					}
+				}
+				if hooks != nil && hooks.MapRequestModel != nil {
+					mappedModel, err := hooks.MapRequestModel(turnNo, requestModel)
+					if err != nil {
+						return err
+					}
+					if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" && inheritedUpstreamModel != "" && mappedModel != inheritedUpstreamModel {
+						return NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "routing changed while applying steering; please reconnect", nil)
+					}
+				}
+				if hooks != nil && hooks.BeforeTurn != nil {
+					if err := hooks.BeforeTurn(turnNo); err != nil {
+						return err
+					}
+				}
+				if !turnLifecycle.beginAutomaticContinuation(clientFrameConn.markTurnStarted) {
+					return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "overlapping automatic steering continuation is not supported", nil)
+				}
+				pushRequestBodyBytes(int64(len(automatic.ClientPayload)))
+				relayUpstreamFrameConn.armDeadlineAt(auditPayload, automatic.StartedAt)
+				SetOpsUpstreamModel(c, inheritedUpstreamModel)
+				return nil
+			},
 			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
 				turnHooksMu.Lock()
 				defer turnHooksMu.Unlock()

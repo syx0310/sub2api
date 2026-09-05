@@ -845,6 +845,11 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
+		if a.IsOpenAI() && isOpenAIGPT6AstraModel(requestedModel) {
+			if supported, known := a.UpstreamModelCatalogSupports("gpt-6-astra", time.Now()); known {
+				return supported
+			}
+		}
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
@@ -1327,6 +1332,32 @@ func (a *Account) IsOpenAIPersonalAccessToken() bool {
 
 func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+}
+
+// IsOpenAIEUDataResidency reports only explicit EU residency claims imported
+// from the OpenAI account payload. Missing or unfamiliar values stay false so
+// existing accounts remain fail-open instead of being guessed from geography.
+func (a *Account) IsOpenAIEUDataResidency() bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	for _, key := range []string{"account_residency_region", "compute_residency"} {
+		if openAIResidencyValueIsEU(a.GetExtraString(key)) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIResidencyValueIsEU(raw string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	normalized = strings.NewReplacer(" ", "-", "_", "-", "/", "-").Replace(normalized)
+	switch normalized {
+	case "eu", "eea", "europe", "european-union", "eu-only", "eu-residency", "eu-data-residency":
+		return true
+	default:
+		return strings.HasPrefix(normalized, "eu-") || strings.HasPrefix(normalized, "europe-")
+	}
 }
 
 // GetOpenAIBaseURL 解析 OpenAI 协议族账号的上游 base_url。

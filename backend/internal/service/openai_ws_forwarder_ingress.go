@@ -134,6 +134,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
 	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
 	ingressMode := OpenAIWSIngressModeCtxPool
+	steeringModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
+	if hooks != nil && strings.TrimSpace(hooks.InitialForwardModel) != "" {
+		steeringModel = strings.TrimSpace(hooks.InitialForwardModel)
+	}
+	steeringModel = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(steeringModel))
 	if modeRouterV2Enabled && !forceHTTPBridge {
 		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
 		if ingressMode == OpenAIWSIngressModeOff {
@@ -142,6 +147,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				"websocket mode is disabled for this account",
 				nil,
 			)
+		}
+		if ingressMode != OpenAIWSIngressModePassthrough &&
+			wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
+			isOpenAIGPT6AstraModel(steeringModel) {
+			logOpenAIWSModeInfo("ingress_ws_astra_steering_relay account_id=%d configured_mode=%s", account.ID, ingressMode)
+			return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision)
 		}
 		switch ingressMode {
 		case OpenAIWSIngressModePassthrough:
@@ -176,6 +187,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
+	}
+	if !modeRouterV2Enabled && !forceHTTPBridge &&
+		wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
+		isOpenAIGPT6AstraModel(steeringModel) {
+		logOpenAIWSModeInfo("ingress_ws_astra_steering_relay account_id=%d configured_mode=legacy", account.ID)
+		return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision)
 	}
 	if !forceHTTPBridge && wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
@@ -426,6 +443,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
 			}
 			normalized = next
+		}
+		if isOpenAIGPT6AstraModel(upstreamModel) {
+			astraBody, _, astraErr := normalizeGPT6AstraRequestBody(normalized, false)
+			if astraErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid GPT-6 Astra websocket request payload", astraErr)
+			}
+			normalized = astraBody
 		}
 		SetOpsUpstreamModel(c, upstreamModel)
 		if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {

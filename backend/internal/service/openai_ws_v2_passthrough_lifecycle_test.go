@@ -798,6 +798,105 @@ func TestPassthroughLifecycle_FollowupWithoutModelUsesSessionModelForReasoningMa
 	}
 }
 
+func TestPassthroughLifecycle_GPT6AstraSteeringAutomaticContinuationRunsTurnHooks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	upstream := newStagedPassthroughConn()
+	type completedTurn struct {
+		turn   int
+		result *OpenAIForwardResult
+	}
+	completed := make(chan completedTurn, 2)
+	var beforeTurnsMu sync.Mutex
+	beforeTurns := make([]int, 0, 2)
+	automaticAuditPayloads := make(chan []byte, 1)
+	hooks := &OpenAIWSIngressHooks{
+		InitialRequestModel: "gpt-6-astra",
+		BeforeRequest: func(turn int, payload []byte, originalModel string) error {
+			require.Equal(t, 2, turn)
+			require.Equal(t, "gpt-6-astra", originalModel)
+			automaticAuditPayloads <- append([]byte(nil), payload...)
+			return nil
+		},
+		BeforeTurn: func(turn int) error {
+			beforeTurnsMu.Lock()
+			beforeTurns = append(beforeTurns, turn)
+			beforeTurnsMu.Unlock()
+			return nil
+		},
+		AfterTurn: func(turn int, result *OpenAIForwardResult, err error) {
+			require.NoError(t, err)
+			completed <- completedTurn{turn: turn, result: result}
+		},
+	}
+	account := passthroughLifecycleAccount()
+	account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+	server, serverErr := startPassthroughLifecycleServerWithHooks(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
+		account,
+		func(*gin.Context) *OpenAIWSIngressHooks { return hooks },
+	)
+	defer server.Close()
+	clientConn := dialPassthroughLifecycleClientWithPayload(t, server, `{"type":"response.create","model":"gpt-6-astra","stream":true,"reasoning":{"effort":"medium"}}`)
+	defer func() { _ = clientConn.CloseNow() }()
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, time.Second), "type").String())
+
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_astra_initial","model":"gpt-6-astra"}}`)
+	created, err := readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_astra_initial", gjson.GetBytes(created, "response.id").String())
+
+	steerPayload := []byte(`{"type":"response.steer","previous_response_id":"resp_astra_initial","input":"keep it within two weeks"}`)
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, steerPayload)
+	cancelWrite()
+	require.NoError(t, err)
+	forwardedSteer := requirePassthroughUpstreamWrite(t, upstream, time.Second)
+	require.Equal(t, "response.steer", gjson.GetBytes(forwardedSteer, "type").String())
+
+	upstream.Send(`{"type":"response.steer.accepted","steer":{"id":"steer_astra","previous_response_id":"resp_astra_initial"}}`)
+	accepted, err := readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "response.steer.accepted", gjson.GetBytes(accepted, "type").String())
+	upstream.Send(`{"type":"response.incomplete","response":{"id":"resp_astra_initial","incomplete_details":{"reason":"steered"},"usage":{"input_tokens":8,"output_tokens":2}}}`)
+	_, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+	first := <-completed
+	require.Equal(t, 1, first.turn)
+
+	upstream.Send(`{"type":"response.created","response":{"id":"resp_astra_successor","model":"gpt-6-astra"}}`)
+	created, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_astra_successor", gjson.GetBytes(created, "response.id").String())
+	automaticAuditPayload := <-automaticAuditPayloads
+	require.Equal(t, "response.create", gjson.GetBytes(automaticAuditPayload, "type").String())
+	require.Equal(t, "keep it within two weeks", gjson.GetBytes(automaticAuditPayload, "input").String())
+	require.Equal(t, "medium", gjson.GetBytes(automaticAuditPayload, "reasoning.effort").String())
+
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_astra_successor","model":"gpt-6-astra","usage":{"input_tokens":10,"output_tokens":3}}}`)
+	_, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
+	require.NoError(t, err)
+	second := <-completed
+	require.Equal(t, 2, second.turn)
+	require.NotNil(t, second.result)
+	require.Equal(t, int64(len(steerPayload)), *second.result.RequestBodyBytes)
+
+	beforeTurnsMu.Lock()
+	require.Equal(t, []int{1, 2}, beforeTurns)
+	beforeTurnsMu.Unlock()
+	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
+	select {
+	case proxyErr := <-serverErr:
+		require.NoError(t, proxyErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Astra steering passthrough session did not exit")
+	}
+}
+
 func TestPassthroughLifecycle_ActiveTurnActivityRefreshesReadTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())

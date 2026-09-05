@@ -89,6 +89,19 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if upstreamModel != originalModel {
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
 	}
+	if isOpenAIGPT6AstraModel(upstreamModel) {
+		normalizedBody, _, normalizeErr := normalizeGPT6AstraRequestBody(upstreamBody, true)
+		if normalizeErr != nil {
+			return nil, fmt.Errorf("normalize GPT-6 Astra chat request: %w", normalizeErr)
+		}
+		upstreamBody = normalizedBody
+		filteredBody, _, filterErr := filterGPT6AstraPromptCacheOptionsForAccount(upstreamBody, account, upstreamModel)
+		if filterErr != nil {
+			return nil, fmt.Errorf("filter GPT-6 Astra chat prompt cache options: %w", filterErr)
+		}
+		upstreamBody = filteredBody
+		reasoningEffort = extractOpenAIReasoningEffortFromBody(upstreamBody, upstreamModel, billingModel, originalModel)
+	}
 	if normalizedBody, normalized := NormalizeGLMOpenAIReasoningEffort(upstreamBody, upstreamModel); normalized {
 		upstreamBody = normalizedBody
 	}

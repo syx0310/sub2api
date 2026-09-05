@@ -64,6 +64,18 @@ type RelayTurnResult struct {
 	ResponseBodyBytes     int64
 }
 
+// RelayAutomaticTurn describes a response that the upstream starts after
+// accepting response.steer. There is no second client response.create frame,
+// so adapters use this callback to run their ordinary per-turn admission and
+// accounting hooks before the successor response is delivered downstream.
+type RelayAutomaticTurn struct {
+	SteerID            string
+	PreviousResponseID string
+	RequestModel       string
+	ClientPayload      []byte
+	StartedAt          time.Time
+}
+
 type RelayExit struct {
 	Stage           string
 	Err             error
@@ -90,8 +102,9 @@ type RelayOptions struct {
 	OnUpstreamEventAccepted         func(msgType coderws.MessageType, payload []byte)
 	// OnTerminalObserved runs after terminal identity validation and before
 	// downstream delivery, allowing per-turn state to rotate on one boundary.
-	OnTerminalObserved func()
-	BeforeWriteClient  func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
+	OnTerminalObserved  func()
+	BeforeAutomaticTurn func(turn RelayAutomaticTurn) error
+	BeforeWriteClient   func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
 	// TransformClientPayload runs after upstream observation and validation but
 	// before delivery and byte accounting. Returning nil keeps the original payload.
 	TransformClientPayload func(msgType coderws.MessageType, payload []byte) []byte
@@ -137,6 +150,8 @@ type relayState struct {
 	completedRequests       int64
 	pendingTurnStart        atomic.Pointer[time.Time]
 	pendingBareError        *observedUpstreamEvent
+	pendingSteerSubmissions []relaySteerSubmission
+	acceptedSteers          []relayAcceptedSteer
 }
 
 const relayCompletedTurnIDLimit = 64
@@ -174,6 +189,21 @@ type relayTurnTiming struct {
 	// terminalResponseServiceTier is only taken from terminal events: earlier
 	// events echo the requested tier, not the one the upstream actually used.
 	terminalResponseServiceTier string
+}
+
+type relaySteerSubmission struct {
+	previousResponseID string
+	requestModel       string
+	payload            []byte
+	startedAt          time.Time
+}
+
+type relayAcceptedSteer struct {
+	id                 string
+	previousResponseID string
+	requestModel       string
+	payload            []byte
+	startedAt          time.Time
 }
 
 func Relay(
@@ -319,6 +349,7 @@ func Relay(
 			clientConn,
 			options.ReadClientFrame,
 			state,
+			nowFn,
 			writeClientFrameUpstream,
 			markActivity,
 			clientToUpstreamFrames,
@@ -347,6 +378,7 @@ func Relay(
 			options.OnTurnComplete,
 			options.OnUpstreamEventAccepted,
 			options.OnTerminalObserved,
+			options.BeforeAutomaticTurn,
 			options.BeforeWriteClient,
 			options.TransformClientPayload,
 			options.BeforeClientWrite,
@@ -361,6 +393,7 @@ func Relay(
 			downstreamPayloadBytes,
 			droppedDownstreamFrames,
 			completedTurns,
+			requestedTurns,
 			markActivity,
 			onTrace,
 			exitCh,
@@ -557,11 +590,19 @@ func isClientResponseCreateFrame(msgType coderws.MessageType, payload []byte) bo
 	return strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create"
 }
 
+func isClientResponseSteerFrame(msgType coderws.MessageType, payload []byte) bool {
+	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+		return false
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.steer"
+}
+
 func runClientToUpstream(
 	ctx context.Context,
 	clientConn FrameConn,
 	readClientFrame func(context.Context, FrameConn) (coderws.MessageType, []byte, error),
 	state *relayState,
+	nowFn func() time.Time,
 	writeUpstream func(msgType coderws.MessageType, payload []byte) error,
 	markActivity func(),
 	forwardedFrames *atomic.Int64,
@@ -595,6 +636,13 @@ func runClientToUpstream(
 			requestedTurns.Add(1)
 			registerRelayRequest(state, payload)
 		}
+		if isClientResponseSteerFrame(msgType, payload) {
+			startedAt := time.Now()
+			if nowFn != nil {
+				startedAt = nowFn()
+			}
+			registerRelaySteerSubmission(state, payload, startedAt)
+		}
 		if err := writeUpstream(msgType, payload); err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:        "write_upstream_failed",
@@ -624,6 +672,7 @@ func runUpstreamToClient(
 	onTurnComplete func(turn RelayTurnResult),
 	onUpstreamEventAccepted func(msgType coderws.MessageType, payload []byte),
 	onTerminalObserved func(),
+	beforeAutomaticTurn func(turn RelayAutomaticTurn) error,
 	beforeWriteClient func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error,
 	transformClientPayload func(msgType coderws.MessageType, payload []byte) []byte,
 	beforeClientWrite func(msgType coderws.MessageType, payload []byte),
@@ -634,6 +683,7 @@ func runUpstreamToClient(
 	forwardedPayloadBytes *atomic.Int64,
 	droppedFrames *atomic.Int64,
 	completedTurns *atomic.Int64,
+	requestedTurns *atomic.Int64,
 	markActivity func(),
 	onTrace func(event RelayTraceEvent),
 	exitCh chan<- relayExitSignal,
@@ -692,6 +742,31 @@ func runUpstreamToClient(
 					}
 					completeTurn(pending, turnResponseBodyBytes)
 					turnResponseBodyBytes = 0
+				}
+			}
+			switch eventType {
+			case "response.steer.accepted":
+				acceptRelaySteer(state, payload, nowFn())
+			case "response.steer.failed":
+				failRelaySteer(state, payload)
+			case "response.created":
+				if automaticTurn, promoted := promoteRelayAcceptedSteer(state, nowFn()); promoted {
+					if beforeAutomaticTurn != nil {
+						if err := beforeAutomaticTurn(automaticTurn); err != nil {
+							emitRelayTrace(onTrace, RelayTraceEvent{
+								Stage:        "automatic_turn_rejected",
+								Direction:    "upstream_to_client",
+								MessageType:  relayMessageTypeString(msgType),
+								PayloadBytes: len(payload),
+								Error:        err.Error(),
+							})
+							exitCh <- relayExitSignal{stage: "automatic_turn", err: err, wroteDownstream: wroteDownstream}
+							return
+						}
+					}
+					if requestedTurns != nil {
+						requestedTurns.Add(1)
+					}
 				}
 			}
 			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
@@ -1108,10 +1183,18 @@ func registerRelayRequest(state *relayState, payload []byte) int64 {
 	}
 	state.requestMu.Lock()
 	defer state.requestMu.Unlock()
+	consumeAcceptedRelaySteerForExplicitRequestLocked(state, strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()))
+	return registerRelayRequestLocked(state, strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
+}
+
+func registerRelayRequestLocked(state *relayState, model string) int64 {
+	if state == nil {
+		return 0
+	}
 	state.nextRequestSeq++
 	sequence := state.nextRequestSeq
 	state.pendingRequestSeq = append(state.pendingRequestSeq, sequence)
-	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	model = strings.TrimSpace(model)
 	if model != "" {
 		if state.requestModelBySeq == nil {
 			state.requestModelBySeq = make(map[int64]string, 2)
@@ -1120,6 +1203,129 @@ func registerRelayRequest(state *relayState, payload []byte) int64 {
 		state.requestModel = model
 	}
 	return sequence
+}
+
+func registerRelaySteerSubmission(state *relayState, payload []byte, startedAt time.Time) {
+	if state == nil || len(payload) == 0 {
+		return
+	}
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
+	if previousResponseID == "" {
+		return
+	}
+	state.requestMu.Lock()
+	defer state.requestMu.Unlock()
+	requestModel := state.requestModel
+	if sequence := state.requestSeqByID[previousResponseID]; sequence > 0 {
+		if model := strings.TrimSpace(state.requestModelBySeq[sequence]); model != "" {
+			requestModel = model
+		}
+	}
+	state.pendingSteerSubmissions = append(state.pendingSteerSubmissions, relaySteerSubmission{
+		previousResponseID: previousResponseID,
+		requestModel:       requestModel,
+		payload:            append([]byte(nil), payload...),
+		startedAt:          startedAt,
+	})
+}
+
+func acceptRelaySteer(state *relayState, payload []byte, acceptedAt time.Time) {
+	if state == nil {
+		return
+	}
+	steerID := strings.TrimSpace(gjson.GetBytes(payload, "steer.id").String())
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "steer.previous_response_id").String())
+	if steerID == "" {
+		return
+	}
+	state.requestMu.Lock()
+	defer state.requestMu.Unlock()
+	for _, accepted := range state.acceptedSteers {
+		if accepted.id == steerID {
+			return
+		}
+	}
+	accepted := relayAcceptedSteer{
+		id:                 steerID,
+		previousResponseID: previousResponseID,
+		requestModel:       state.requestModel,
+		startedAt:          acceptedAt,
+	}
+	for index, submission := range state.pendingSteerSubmissions {
+		if previousResponseID != "" && submission.previousResponseID != previousResponseID {
+			continue
+		}
+		accepted.previousResponseID = submission.previousResponseID
+		accepted.requestModel = submission.requestModel
+		accepted.payload = submission.payload
+		accepted.startedAt = submission.startedAt
+		state.pendingSteerSubmissions = append(state.pendingSteerSubmissions[:index], state.pendingSteerSubmissions[index+1:]...)
+		break
+	}
+	state.acceptedSteers = append(state.acceptedSteers, accepted)
+}
+
+func failRelaySteer(state *relayState, payload []byte) {
+	if state == nil {
+		return
+	}
+	steerID := strings.TrimSpace(gjson.GetBytes(payload, "steer.id").String())
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "steer.previous_response_id").String())
+	state.requestMu.Lock()
+	defer state.requestMu.Unlock()
+	for index, accepted := range state.acceptedSteers {
+		if steerID != "" && accepted.id == steerID {
+			state.acceptedSteers = append(state.acceptedSteers[:index], state.acceptedSteers[index+1:]...)
+			return
+		}
+	}
+	for index, submission := range state.pendingSteerSubmissions {
+		if previousResponseID != "" && submission.previousResponseID == previousResponseID {
+			state.pendingSteerSubmissions = append(state.pendingSteerSubmissions[:index], state.pendingSteerSubmissions[index+1:]...)
+			return
+		}
+	}
+}
+
+func promoteRelayAcceptedSteer(state *relayState, now time.Time) (RelayAutomaticTurn, bool) {
+	if state == nil {
+		return RelayAutomaticTurn{}, false
+	}
+	state.requestMu.Lock()
+	if len(state.pendingRequestSeq) > 0 || len(state.acceptedSteers) == 0 {
+		state.requestMu.Unlock()
+		return RelayAutomaticTurn{}, false
+	}
+	accepted := state.acceptedSteers[0]
+	state.acceptedSteers = state.acceptedSteers[1:]
+	registerRelayRequestLocked(state, accepted.requestModel)
+	state.requestMu.Unlock()
+	startedAt := accepted.startedAt
+	if startedAt.IsZero() {
+		startedAt = now
+	}
+	state.setPendingTurnStartedAt(startedAt)
+	return RelayAutomaticTurn{
+		SteerID:            accepted.id,
+		PreviousResponseID: accepted.previousResponseID,
+		RequestModel:       accepted.requestModel,
+		ClientPayload:      append([]byte(nil), accepted.payload...),
+		StartedAt:          startedAt,
+	}, true
+}
+
+func consumeAcceptedRelaySteerForExplicitRequestLocked(state *relayState, previousResponseID string) {
+	previousResponseID = strings.TrimSpace(previousResponseID)
+	if state == nil || previousResponseID == "" || len(state.acceptedSteers) == 0 {
+		return
+	}
+	for index, accepted := range state.acceptedSteers {
+		if accepted.previousResponseID != previousResponseID {
+			continue
+		}
+		state.acceptedSteers = append(state.acceptedSteers[:index], state.acceptedSteers[index+1:]...)
+		return
+	}
 }
 
 func relayRequestModel(state *relayState, sequence int64, completed bool) string {

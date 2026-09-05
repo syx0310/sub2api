@@ -331,6 +331,74 @@ func TestFilterOpenAIResponsesNoneReasoningEffortForAccount(t *testing.T) {
 	}
 }
 
+func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
+	req := map[string]any{
+		"temperature":            0.2,
+		"top_p":                  0.9,
+		"top_logprobs":           5,
+		"prompt_cache_retention": "24h",
+		"include": []any{
+			"reasoning.encrypted_content",
+			"message.output_text.logprobs",
+		},
+		"reasoning":          map[string]any{"effort": "minimal"},
+		"truncation":         "auto",
+		"context_management": []any{map[string]any{"type": "compaction", "compact_threshold": 200000}},
+		"input": []any{
+			map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "high"}},
+			map[string]any{"role": "user", "content": "analyze"},
+		},
+	}
+
+	require.True(t, normalizeGPT6AstraRequestMap(req, false))
+	require.NotContains(t, req, "temperature")
+	require.NotContains(t, req, "top_p")
+	require.NotContains(t, req, "top_logprobs")
+	require.NotContains(t, req, "prompt_cache_retention")
+	require.Equal(t, []any{"reasoning.encrypted_content"}, req["include"])
+	require.Equal(t, "low", req["reasoning"].(map[string]any)["effort"])
+	require.NotContains(t, req, "truncation")
+	require.NotContains(t, req, "context_management")
+	input := req["input"].([]any)
+	require.Equal(t, "configuration_update", input[0].(map[string]any)["type"], "configuration updates must pass through unchanged")
+	require.Equal(t, "high", input[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+
+	chat := map[string]any{"reasoning_effort": "ultra", "logprobs": true, "top_logprobs": 3}
+	require.True(t, normalizeGPT6AstraRequestMap(chat, true))
+	require.Equal(t, "xhigh", chat["reasoning_effort"], "Codex ultra uses Astra's xhigh wire effort")
+	require.NotContains(t, chat, "logprobs")
+	require.NotContains(t, chat, "top_logprobs")
+
+	configurationUpdate := map[string]any{"input": []any{
+		map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "minimal"}},
+	}}
+	require.True(t, normalizeGPT6AstraRequestMap(configurationUpdate, false))
+	require.Equal(t, "low", configurationUpdate["input"].([]any)[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+}
+
+func TestShouldPreserveOpenAIPromptCacheOptionsOnlyForOfficialAstra(t *testing.T) {
+	official := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://api.openai.com/v1",
+	}}
+	compatible := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://provider.example/v1",
+	}}
+
+	require.True(t, shouldPreserveOpenAIPromptCacheOptions(official, "gpt-6-astra"))
+	require.False(t, shouldPreserveOpenAIPromptCacheOptions(official, "gpt-5.4"))
+	require.False(t, shouldPreserveOpenAIPromptCacheOptions(compatible, "gpt-6-astra"))
+
+	body := []byte(`{"model":"gpt-6-astra","prompt_cache_options":{"ttl":"30m"},"input":"hi"}`)
+	filtered, changed, err := filterGPT6AstraPromptCacheOptionsForAccount(body, compatible, "gpt-6-astra")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(filtered, "prompt_cache_options").Exists())
+	preserved, changed, err := filterGPT6AstraPromptCacheOptionsForAccount(body, official, "gpt-6-astra")
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.JSONEq(t, string(body), string(preserved))
+}
+
 // Lite 工具迁移到 input[].additional_tools 后，仍应按有工具请求处理。
 func TestNormalizeOpenAIParallelToolCallsWithoutTools_KeepsResponsesLiteAdditionalTools(t *testing.T) {
 	liteBody := []byte(`{"input":[{"type":"message","role":"user","content":"hi"},{"type":"additional_tools","tools":[{"type":"function","name":"spawn_agent"}]}],"parallel_tool_calls":false}`)

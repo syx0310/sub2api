@@ -72,6 +72,13 @@ func TestForwardAsAnthropic_ForceChatCompletionsPreservesFinalModelReasoningEffo
 			wantEffort: "max",
 		},
 		{
+			name:       "GPT6 Astra max",
+			model:      "gpt-6-astra",
+			mapped:     "gpt-6-astra",
+			effortJSON: `,"output_config":{"effort":"max"}`,
+			wantEffort: "max",
+		},
+		{
 			name:       "old model max",
 			model:      "gpt-5.5",
 			mapped:     "gpt-5.5",

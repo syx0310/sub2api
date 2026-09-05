@@ -104,8 +104,8 @@ func openAIReasoningEffortToClaudeOutputEffort(effort string) string {
 
 // openAICompatAnthropicReasoningEffort resolves the effort emitted by the
 // Anthropic bridge after the final upstream model is known. Anthropic's max is
-// normally translated to OpenAI xhigh, but GPT-5.6 accepts the original max
-// value on Responses and Chat Completions.
+// normally translated to OpenAI xhigh, but GPT-5.6 and GPT-6 Astra accept the
+// original max value on Responses and Chat Completions.
 func openAICompatAnthropicReasoningEffort(req *apicompat.AnthropicRequest, upstreamModel, convertedEffort string) string {
 	if req == nil || req.OutputConfig == nil || !strings.EqualFold(strings.TrimSpace(req.OutputConfig.Effort), "max") {
 		return convertedEffort
@@ -113,8 +113,8 @@ func openAICompatAnthropicReasoningEffort(req *apicompat.AnthropicRequest, upstr
 	// This bridge-specific exception must stay narrower than the fork's generic
 	// OpenAI effort normalizer, which intentionally treats max as a distinct
 	// value for native OpenAI-compatible requests. Anthropic max maps to OpenAI
-	// xhigh for older models and is preserved only by GPT-5.6.
-	if !isOpenAIGPT56Model(upstreamModel) {
+	// xhigh for older models and is preserved only by models with a native max.
+	if !isOpenAIGPT56Model(upstreamModel) && !isOpenAIGPT6AstraModel(upstreamModel) {
 		return convertedEffort
 	}
 	if normalized := normalizeOpenAIReasoningEffortForModel(req.OutputConfig.Effort, upstreamModel); normalized != "" {

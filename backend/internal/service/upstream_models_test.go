@@ -496,6 +496,7 @@ func TestSyncUpstreamModelCatalogEnrichesOpenCodeIDOnlyListAndPersistsSnapshot(t
 	var snapshot UpstreamModelMetadataSnapshot
 	require.NoError(t, json.Unmarshal(encoded, &snapshot))
 	require.Equal(t, "models.dev", snapshot.Source)
+	require.Equal(t, []string{"x-preview-f-free"}, snapshot.ModelIDs)
 	require.Equal(t, metadata, snapshot.Models["x-preview-f-free"])
 }
 
@@ -765,7 +766,13 @@ func TestSyncUpstreamModelCatalogDoesNotOverwriteSnapshotWhenRegistryFails(t *te
 		Code:    UpstreamModelMetadataIncompleteCode,
 		Message: "Model IDs were synced, but capability metadata is incomplete.",
 	}}, catalog.Warnings)
-	require.Nil(t, repo.updates, "a failed metadata enrichment must not erase a previously saved snapshot")
+	require.NotNil(t, repo.updates)
+	encoded, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+	require.NoError(t, err)
+	var snapshot UpstreamModelMetadataSnapshot
+	require.NoError(t, json.Unmarshal(encoded, &snapshot))
+	require.Equal(t, []string{"x-preview-f-free"}, snapshot.ModelIDs)
+	require.Contains(t, snapshot.Models, "x-preview-f-free", "incomplete enrichment must retain prior capability metadata")
 }
 
 func TestSyncUpstreamModelCatalogDoesNotPersistPartialMetadataWhenRegistryFails(t *testing.T) {
@@ -792,7 +799,80 @@ func TestSyncUpstreamModelCatalogDoesNotPersistPartialMetadataWhenRegistryFails(
 	require.Equal(t, []string{"partially-described-model"}, catalog.Models)
 	require.Equal(t, "Partial Model", catalog.Metadata["partially-described-model"].DisplayName)
 	require.Equal(t, UpstreamModelMetadataIncompleteCode, catalog.Warnings[0].Code)
-	require.Nil(t, repo.updates, "partial metadata must not replace a more complete persisted snapshot")
+	require.NotNil(t, repo.updates)
+	encoded, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+	require.NoError(t, err)
+	var snapshot UpstreamModelMetadataSnapshot
+	require.NoError(t, json.Unmarshal(encoded, &snapshot))
+	require.Equal(t, []string{"partially-described-model"}, snapshot.ModelIDs)
+	require.NotNil(t, snapshot.Models["partially-described-model"].Reasoning, "partial sync must retain prior complete capability metadata")
+}
+
+func TestUpstreamModelCatalogSupportsFreshTypedAndHydratedSnapshots(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	tests := []struct {
+		name string
+		raw  any
+	}{
+		{
+			name: "typed",
+			raw: UpstreamModelMetadataSnapshot{
+				SyncedAt: now.Add(-time.Hour).Format(time.RFC3339),
+				ModelIDs: []string{"gpt-5.6-sol", "gpt-6-astra"},
+			},
+		},
+		{
+			name: "scheduler hydrated map",
+			raw: map[string]any{
+				"synced_at": now.Add(-time.Hour).Format(time.RFC3339),
+				"model_ids": []any{"gpt-5.6-sol", "gpt-6-astra"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account := &Account{Extra: map[string]any{UpstreamModelMetadataExtraKey: tt.raw}}
+			supported, known := account.UpstreamModelCatalogSupports("gpt-6-astra", now)
+			require.True(t, known)
+			require.True(t, supported)
+			supported, known = account.UpstreamModelCatalogSupports("gpt-6-astra-wm", now)
+			require.True(t, known)
+			require.False(t, supported)
+		})
+	}
+
+	stale := &Account{Extra: map[string]any{UpstreamModelMetadataExtraKey: UpstreamModelMetadataSnapshot{
+		SyncedAt: now.Add(-upstreamModelCatalogRoutingTTL - time.Second).Format(time.RFC3339),
+		ModelIDs: []string{"gpt-6-astra"},
+	}}}
+	_, known := stale.UpstreamModelCatalogSupports("gpt-6-astra", now)
+	require.False(t, known)
+}
+
+func TestIsModelSupportedUsesFreshCatalogOnlyForGPT6AstraRollout(t *testing.T) {
+	now := time.Now().UTC()
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{UpstreamModelMetadataExtraKey: UpstreamModelMetadataSnapshot{
+			SyncedAt: now.Format(time.RFC3339),
+			ModelIDs: []string{"gpt-5.6-sol"},
+		}},
+	}
+	require.False(t, account.IsModelSupported("gpt-6-astra"), "fresh rollout catalog is authoritative for Astra")
+	require.True(t, account.IsModelSupported("gpt-5.4"), "existing model semantics remain unchanged")
+
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+		SyncedAt: now.Format(time.RFC3339),
+		ModelIDs: []string{"gpt-5.6-sol", "gpt-6-astra"},
+	})
+	require.True(t, account.IsModelSupported("gpt-6-astra"))
+
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+		SyncedAt: now.Add(-upstreamModelCatalogRoutingTTL - time.Minute).Format(time.RFC3339),
+		ModelIDs: []string{"gpt-5.6-sol"},
+	})
+	require.True(t, account.IsModelSupported("gpt-6-astra"), "stale catalogs fail open")
 }
 
 func TestFetchUpstreamSupportedModelsUsesConfiguredBodyLimit(t *testing.T) {
