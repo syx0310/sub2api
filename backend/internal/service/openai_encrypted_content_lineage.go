@@ -20,10 +20,6 @@ import (
 
 const openAIWSFallbackReasonInvalidEncryptedContent = "invalid_encrypted_content"
 
-// openAIWSIngressSessionHashContextKey 在 gin context 中携带 ingress 会话哈希，
-// 供 HTTP bridge turn 内的 lineage 记录复用同一会话键。
-const openAIWSIngressSessionHashContextKey = "openai_ws_ingress_session_hash"
-
 func openAIEncryptedContentDigest(encrypted string) string {
 	sum := sha256.Sum256([]byte(encrypted))
 	return hex.EncodeToString(sum[:])
@@ -287,17 +283,6 @@ func (s *OpenAIGatewayService) sessionInvalidEncryptedContentDigests(groupID int
 	return stateStore.GetSessionInvalidEncryptedContentDigests(groupID, sessionHash)
 }
 
-// openAIWSLineageSessionHashFromContext 取 lineage 会话键：优先 ingress 循环
-// 写入的会话哈希（与读取侧同键），否则按请求体派生。
-func (s *OpenAIGatewayService) openAIWSLineageSessionHashFromContext(c *gin.Context, body []byte) string {
-	if c != nil {
-		if fromCtx := strings.TrimSpace(c.GetString(openAIWSIngressSessionHashContextKey)); fromCtx != "" {
-			return fromCtx
-		}
-	}
-	return s.GenerateSessionHash(c, body)
-}
-
 // markOpenAIWSInvalidEncryptedContentLineageFromPayload 在上游以
 // invalid_encrypted_content 拒绝 payload 时记录其密文摘要并输出观测日志。
 func (s *OpenAIGatewayService) markOpenAIWSInvalidEncryptedContentLineageFromPayload(
@@ -313,7 +298,7 @@ func (s *OpenAIGatewayService) markOpenAIWSInvalidEncryptedContentLineageFromPay
 	}
 	s.markOpenAIWSInvalidEncryptedContentLineage(
 		getOpenAIGroupIDFromContext(c),
-		s.openAIWSLineageSessionHashFromContext(c, payload),
+		openAIWSThreadStateHash(c, payload, &Account{ID: accountID}),
 		digests,
 	)
 	logOpenAIWSModeInfo("%s account_id=%d turn=%d digests=%d", logKey, accountID, turn, len(digests))

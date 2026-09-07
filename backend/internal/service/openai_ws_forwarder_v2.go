@@ -37,6 +37,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	// Forward normally captures the raw request; direct callers need only the
+	// metadata envelope here, never a second serialization of the full prompt.
+	if c != nil {
+		if _, captured := c.Get(openAIWSThreadScopeContextKey); !captured {
+			resolveOpenAIWSThreadScope(c, payloadAsJSONBytes(map[string]any{"client_metadata": reqBody["client_metadata"]}))
+		}
+	}
 	responseModelObserver := &upstreamResponseModelObserver{}
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
@@ -128,14 +135,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
+	stateHash := openAIWSThreadStateHash(c, nil, account)
 	sessionHash := s.GenerateSessionHash(c, nil)
 	if sessionHash == "" {
 		var legacySessionHash string
 		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
 	}
-	if turnState == "" && stateStore != nil && sessionHash != "" {
-		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+	if turnState == "" && stateStore != nil && stateHash != "" {
+		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, stateHash); ok {
 			turnState = savedTurnState
 		}
 	}
@@ -146,8 +154,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequest(reqBody, account)
-	if stateStore != nil && storeDisabled && previousResponseID == "" && sessionHash != "" {
-		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+	if stateStore != nil && storeDisabled && previousResponseID == "" && stateHash != "" {
+		if connID, ok := stateStore.GetSessionConn(groupID, stateHash); ok {
 			preferredConnID = connID
 		}
 	}
@@ -206,9 +214,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	defer acquireCancel()
 
 	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
-		Account: account,
-		WSURL:   wsURL,
-		Headers: wsHeaders,
+		ThreadScope: openAIWSPoolThreadScope(c, account),
+		Account:     account,
+		WSURL:       wsURL,
+		Headers:     wsHeaders,
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
 			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
 		},
@@ -320,8 +329,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		len(handshakeTurnState),
 	)
 	if handshakeTurnState != "" {
-		if stateStore != nil && sessionHash != "" {
-			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+		if stateStore != nil && stateHash != "" {
+			withOpenAIWSActiveOwner(ctx, func() {
+				stateStore.BindSessionTurnState(groupID, stateHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+			})
 		}
 		if c != nil {
 			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
@@ -747,8 +758,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
 	}
-	if stateStore != nil && storeDisabled && sessionHash != "" {
-		stateStore.BindSessionConn(groupID, sessionHash, lease.ConnID(), s.openAIWSSessionStickyTTL())
+	if stateStore != nil && storeDisabled && stateHash != "" {
+		withOpenAIWSActiveOwner(ctx, func() {
+			stateStore.BindSessionConn(groupID, stateHash, lease.ConnID(), s.openAIWSSessionStickyTTL())
+		})
 	}
 	firstTokenMsValue := -1
 	if firstTokenMs != nil {

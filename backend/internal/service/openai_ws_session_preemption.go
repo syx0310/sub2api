@@ -41,6 +41,28 @@ type openAIWSSessionPreemptKey struct {
 
 type openAIWSSessionPreemptContextKey struct{}
 
+type openAIWSSessionPreemptRegistration struct {
+	mu     sync.Mutex
+	active bool
+	detach func()
+}
+
+// Serialize cache writes with ownership loss. A canceled socket must not write
+// stale turn-state/connection hints after its replacement has claimed the thread.
+func withOpenAIWSActiveOwner(ctx context.Context, write func()) {
+	if ctx == nil || ctx.Err() != nil {
+		return
+	}
+	if registration, _ := ctx.Value(openAIWSSessionPreemptContextKey{}).(*openAIWSSessionPreemptRegistration); registration != nil {
+		registration.mu.Lock()
+		defer registration.mu.Unlock()
+		if !registration.active || ctx.Err() != nil {
+			return
+		}
+	}
+	write()
+}
+
 // BeginOpenAIWSIngressSessionPreemption keeps a persistent inbound WS session
 // registered across upstream retry attempts. Nested forwarding calls reuse the
 // registration so returning from one attempt cannot create a preemption gap.
@@ -49,41 +71,58 @@ func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemption(
 	c *gin.Context,
 	account *Account,
 	firstClientMessage []byte,
+	forwardModels ...string,
 ) (context.Context, func(), bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if armed, _ := ctx.Value(openAIWSSessionPreemptContextKey{}).(bool); armed {
-		return ctx, func() {}, true
+	scope := resolveOpenAIWSThreadScope(c, firstClientMessage)
+	forwardModel := ""
+	if len(forwardModels) > 0 {
+		forwardModel = forwardModels[0]
 	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled &&
-		account != nil && account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault) == OpenAIWSIngressModePassthrough {
+	route, routeErr := s.resolveOpenAIWSIngressRoute(account, firstClientMessage, forwardModel)
+	registration, _ := ctx.Value(openAIWSSessionPreemptContextKey{}).(*openAIWSSessionPreemptRegistration)
+	if routeErr != nil || route.mode == OpenAIWSIngressModePassthrough || !scope.explicit ||
+		account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		if registration != nil {
+			// A failover can change the effective transport. Remove the old owner
+			// without canceling the inbound connection now running as a relay.
+			registration.detach()
+		}
 		return ctx, func() {}, false
 	}
-
-	preemptSessionHash := ""
-	preemptGroupID := getOpenAIGroupIDFromContext(c)
-	if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
-		preemptSessionHash = s.GenerateSessionHash(c, firstClientMessage)
+	if registration != nil {
+		registration.mu.Lock()
+		active := registration.active
+		registration.mu.Unlock()
+		if active || isOpenAIWSSessionPreempted(ctx) {
+			return ctx, func() {}, true
+		}
 	}
+
+	preemptGroupID := getOpenAIGroupIDFromContext(c)
 	preemptCtx, cleanup, armed, preemptedPrevious := s.beginOpenAIWSSessionPreemptContext(
 		ctx,
 		account,
 		preemptGroupID,
 		getAPIKeyIDFromContext(c),
-		preemptSessionHash,
+		scope.hash,
 		false,
 	)
 	if !armed {
 		return ctx, func() {}, false
 	}
 	if preemptedPrevious {
-		if stateStore := s.getOpenAIWSStateStore(); stateStore != nil {
-			stateStore.DeleteSessionTurnState(preemptGroupID, preemptSessionHash)
-			stateStore.DeleteSessionConn(preemptGroupID, preemptSessionHash)
-		}
+		withOpenAIWSActiveOwner(preemptCtx, func() {
+			if stateStore := s.getOpenAIWSStateStore(); stateStore != nil {
+				stateHash := openAIWSThreadStateHash(c, firstClientMessage, account)
+				stateStore.DeleteSessionTurnState(preemptGroupID, stateHash)
+				stateStore.DeleteSessionConn(preemptGroupID, stateHash)
+			}
+		})
 	}
-	return context.WithValue(preemptCtx, openAIWSSessionPreemptContextKey{}, true), cleanup, true
+	return preemptCtx, cleanup, true
 }
 
 func newOpenAIWSSessionPreemptKey(groupID, apiKeyID int64, sessionHash string) (openAIWSSessionPreemptKey, bool) {
@@ -154,16 +193,18 @@ func (s *OpenAIGatewayService) beginOpenAIWSSessionPreemptContext(
 	}
 
 	preemptCtx, cancel := context.WithCancelCause(ctx)
+	registration := &openAIWSSessionPreemptRegistration{active: true}
+	preemptCtx = context.WithValue(preemptCtx, openAIWSSessionPreemptContextKey{}, registration)
 	ownerToken := uuid.NewString()
-	var preemptOnce sync.Once
 	preempt := func() {
-		preemptOnce.Do(func() {
-			if stateStore := s.getOpenAIWSStateStore(); stateStore != nil {
-				stateStore.DeleteSessionTurnState(key.groupID, key.sessionHash)
-				stateStore.DeleteSessionConn(key.groupID, key.sessionHash)
-			}
+		registration.mu.Lock()
+		defer registration.mu.Unlock()
+		if registration.active {
+			registration.active = false
 			cancel(errOpenAIWSSessionPreempted)
-		})
+			logOpenAIWSModeInfo("ingress_ws_thread_preempted group_id=%d api_key_id=%d account_id=%d thread_hash=%s reason=newer_same_thread_connection",
+				key.groupID, key.apiKeyID, account.ID, truncateOpenAIWSLogValue(key.sessionHash, 24))
+		}
 	}
 	previousRemoteOwner, remoteClaimed := s.claimOpenAIWSSessionPreemptOwner(ctx, key, ownerToken)
 	preemptedPrevious := remoteClaimed && previousRemoteOwner != "" && previousRemoteOwner != ownerToken
@@ -174,12 +215,21 @@ func (s *OpenAIGatewayService) beginOpenAIWSSessionPreemptContext(
 		stopWatch = s.watchOpenAIWSSessionPreemptOwner(preemptCtx, key, ownerToken, preempt)
 	}
 
+	var detachOnce sync.Once
+	registration.detach = func() {
+		detachOnce.Do(func() {
+			registration.mu.Lock()
+			registration.active = false
+			registration.mu.Unlock()
+			stopWatch()
+			cleanupLocal()
+			if remoteClaimed {
+				s.releaseOpenAIWSSessionPreemptOwner(context.Background(), key, ownerToken)
+			}
+		})
+	}
 	return preemptCtx, func() {
-		stopWatch()
-		cleanupLocal()
-		if remoteClaimed {
-			s.releaseOpenAIWSSessionPreemptOwner(context.Background(), key, ownerToken)
-		}
+		registration.detach()
 		cancel(nil)
 	}, true, preemptedPrevious
 }

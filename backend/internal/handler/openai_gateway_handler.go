@@ -3121,6 +3121,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			// preserving the rebuilt logical turn's body size and pricing timestamp.
 			clonedHooks := *hooks
 			clonedHooks.InitialRequestModel = attemptModel
+			attemptMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, attemptModel)
+			clonedHooks.InitialForwardModel = strings.TrimSpace(attemptMapping.MappedModel)
+			if clonedHooks.InitialForwardModel == "" {
+				clonedHooks.InitialForwardModel = attemptModel
+			}
 			clonedHooks.InitialRequestBodyBytes = attemptBodyBytes
 			clonedHooks.InitialTurnStartedAt = wsAttemptStartedAt
 			beforeTurn := hooks.BeforeTurn
@@ -3139,18 +3144,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return &clonedHooks
 		}
 
-		if preemptCtx, cleanupPreempt, armed := h.gatewayService.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, firstMessage); armed {
-			ctx = preemptCtx
-			defer cleanupPreempt()
-		}
-
 		for {
-			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsAttemptMessage, attemptHooksForMessage())
+			attemptHooks := attemptHooksForMessage()
+			if preemptCtx, cleanupPreempt, armed := h.gatewayService.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, wsAttemptMessage, attemptHooks.InitialForwardModel); armed {
+				ctx = preemptCtx
+				defer cleanupPreempt()
+			}
+			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsAttemptMessage, attemptHooks)
 			if err == nil {
 				reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
 				return
 			}
 			if service.IsOpenAIWSSessionPreemptedError(err) {
+				reqLog.Info("openai.websocket_thread_preempted", zap.Int64("account_id", account.ID), zap.String("reason", "newer_same_thread_connection"))
+				closeOpenAIClientWS(wsConn, coderws.StatusGoingAway, "websocket thread replaced by newer connection")
 				return
 			}
 			var failoverErr *service.UpstreamFailoverError

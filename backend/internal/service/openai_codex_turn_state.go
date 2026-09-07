@@ -2,7 +2,6 @@ package service
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,19 +24,15 @@ type openAICodexTurnStateOrigin struct {
 	expiresAt time.Time
 }
 
-// openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
-// 客户端会话标识直接取自原始请求头（见 extractClientSessionID），确保同一
-// 下游会话的记录/守卫两侧使用同一键；它不参与指纹 session 模式的深层 ID 改写。
-// 无会话标识时返回空串，表示不做跟踪（保持透传现状）。
+// Provenance follows the caller's original tenant/session/thread, never the
+// shared root session alone or fingerprint-rewritten outbound identifiers.
+// Without an explicit thread identity, preserve the caller's opaque echo.
 func openAICodexTurnStateSeed(c *gin.Context) string {
-	if c == nil || c.Request == nil {
+	scope := resolveOpenAIWSThreadScope(c, nil)
+	if !scope.explicit {
 		return ""
 	}
-	sessionID := extractClientSessionID(c.Request.Header)
-	if sessionID == "" {
-		return ""
-	}
-	return strconv.FormatInt(getAPIKeyIDFromContext(c), 10) + "\x00" + sessionID
+	return scope.hash
 }
 
 // relayOpenAICodexTurnState 将上游响应中的 turn-state 显式写入下游响应头，

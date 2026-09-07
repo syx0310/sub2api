@@ -98,6 +98,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if account == nil {
 		return errors.New("account is nil")
 	}
+	// Freeze raw client thread identity before fingerprint/header rewrites.
+	resolveOpenAIWSThreadScope(c, firstClientMessage)
 	// A handler may reuse the same gin context across account failover attempts.
 	// Never let an OAuth attempt's response aliases leak into the next account.
 	setCodexToolNameReverse(c, nil)
@@ -117,9 +119,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	// The handler normally owns this registration across retry attempts. Direct
-	// callers still get the same session-scoped preemption behavior here.
-	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, firstClientMessage); armed {
+	forwardModel := ""
+	if hooks != nil {
+		forwardModel = hooks.InitialForwardModel
+	}
+	route, routeErr := s.resolveOpenAIWSIngressRoute(account, firstClientMessage, forwardModel)
+	if routeErr != nil {
+		return routeErr
+	}
+	// The handler owns this registration across retry attempts. Direct callers
+	// use the same effective route, including Astra's automatic duplex relay.
+	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, firstClientMessage, forwardModel); armed {
 		ctx = preemptCtx
 		defer cleanupPreempt()
 		defer func() {
@@ -128,74 +138,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}()
 	}
-
-	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
-	forceHTTPBridge := account.Platform == PlatformGrok ||
-		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
-	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
-	ingressMode := OpenAIWSIngressModeCtxPool
-	steeringModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
-	if hooks != nil && strings.TrimSpace(hooks.InitialForwardModel) != "" {
-		steeringModel = strings.TrimSpace(hooks.InitialForwardModel)
-	}
-	steeringModel = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(steeringModel))
-	if modeRouterV2Enabled && !forceHTTPBridge {
-		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
-		if ingressMode == OpenAIWSIngressModeOff {
-			return NewOpenAIWSClientCloseError(
-				coderws.StatusPolicyViolation,
-				"websocket mode is disabled for this account",
-				nil,
-			)
-		}
-		if ingressMode != OpenAIWSIngressModePassthrough &&
-			wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
-			isOpenAIGPT6AstraModel(steeringModel) {
-			logOpenAIWSModeInfo("ingress_ws_astra_steering_relay account_id=%d configured_mode=%s", account.ID, ingressMode)
-			return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision)
-		}
-		switch ingressMode {
-		case OpenAIWSIngressModePassthrough:
-			if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-				return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
-			}
-			if s.shouldBridgeOpenAIWSPassthroughFirstMessage(account, firstClientMessage) {
-				forceHTTPBridge = true
-				break
-			}
-			// Passthrough relay invokes both turn hooks, so per-turn profit checks,
-			// pricing snapshots, turn-start timestamps, and usage accounting match
-			// the pooled ingress path.
-			return s.proxyResponsesWebSocketV2Passthrough(
-				ctx,
-				c,
-				clientConn,
-				account,
-				token,
-				firstClientMessage,
-				hooks,
-				wsDecision,
-			)
-		case OpenAIWSIngressModeHTTPBridge:
-			forceHTTPBridge = true
-		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
-			// continue
-		default:
-			return NewOpenAIWSClientCloseError(
-				coderws.StatusPolicyViolation,
-				"websocket mode only supports ctx_pool/passthrough/http_bridge",
-				nil,
-			)
-		}
-	}
-	if !modeRouterV2Enabled && !forceHTTPBridge &&
-		wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
-		isOpenAIGPT6AstraModel(steeringModel) {
-		logOpenAIWSModeInfo("ingress_ws_astra_steering_relay account_id=%d configured_mode=legacy", account.ID)
+	wsDecision := route.protocol
+	ingressMode := route.mode
+	forceHTTPBridge := ingressMode == OpenAIWSIngressModeHTTPBridge
+	modeRouterV2Enabled := s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	if ingressMode == OpenAIWSIngressModePassthrough {
+		logOpenAIWSModeInfo("ingress_ws_relay_selected account_id=%d owner_preemption=false", account.ID)
 		return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision)
-	}
-	if !forceHTTPBridge && wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
 	dedicatedMode := modeRouterV2Enabled && ingressMode == OpenAIWSIngressModeDedicated
 
@@ -584,12 +533,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
 	sessionHash := ""
+	stateHash := openAIWSThreadStateHash(c, firstClientMessage, account)
 	preferredConnID := ""
 	storeDisabled := false
 	refreshIngressRouteState := func(payload openAIWSClientPayload) {
 		sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
-		if turnState == "" && stateStore != nil && sessionHash != "" {
-			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+		if turnState == "" && stateStore != nil && stateHash != "" {
+			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, stateHash); ok {
 				turnState = savedTurnState
 			}
 		}
@@ -602,8 +552,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(payload.payloadRaw, account)
-		if stateStore != nil && storeDisabled && payload.previousResponseID == "" && sessionHash != "" {
-			if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+		if stateStore != nil && storeDisabled && payload.previousResponseID == "" && stateHash != "" {
+			if connID, ok := stateStore.GetSessionConn(groupID, stateHash); ok {
 				preferredConnID = connID
 			}
 		}
@@ -638,12 +588,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if turnState != "" && c != nil && c.Request != nil {
 				c.Request.Header.Set(openAIWSTurnStateHeader, turnState)
 			}
-			if c != nil && sessionHash != "" {
-				c.Set(openAIWSIngressSessionHashContextKey, sessionHash)
-			}
 			// 剥离本会话已知失效的加密项，阻断同一失效密文随历史反复触发上游拒绝。
 			// 历史序列须同步剥离，否则与已剥离的当前 input 项错位，prefix 复用失配。
-			if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, sessionHash); len(invalidDigests) > 0 {
+			if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, stateHash); len(invalidDigests) > 0 {
 				strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
 					currentBridgePayload.payloadRaw, invalidDigests, "ingress_ws_http_bridge_invalid_encrypted_lineage_strip", account.ID, turn,
 				)
@@ -781,8 +728,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			if bridgeTurnState := strings.TrimSpace(result.ResponseHeaders.Get(openAIWSTurnStateHeader)); bridgeTurnState != "" {
 				turnState = bridgeTurnState
-				if stateStore != nil && sessionHash != "" {
-					stateStore.BindSessionTurnState(groupID, sessionHash, bridgeTurnState, s.openAIWSSessionStickyTTL())
+				if stateStore != nil && stateHash != "" {
+					withOpenAIWSActiveOwner(ctx, func() {
+						stateStore.BindSessionTurnState(groupID, stateHash, bridgeTurnState, s.openAIWSSessionStickyTTL())
+					})
 				}
 			}
 			responseID := strings.TrimSpace(result.RequestID)
@@ -833,9 +782,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	baseAcquireReq := openAIWSAcquireRequest{
-		Account: account,
-		WSURL:   wsURL,
-		Headers: wsHeaders,
+		ThreadScope: openAIWSPoolThreadScope(c, account),
+		Account:     account,
+		WSURL:       wsURL,
+		Headers:     wsHeaders,
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
 			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
 		},
@@ -972,8 +922,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		connID := strings.TrimSpace(lease.ConnID())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			turnState = handshakeTurnState
-			if stateStore != nil && sessionHash != "" {
-				stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+			if stateStore != nil && stateHash != "" {
+				withOpenAIWSActiveOwner(ctx, func() {
+					stateStore.BindSessionTurnState(groupID, stateHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+				})
 			}
 			updatedHeaders := cloneHeader(baseAcquireReq.Headers)
 			if updatedHeaders == nil {
@@ -1122,7 +1074,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if fallbackReason == openAIWSFallbackReasonInvalidEncryptedContent {
 					// 记录被上游拒绝的密文摘要；错误照旧透传，下一轮进场时按摘要预剥离。
 					if digests := collectOpenAIEncryptedContentDigestsRaw(payload); len(digests) > 0 {
-						s.markOpenAIWSInvalidEncryptedContentLineage(groupID, sessionHash, digests)
+						s.markOpenAIWSInvalidEncryptedContentLineage(groupID, stateHash, digests)
 						logOpenAIWSModeInfo(
 							"ingress_ws_invalid_encrypted_lineage_mark account_id=%d turn=%d digests=%d",
 							account.ID,
@@ -1422,7 +1374,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		skipBeforeTurn = false
 		// 剥离本会话已知失效的加密项，阻断同一失效密文随历史反复触发上游拒绝。
 		// 历史序列须同步剥离，否则与已剥离的当前 input 项错位，prefix 复用失配。
-		if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, sessionHash); len(invalidDigests) > 0 {
+		if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, stateHash); len(invalidDigests) > 0 {
 			strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
 				currentPayload, invalidDigests, "ingress_ws_invalid_encrypted_lineage_strip", account.ID, turn,
 			)
@@ -1598,8 +1550,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 			stateStore.BindResponseConn(responseID, connID, ttl)
 		}
-		if stateStore != nil && storeDisabled && sessionHash != "" {
-			stateStore.BindSessionConn(groupID, sessionHash, connID, s.openAIWSSessionStickyTTL())
+		if stateStore != nil && storeDisabled && stateHash != "" {
+			withOpenAIWSActiveOwner(ctx, func() {
+				stateStore.BindSessionConn(groupID, stateHash, connID, s.openAIWSSessionStickyTTL())
+			})
 		}
 		if connID != "" {
 			preferredConnID = connID
