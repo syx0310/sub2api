@@ -13,13 +13,16 @@ const compatPromptCacheKeyPrefix = "compat_cc_"
 
 func shouldAutoInjectPromptCacheKeyForCompat(model string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(model))
+	if isOpenAIGPT6AstraModel(trimmed) {
+		return true
+	}
 	// 仅对 Responses 兼容路径支持的 GPT-5 族开启自动注入，避免 normalizeCodexModel
 	// 的默认兜底把任意模型（如 gpt-4o、claude-*）误判为 gpt-5.4。
-	if !strings.Contains(trimmed, "gpt-5") && !strings.Contains(trimmed, "codex") && !isOpenAIGPT6AstraModel(trimmed) {
+	if !strings.Contains(trimmed, "gpt-5") && !strings.Contains(trimmed, "codex") {
 		return false
 	}
 	normalized := strings.TrimSpace(strings.ToLower(normalizeCodexModel(trimmed)))
-	return strings.HasPrefix(normalized, "gpt-5") || strings.Contains(normalized, "codex") || isOpenAIGPT6AstraModel(normalized)
+	return strings.HasPrefix(normalized, "gpt-5") || strings.Contains(normalized, "codex")
 }
 
 func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedModel string) string {

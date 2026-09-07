@@ -99,11 +99,15 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 	newLog := func(path string) *service.UsageLog {
 		requestBytes := int64(1200 + len(path))
 		responseBytes := int64(3400 + len(path))
+		upstreamRequestID := "upstream-" + path
+		sessionID := "session-" + path
 		return &service.UsageLog{
 			UserID:                    user.ID,
 			APIKeyID:                  apiKey.ID,
 			AccountID:                 account.ID,
 			RequestID:                 path + "-" + uuid.NewString(),
+			UpstreamRequestID:         &upstreamRequestID,
+			SessionID:                 &sessionID,
 			Model:                     "gpt-5.5",
 			InputTokens:               10,
 			OutputTokens:              20,
@@ -120,16 +124,19 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		t.Helper()
 		var requestBytes, responseBytes int64
 		var longContext bool
+		var upstreamRequestID, sessionID string
 		err := integrationDB.QueryRowContext(
 			ctx,
-			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
+			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied, upstream_request_id, session_id FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
 			log.RequestID,
 			log.APIKeyID,
-		).Scan(&requestBytes, &responseBytes, &longContext)
+		).Scan(&requestBytes, &responseBytes, &longContext, &upstreamRequestID, &sessionID)
 		require.NoError(t, err)
 		require.Equal(t, *log.RequestBodyBytes, requestBytes)
 		require.Equal(t, *log.ResponseBodyBytes, responseBytes)
 		require.True(t, longContext)
+		require.Equal(t, *log.UpstreamRequestID, upstreamRequestID)
+		require.Equal(t, *log.SessionID, sessionID)
 	}
 
 	t.Run("single", func(t *testing.T) {
@@ -142,6 +149,8 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		require.Equal(t, log.RequestBodyBytes, stored.RequestBodyBytes)
 		require.Equal(t, log.ResponseBodyBytes, stored.ResponseBodyBytes)
 		require.True(t, stored.LongContextBillingApplied)
+		require.Equal(t, log.UpstreamRequestID, stored.UpstreamRequestID)
+		require.Equal(t, log.SessionID, stored.SessionID)
 	})
 
 	t.Run("create_batch", func(t *testing.T) {
