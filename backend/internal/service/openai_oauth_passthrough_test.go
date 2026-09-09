@@ -1071,6 +1071,44 @@ func TestOpenAIGatewayService_OAuthPassthrough_SystemRoleRewrittenToDeveloper(t 
 	require.Equal(t, "user", secondRole, "user role should be preserved")
 }
 
+func TestOpenAIGatewayService_Forward_MappedAstraKeepsNativeInstructionsPlaceholder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_mapped_astra"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"", "data: [DONE]", "",
+		}, "\n"))),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+			"model_mapping":      map[string]any{"astra-public": "gpt-6-astra"},
+		},
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff,
+		},
+		Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"astra-public","stream":true,"store":true,"input":[{"type":"text","text":"hi"}]}`))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-6-astra", gjson.GetBytes(upstream.lastBody, "model").String())
+	instructions := gjson.GetBytes(upstream.lastBody, "instructions")
+	require.True(t, instructions.Exists())
+	require.Empty(t, instructions.String(), "native Responses must not acquire an injected agent prompt after model mapping")
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

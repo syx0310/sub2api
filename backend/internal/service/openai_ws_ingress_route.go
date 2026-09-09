@@ -54,6 +54,9 @@ func (s *OpenAIGatewayService) resolveOpenAIWSIngressRoute(account *Account, fir
 		if route.protocol.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 			return route, fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", route.protocol.Transport)
 		}
+		if s.shouldBridgeOpenAIWSPassthroughFirstMessage(account, firstMessage) {
+			route.mode = OpenAIWSIngressModeHTTPBridge
+		}
 	default:
 		return route, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "websocket mode only supports ctx_pool/passthrough/http_bridge", nil)
 	}

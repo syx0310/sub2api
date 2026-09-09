@@ -83,7 +83,7 @@ func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemption(
 	}
 	route, routeErr := s.resolveOpenAIWSIngressRoute(account, firstClientMessage, forwardModel)
 	registration, _ := ctx.Value(openAIWSSessionPreemptContextKey{}).(*openAIWSSessionPreemptRegistration)
-	if routeErr != nil || route.mode == OpenAIWSIngressModePassthrough || !scope.explicit ||
+	if routeErr != nil || route.mode == OpenAIWSIngressModePassthrough || route.mode == OpenAIWSIngressModeHTTPBridge || !scope.explicit ||
 		account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
 		if registration != nil {
 			// A failover can change the effective transport. Remove the old owner
