@@ -193,8 +193,8 @@ func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Co
 	until := time.Now().Add(openAITransportErrorTempUnschedDuration)
 	reason := "upstream transport error (proxy/network): " + safeErr
 
-	// Immediate in-memory block (honoured by the scheduler at selection time),
-	// effective even if the DB write below fails or the account cache lags.
+	// Immediate in-memory protection also covers a failed DB write or lagging
+	// account cache. Only a newer recovery snapshot can retire this block early.
 	s.BlockAccountScheduling(account, until, "transport_error")
 
 	if s.accountRepo == nil {

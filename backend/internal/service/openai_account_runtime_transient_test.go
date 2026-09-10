@@ -111,6 +111,8 @@ func TestHandleOpenAITransientError_HardDisableStillBlocksWholeAccount(t *testin
 
 	svc.BlockAccountScheduling(account, time.Now().Add(time.Minute), "upstream_disable")
 
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
 	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.6-sol"))
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
