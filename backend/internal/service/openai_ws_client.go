@@ -353,3 +353,12 @@ func (c *coderOpenAIWSClientConn) Close() error {
 	_ = c.conn.CloseNow()
 	return nil
 }
+
+// CloseNow discards a poisoned execution without waiting for a silent peer's
+// close handshake. Ordinary clean pool shutdown still uses Close.
+func (c *coderOpenAIWSClientConn) CloseNow() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.CloseNow()
+}

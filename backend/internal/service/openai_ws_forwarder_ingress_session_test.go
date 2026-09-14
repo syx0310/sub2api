@@ -4872,11 +4872,15 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 		events: [][]byte{
 			[]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"The encrypted content could not be verified"}}`),
 			[]byte(`{"type":"response.failed","response":{"id":"resp_enc_lineage_1","model":"gpt-5.1","error":{"code":"invalid_encrypted_content","message":"The encrypted content could not be verified"}}}`),
+		},
+	}
+	secondUpstreamConn := &openAIWSCaptureConn{
+		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_enc_lineage_2","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
 		},
 	}
 	dialer := &openAIWSQueueDialer{
-		conns: []openAIWSClientConn{upstreamConn},
+		conns: []openAIWSClientConn{upstreamConn, secondUpstreamConn},
 	}
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(dialer)
@@ -4943,7 +4947,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	defer wsServer.Close()
 
 	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
-	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
+	dialOptions := &coderws.DialOptions{HTTPHeader: http.Header{"Session-Id": {"lineage-session"}, "Thread-Id": {"lineage-thread"}}}
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), dialOptions)
 	cancelDial()
 	require.NoError(t, err)
 	defer func() {
@@ -4971,8 +4976,20 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	require.Equal(t, "invalid_encrypted_content", gjson.GetBytes(firstEvent, "error.code").String())
 	secondEvent := readMessage()
 	require.Equal(t, "response.failed", gjson.GetBytes(secondEvent, "type").String())
+	select {
+	case serverErr := <-serverErrCh:
+		require.ErrorIs(t, serverErr, errOpenAIWSBareErrorSettled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("failed connection was not retired")
+	}
+	_ = clientConn.CloseNow()
+	dialCtx, cancelDial = context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err = coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), dialOptions)
+	cancelDial()
+	require.NoError(t, err)
 
-	// turn2：客户端历史仍带同一失效密文，进场应被 lineage 预剥离后再发上游。
+	// The next create must use a fresh socket, while the same raw thread retains
+	// its invalid-cipher lineage and does not replay the failed request itself.
 	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[{"type":"reasoning","id":"rs_1","encrypted_content":"stale-cipher","summary":[]},{"type":"input_text","text":"hi"},{"type":"input_text","text":"again"}]}`)
 	thirdEvent := readMessage()
 	require.Equal(t, "response.completed", gjson.GetBytes(thirdEvent, "type").String())
@@ -4989,7 +5006,10 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	upstreamConn.mu.Lock()
 	writes := append([]map[string]any(nil), upstreamConn.writes...)
 	upstreamConn.mu.Unlock()
-	require.Len(t, writes, 2, "两轮各应发送一次上游请求")
+	secondUpstreamConn.mu.Lock()
+	writes = append(writes, secondUpstreamConn.writes...)
+	secondUpstreamConn.mu.Unlock()
+	require.Len(t, writes, 2, "each socket dispatches its create exactly once")
 
 	firstUpstream := requestToJSONString(writes[0])
 	require.Equal(t, "stale-cipher", gjson.Get(firstUpstream, "input.0.encrypted_content").String(), "首轮请求原样携带密文")

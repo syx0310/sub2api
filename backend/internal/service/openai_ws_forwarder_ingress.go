@@ -487,10 +487,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}, nil
 	}
 
+	var bareErrorDrain openAIWSBareErrorDrain
 	writeClientMessage := func(message []byte) error {
-		reasoningSession.observeTerminal(message)
+		if !bareErrorDrain.active() {
+			reasoningSession.observeTerminal(message)
+		}
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
+		writeCtx, cancelDrain := bareErrorDrain.deadlineContext(writeCtx)
+		defer cancelDrain()
 		message = restoreCodexToolNamesFromContext(c, message)
 		return clientConn.Write(writeCtx, coderws.MessageText, message)
 	}
@@ -994,6 +999,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		needModelReplace := false
 		clientDisconnected := false
 		var drainedWriteErr error
+		failureAccountSideEffectsApplied := false
 		readCtx := ctx
 		drainingClient := false
 		mappedModel := ""
@@ -1008,9 +1014,42 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				mappedModelBytes = []byte(mappedModel)
 			}
 		}
+		resultWithUsage := func(terminalEvent string) *OpenAIForwardResult {
+			result := &OpenAIForwardResult{
+				RequestID: responseID, Usage: usage, Model: originalModel, UpstreamModel: mappedModel,
+				UpstreamResponseModel:         responseModelObserver.Model(),
+				UpstreamResponseModelConflict: responseModelObserver.Conflict(),
+				UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
+				ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTierFromBody(payload)),
+				ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
+				RequestedReasoningEffort:      requestedReasoningEffort, Stream: reqStream, OpenAIWSMode: true,
+				UpstreamTerminalEvent: terminalEvent, ResponseHeaders: lease.HandshakeHeaders(),
+				Duration: time.Since(turnStart), FirstTokenMs: firstTokenMs,
+				RequestBodyBytes: bodyBytesPtr(requestBodyBytes), ResponseBodyBytes: bodyBytesPtr(downstreamBytes),
+				ClientDisconnect: clientDisconnected,
+			}
+			if imageCount := imageCounter.Count(); imageCount > 0 {
+				result.ImageCount, result.ImageSize, result.ImageInputSize = imageCount, imageSizeTier, imageInputSize
+				result.ImageOutputSizes, result.BillingModel = imageCounter.Sizes(), imageBillingModel
+			}
+			reasoningSession.stamp(result)
+			return result
+		}
+		finishBareError := func(terminal string) (*OpenAIForwardResult, error) {
+			if conn, err := lease.activeConn(); err == nil && conn.ws != nil {
+				_ = abortOpenAIWSBareErrorConn(conn.ws)
+			}
+			lease.MarkBroken()
+			return resultWithUsage(terminal), openAIWSBareErrorCloseError()
+		}
 		for {
-			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(readCtx, s.openAIWSReadTimeout())
+			boundedReadCtx, cancelRead := bareErrorDrain.deadlineContext(readCtx)
+			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(boundedReadCtx, s.openAIWSReadTimeout())
+			cancelRead()
 			if readErr != nil {
+				if bareErrorDrain.active() {
+					return finishBareError("error")
+				}
 				lease.MarkBroken()
 				upstreamReadErr := wrapOpenAIWSIngressTurnError(
 					"read_upstream",
@@ -1021,6 +1060,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return nil, errors.Join(drainedWriteErr, upstreamReadErr)
 				}
 				return nil, upstreamReadErr
+			}
+			if !bareErrorDrain.acceptTrailing(upstreamMessage) {
+				return finishBareError("error")
 			}
 			if normalized, changed := normalizeCompletedImageGenerationStatus(upstreamMessage); changed {
 				upstreamMessage = normalized
@@ -1047,7 +1089,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				markOpenAICyberPolicyEvent(c, upstreamMessage, http.StatusOK, &usage)
 			}
 			if eventType == "error" {
-				s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), upstreamMessage)
+				if !failureAccountSideEffectsApplied {
+					s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), upstreamMessage)
+					failureAccountSideEffectsApplied = openAIWSPayloadTransientStatus(upstreamMessage) != 0
+				}
 				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(upstreamMessage)
 				statusCode := openAIWSRejectedFieldRetryHTTPStatus(upstreamMessage)
 				if !wroteDownstream && statusCode == http.StatusBadRequest && rejectedFieldRetryState != nil {
@@ -1119,6 +1164,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					lease.MarkBroken()
 					return nil, s.newOpenAIWSRateLimitFailoverError(account, lease.HandshakeHeaders(), upstreamMessage, errMsgRaw)
 				}
+			}
+			// Hidden retry/failover decisions above retain their original behavior.
+			// Once an ordinary error is visible, only settle it; never retry it.
+			bareErrorDrain.observe(upstreamMessage)
+			if bareErrorDrain.active() {
+				lease.DiscardOnRelease()
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
 			if isTokenEvent {
@@ -1201,7 +1252,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			}
 			if isTerminalEvent {
-				terminalEvent := s.handleOpenAIWSTerminalTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), upstreamMessage)
+				terminalEvent := normalizeOpenAIWSTerminalEvent(eventType)
+				if !failureAccountSideEffectsApplied {
+					terminalEvent = s.handleOpenAIWSTerminalTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), upstreamMessage)
+				}
+				if bareErrorDrain.active() {
+					return finishBareError(terminalEvent)
+				}
 				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。
 				if clientDisconnected {
 					lease.MarkBroken()
@@ -1227,37 +1284,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						clientDisconnected,
 					)
 				}
-				imageCount := imageCounter.Count()
-				result := &OpenAIForwardResult{
-					RequestID:                     responseID,
-					Usage:                         usage,
-					Model:                         originalModel,
-					UpstreamModel:                 mappedModel,
-					UpstreamResponseModel:         responseModelObserver.Model(),
-					UpstreamResponseModelConflict: responseModelObserver.Conflict(),
-					UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
-					ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTierFromBody(payload)),
-					ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
-					RequestedReasoningEffort:      requestedReasoningEffort,
-					Stream:                        reqStream,
-					OpenAIWSMode:                  true,
-					UpstreamTerminalEvent:         terminalEvent,
-					ResponseHeaders:               lease.HandshakeHeaders(),
-					Duration:                      time.Since(turnStart),
-					FirstTokenMs:                  firstTokenMs,
-					RequestBodyBytes:              bodyBytesPtr(requestBodyBytes),
-					ResponseBodyBytes:             bodyBytesPtr(downstreamBytes),
-					ClientDisconnect:              clientDisconnected,
-				}
-				if imageCount > 0 {
-					result.ImageCount = imageCount
-					result.ImageSize = imageSizeTier
-					result.ImageInputSize = imageInputSize
-					result.ImageOutputSizes = imageCounter.Sizes()
-					result.BillingModel = imageBillingModel
-				}
-				reasoningSession.stamp(result)
-				return result, drainedWriteErr
+				return resultWithUsage(terminalEvent), drainedWriteErr
 			}
 		}
 	}

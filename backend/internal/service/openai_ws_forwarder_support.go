@@ -207,6 +207,8 @@ func isOpenAIWSTerminalEvent(eventType string) bool {
 
 func normalizeOpenAIWSTerminalEvent(eventType string) string {
 	switch strings.TrimSpace(eventType) {
+	case "error":
+		return "error"
 	case "response.completed":
 		return "response.completed"
 	case "response.done":

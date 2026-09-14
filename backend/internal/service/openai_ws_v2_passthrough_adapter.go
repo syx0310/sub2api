@@ -21,6 +21,7 @@ import (
 
 type openAIWSClientFrameConn struct {
 	conn                 *coderws.Conn
+	bareErrorDrain       *openAIWSBareErrorDrain
 	controlCtx           context.Context
 	interTurnIdleTimeout time.Duration
 	interTurnStarted     chan struct{}
@@ -690,6 +691,8 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := c.bareErrorDrain.deadlineContext(ctx)
+	defer cancel()
 	if msgType == coderws.MessageText {
 		if normalized, changed := normalizeCompletedImageGenerationStatus(payload); changed {
 			payload = normalized
@@ -736,6 +739,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return errors.New("account is nil")
 	}
 	initialRequestBodyBytes := int64(len(firstClientMessage))
+	bareErrorDrain := &openAIWSBareErrorDrain{}
 	if hooks != nil && hooks.InitialRequestBodyBytes != nil && *hooks.InitialRequestBodyBytes >= 0 {
 		initialRequestBodyBytes = *hooks.InitialRequestBodyBytes
 	}
@@ -1079,6 +1083,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
 	clientFrameConn := &openAIWSClientFrameConn{
+		bareErrorDrain:       bareErrorDrain,
 		conn:                 clientConn,
 		controlCtx:           ctx,
 		interTurnIdleTimeout: s.openAIWSIngressInterTurnIdleTimeout(),
@@ -1102,6 +1107,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
 		// 加锁/原子化。
 		filter: func(msgType coderws.MessageType, payload []byte) (out []byte, blocked *OpenAIFastBlockedError, filterErr error) {
+			if bareErrorDrain.active() {
+				return payload, nil, openAIWSBareErrorCloseError()
+			}
 			clientPayloadBytes := int64(len(payload))
 			var reasoningFrame *openAIWSReasoningFrame
 			if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
@@ -1323,7 +1331,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	relayResult, relayExit := openaiwsv2.RunEntry(openaiwsv2.EntryInput{
 		Ctx:                ctx,
 		ClientConn:         policyClientConn,
-		UpstreamConn:       relayUpstreamFrameConn,
+		UpstreamConn:       &openAIWSBareErrorFrameConn{FrameConn: relayUpstreamFrameConn, drain: bareErrorDrain, abort: func() error { return abortOpenAIWSBareErrorConn(upstreamConn) }},
 		FirstClientMessage: firstClientMessage,
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:       s.openAIWSWriteTimeout(),
@@ -1356,7 +1364,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			OnUpstreamEventAccepted: func(msgType coderws.MessageType, payload []byte) {
 				relayUpstreamFrameConn.observeUpstreamActivity(msgType, payload)
 				if msgType == coderws.MessageText {
-					reasoningSession.observeTerminal(payload)
+					// Bare errors arm only after BeforeWriteClient has ruled out a
+					// hidden rate-limit failover or a dedicated reconnect close.
+					if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "error" {
+						bareErrorDrain.observe(payload)
+					}
+					if !bareErrorDrain.active() {
+						reasoningSession.observeTerminal(payload)
+					}
 				}
 			},
 			OnTerminalObserved: sealRequestBodyBytes,
@@ -1483,6 +1498,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeRelayCancel: func(exit openaiwsv2.RelayExit) {
+				// Settle pending usage and release turn slots before any potentially
+				// slow downstream close handshake. The handler sends the close after
+				// RunEntry returns; no more create frames are admitted meanwhile.
+				if bareErrorDrain.active() {
+					return
+				}
 				if context.Cause(ctx) != nil {
 					return
 				}
@@ -1506,6 +1527,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					failureAccountSideEffectsApplied = false
 				}
 				if (eventType == "error" || eventType == "response.failed") && markOpenAIWSV2PassthroughCyberPolicy(c, payload) {
+					bareErrorDrain.observe(payload)
 					return nil
 				}
 				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(payload)
@@ -1517,6 +1539,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					return nil
 				}
 				if wroteDownstream || !isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw) {
+					bareErrorDrain.observe(payload)
 					return nil
 				}
 				s.persistOpenAIWSRateLimitSignal(ctx, account, handshakeHeaders, payload, errCodeRaw, errTypeRaw, errMsgRaw, capturedSessionModel)
@@ -1597,6 +1620,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	reasoningSession.stamp(result)
 	turnCount := int(completedTurns.Load())
 	if relayExit == nil {
+		if bareErrorDrain.active() {
+			return openAIWSBareErrorCloseError()
+		}
 		logOpenAIWSV2Passthrough(
 			"relay_completed account_id=%d request_id=%s terminal_event=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d turns=%d",
 			account.ID,
