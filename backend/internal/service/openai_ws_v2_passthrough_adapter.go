@@ -742,19 +742,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
-	if isOpenAIResponsesLiteWebSocketPayload(firstClientMessage) {
-		liteFirstMessage, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(firstClientMessage, account)
-		if liteErr != nil {
-			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, liteErr.Error(), liteErr)
-		}
-		firstClientMessage = liteFirstMessage
-	}
 	originalFirstClientMessage := firstClientMessage
-	if next, policyErr := applyOpenAIWSReasoningEffortPolicy(firstClientMessage, hooks); policyErr != nil {
-		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
+	reasoningSession := s.newOpenAIWSReasoningSession(ctx, c, account, firstClientMessage)
+	if normalized, metadataErr := normalizeOpenAIWSInitialTurnMetadata(firstClientMessage, c.GetHeader(openAIWSTurnMetadataHeader), 1); metadataErr != nil {
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", metadataErr)
 	} else {
-		firstClientMessage = next
+		firstClientMessage = normalized
 	}
+	nextReasoningBody, firstReasoningFrame, reasoningErr := reasoningSession.prepare(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String(), hooks)
+	if reasoningErr != nil {
+		return openAIWSReasoningPolicyCloseError(reasoningErr)
+	}
+	firstClientMessage = nextReasoningBody
 	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
@@ -871,6 +870,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if accountScoped {
 		firstClientMessage = accountScopedFirst
 	}
+	if firstMessageResponsesLite {
+		liteFirstMessage, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(firstClientMessage, account)
+		if liteErr != nil {
+			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, liteErr.Error(), liteErr)
+		}
+		firstClientMessage = liteFirstMessage
+	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
@@ -924,6 +930,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// goroutine）之间同步当前 turn 的 usage metadata。
 	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
 	usageMeta.captureRequestedReasoningEffort(originalFirstClientMessage, capturedSessionModel)
+	reasoningSession.activate(firstReasoningFrame, firstClientMessage, capturedSessionModel, initialRequestModel)
+	reasoningSession.stampPassthrough(usageMeta)
 	_, initialUpstreamModel := usageMeta.turnModels(initialRequestModel)
 	SetOpsUpstreamModel(c, initialUpstreamModel)
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
@@ -1095,6 +1103,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// 加锁/原子化。
 		filter: func(msgType coderws.MessageType, payload []byte) (out []byte, blocked *OpenAIFastBlockedError, filterErr error) {
 			clientPayloadBytes := int64(len(payload))
+			var reasoningFrame *openAIWSReasoningFrame
 			if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
 				addRequestBodyBytes(clientPayloadBytes)
 				return payload, nil, nil
@@ -1134,6 +1143,26 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						return payload, nil, err
 					}
 				}
+				if requestModelForThisFrame != "" && strings.TrimSpace(gjson.GetBytes(payload, "model").String()) == "" {
+					payload = s.ReplaceModelInBody(payload, requestModelForThisFrame)
+				}
+				next, prepared, policyErr := reasoningSession.prepare(payload, requestModelForThisFrame, hooks)
+				if policyErr != nil {
+					return payload, nil, openAIWSReasoningPolicyCloseError(policyErr)
+				}
+				payload, reasoningFrame = next, prepared
+				if hooks != nil && hooks.MapRequestModel != nil {
+					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
+					if err != nil {
+						return payload, nil, err
+					}
+					if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
+						payload = s.ReplaceModelInBody(payload, upstreamModel)
+					}
+				}
+				if upstreamModel := openAIWSPassthroughPolicyModelForFrame(account, payload); upstreamModel != "" {
+					payload = s.ReplaceModelInBody(payload, upstreamModel)
+				}
 				if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(payload, account, responsesLite); normalizeErr != nil {
 					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", normalizeErr)
 				} else if compatibilityChanged {
@@ -1167,25 +1196,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					}
 					payload = litePayload
 				}
-				if requestModelForThisFrame != "" && strings.TrimSpace(gjson.GetBytes(payload, "model").String()) == "" {
-					// Preserve the session-level client model long enough for exact/prefix/
-					// suffix reasoning mappings; MapRequestModel replaces it before dispatch.
-					payload = s.ReplaceModelInBody(payload, requestModelForThisFrame)
-				}
-				if next, policyErr := applyOpenAIWSReasoningEffortPolicy(payload, hooks); policyErr != nil {
-					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
-				} else {
-					payload = next
-				}
-				if hooks != nil && hooks.MapRequestModel != nil {
-					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
-					if err != nil {
-						return payload, nil, err
-					}
-					if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
-						payload = s.ReplaceModelInBody(payload, upstreamModel)
-					}
-				}
 			}
 			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
 			// session.update 修改 session-level model（Realtime /
@@ -1207,18 +1217,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// model whitelist still resolves. An empty model would miss
 			// any whitelist and silently fall back to pass.
 			model := openAIWSPassthroughPolicyModelForFrame(account, payload)
+			if isResponseCreate {
+				// Already channel/account mapped before compatibility above. Do not
+				// apply a second account mapping to a mapping destination.
+				model = strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+			}
 			if model == "" {
 				model = capturedSessionModel
 			}
 			if isResponseCreate && model != "" && model != strings.TrimSpace(gjson.GetBytes(payload, "model").String()) {
 				payload = s.ReplaceModelInBody(payload, model)
-			}
-			if isResponseCreate && isOpenAIGPT6AstraModel(model) {
-				normalized, _, normalizeErr := normalizeGPT6AstraRequestBody(payload, false)
-				if normalizeErr != nil {
-					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid GPT-6 Astra websocket request payload", normalizeErr)
-				}
-				payload = normalized
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
@@ -1256,6 +1264,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				pushRequestBodyBytes(clientPayloadBytes)
 				usageMeta.updateFromResponseCreate(out, model, requestModelForThisFrame)
+				reasoningSession.activate(reasoningFrame, out, model, requestModelForThisFrame)
+				reasoningSession.stampPassthrough(usageMeta)
 				_, actualModel := usageMeta.turnModels(requestModelForThisFrame)
 				SetOpsUpstreamModel(c, actualModel)
 				responseCreateAtCopy := responseCreateAt
@@ -1343,8 +1353,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(usageRaw, openAIWSLogValueMaxLen),
 				)
 			},
-			OnUpstreamEventAccepted: relayUpstreamFrameConn.observeUpstreamActivity,
-			OnTerminalObserved:      sealRequestBodyBytes,
+			OnUpstreamEventAccepted: func(msgType coderws.MessageType, payload []byte) {
+				relayUpstreamFrameConn.observeUpstreamActivity(msgType, payload)
+				if msgType == coderws.MessageText {
+					reasoningSession.observeTerminal(payload)
+				}
+			},
+			OnTerminalObserved: sealRequestBodyBytes,
 			BeforeAutomaticTurn: func(automatic openaiwsv2.RelayAutomaticTurn) error {
 				turnHooksMu.Lock()
 				defer turnHooksMu.Unlock()
@@ -1380,6 +1395,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "overlapping automatic steering continuation is not supported", nil)
 				}
 				pushRequestBodyBytes(int64(len(automatic.ClientPayload)))
+				reasoningSession.beginAutomatic()
+				reasoningSession.stampPassthrough(usageMeta)
 				relayUpstreamFrameConn.armDeadlineAt(auditPayload, automatic.StartedAt)
 				SetOpsUpstreamModel(c, inheritedUpstreamModel)
 				return nil
@@ -1418,6 +1435,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					RequestBodyBytes:              bodyBytesPtr(popRequestBodyBytes()),
 					ResponseBodyBytes:             bodyBytesPtr(turn.ResponseBodyBytes),
 				}
+				reasoningSession.stamp(turnResult)
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s turn_requested_model=%s turn_upstream_model=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
 					account.ID,
@@ -1576,6 +1594,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		ResponseBodyBytes:             bodyBytesPtr(relayResult.ResponseBodyBytes),
 	}
 
+	reasoningSession.stamp(result)
 	turnCount := int(completedTurns.Load())
 	if relayExit == nil {
 		logOpenAIWSV2Passthrough(

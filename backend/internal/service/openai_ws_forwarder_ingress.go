@@ -128,7 +128,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return routeErr
 	}
 	// The handler owns this registration across retry attempts. Direct callers
-	// use the same effective route, including Astra's automatic duplex relay.
+	// use the same account-configured route, including pooled Astra sessions.
 	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, firstClientMessage, forwardModel); armed {
 		ctx = preemptCtx
 		defer cleanupPreempt()
@@ -170,6 +170,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	debugEnabled := isOpenAIWSModeDebugEnabled()
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	reasoningSession := s.newOpenAIWSReasoningSession(ctx, c, account, firstClientMessage)
 
 	type openAIWSClientPayload struct {
 		payloadRaw               []byte
@@ -184,6 +185,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		requestBodyBytes         int64
 		payloadBytes             int
 		requestedReasoningEffort *string
+		reasoningFrame           *openAIWSReasoningFrame
 	}
 	ingressSessionOriginalModel := ""
 
@@ -281,9 +283,29 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		if next, policyErr := applyOpenAIWSReasoningEffortPolicy(normalized, hooks); policyErr != nil {
-			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
-		} else {
+		nextReasoningBody, reasoningFrame, policyErr := reasoningSession.prepare(normalized, originalModel, hooks)
+		if policyErr != nil {
+			return openAIWSClientPayload{}, openAIWSReasoningPolicyCloseError(policyErr)
+		}
+		normalized = nextReasoningBody
+		// Policy is scoped to the client model; compatibility must instead see
+		// the actual upstream model, including aliases mapped to Astra.
+		requestModel := originalModel
+		if hooks != nil && hooks.MapRequestModel != nil {
+			mappedModel, mapErr := hooks.MapRequestModel(turn, originalModel)
+			if mapErr != nil {
+				return openAIWSClientPayload{}, mapErr
+			}
+			if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
+				requestModel = mappedModel
+			}
+		}
+		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(requestModel))
+		if modelMissing || upstreamModel != originalModel {
+			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
+			if setErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
+			}
 			normalized = next
 		}
 		responsesLite := isOpenAIResponsesLiteWebSocketPayload(normalized)
@@ -312,11 +334,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" {
-			next, setErr := applyPayloadMutation(normalized, "client_metadata."+openAIWSTurnMetadataHeader, turnMetadata)
-			if setErr != nil {
-				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
-			}
+		if next, metadataErr := normalizeOpenAIWSInitialTurnMetadata(normalized, c.GetHeader(openAIWSTurnMetadataHeader), turn); metadataErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", metadataErr)
+		} else {
 			normalized = next
 		}
 		accountIdentitySourceRaw := append([]byte(nil), normalized...)
@@ -377,31 +397,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				normalized = rebuilt
 			}
-		}
-		requestModel := originalModel
-		if hooks != nil && hooks.MapRequestModel != nil {
-			mappedModel, mapErr := hooks.MapRequestModel(turn, originalModel)
-			if mapErr != nil {
-				return openAIWSClientPayload{}, mapErr
-			}
-			if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
-				requestModel = mappedModel
-			}
-		}
-		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(requestModel))
-		if modelMissing || upstreamModel != originalModel {
-			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
-			if setErr != nil {
-				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
-			}
-			normalized = next
-		}
-		if isOpenAIGPT6AstraModel(upstreamModel) {
-			astraBody, _, astraErr := normalizeGPT6AstraRequestBody(normalized, false)
-			if astraErr != nil {
-				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid GPT-6 Astra websocket request payload", astraErr)
-			}
-			normalized = astraBody
 		}
 		SetOpsUpstreamModel(c, upstreamModel)
 		if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
@@ -488,10 +483,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			requestBodyBytes:         int64(len(raw)),
 			payloadBytes:             len(normalized),
 			requestedReasoningEffort: requestedReasoningEffort,
+			reasoningFrame:           reasoningFrame,
 		}, nil
 	}
 
 	writeClientMessage := func(message []byte) error {
+		reasoningSession.observeTerminal(message)
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
 		message = restoreCodexToolNamesFromContext(c, message)
@@ -673,6 +670,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return fmt.Errorf("resolve Grok websocket cache identity: %w", err)
 				}
 			}
+			reasoningSession.activate(currentBridgePayload.reasoningFrame, bridgePayloadRaw, gjson.GetBytes(bridgePayloadRaw, "model").String(), currentBridgePayload.originalModel)
 			result, bridgeErr := s.proxyOpenAIWSHTTPBridgeTurn(
 				ctx,
 				c,
@@ -692,6 +690,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if bridgeErr != nil && isOpenAIWSSessionPreempted(ctx) {
 				return errOpenAIWSSessionPreempted
 			}
+			reasoningSession.stamp(result)
 			if hooks != nil && hooks.AfterTurn != nil {
 				hooks.AfterTurn(turn, result, openAIWSTurnCallbackError(result, bridgeErr))
 			}
@@ -1257,6 +1256,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					result.ImageOutputSizes = imageCounter.Sizes()
 					result.BillingModel = imageBillingModel
 				}
+				reasoningSession.stamp(result)
 				return result, drainedWriteErr
 			}
 		}
@@ -1270,6 +1270,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentRequestBodyBytes := firstPayload.requestBodyBytes
 	currentPayloadBytes := firstPayload.payloadBytes
 	currentRequestedReasoningEffort := firstPayload.requestedReasoningEffort
+	currentReasoningFrame := firstPayload.reasoningFrame
 	isStrictAffinityTurn := func(payload []byte) bool {
 		if !storeDisabled {
 			return false
@@ -1508,6 +1509,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
+		reasoningSession.activate(currentReasoningFrame, currentPayload, gjson.GetBytes(currentPayload, "model").String(), currentOriginalModel)
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentRequestBodyBytes, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
 		if relayErr != nil {
 			lastTurnClean = false
@@ -1653,6 +1655,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentRequestBodyBytes = nextPayload.requestBodyBytes
 		currentPayloadBytes = nextPayload.payloadBytes
 		currentRequestedReasoningEffort = nextPayload.requestedReasoningEffort
+		currentReasoningFrame = nextPayload.reasoningFrame
 		rejectedFieldRetryState = newOpenAIResponsesRejectedFieldRetryState(currentPayload)
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
 		if !storeDisabled {

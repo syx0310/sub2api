@@ -76,9 +76,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
 	}
-	// The header copy is canonical for WS turn metadata. Scope it before it
-	// replaces the already-normalized body copy, then let fingerprint convergence
-	// overwrite only the fields enabled by the selected mode.
+	// Scope the legacy header fallback before filling a missing body field.
+	// An existing body snapshot is canonical; fingerprint convergence below
+	// still only changes fields enabled by the selected mode.
 	payloadTurnMetadata := turnMetadata
 	if payloadTurnMetadata != "" {
 		identityHeaders := make(http.Header)

@@ -888,7 +888,8 @@ func TestPassthroughLifecycle_GPT6AstraSteeringAutomaticContinuationRunsTurnHook
 		},
 	}
 	account := passthroughLifecycleAccount()
-	account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+	// Native mid-turn steering is an explicit passthrough capability, not a
+	// reason to override every Astra account's configured ctx_pool transport.
 	server, serverErr := startPassthroughLifecycleServerWithHooks(
 		t,
 		controlCtx,

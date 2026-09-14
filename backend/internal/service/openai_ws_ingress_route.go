@@ -2,10 +2,8 @@ package service
 
 import (
 	"fmt"
-	"strings"
 
 	coderws "github.com/coder/websocket"
-	"github.com/tidwall/gjson"
 )
 
 type openAIWSIngressRoute struct {
@@ -13,9 +11,10 @@ type openAIWSIngressRoute struct {
 	mode     string
 }
 
-// This is shared by owner registration and transport execution. In particular,
-// Astra's automatic duplex relay must be selected before claiming an owner.
-func (s *OpenAIGatewayService) resolveOpenAIWSIngressRoute(account *Account, firstMessage []byte, forwardModel string) (openAIWSIngressRoute, error) {
+// Owner registration and execution must honor the same configured transport.
+// Astra uses Codex's serial response.create protocol in ctx_pool; clients that
+// need native response.steer can explicitly select passthrough.
+func (s *OpenAIGatewayService) resolveOpenAIWSIngressRoute(account *Account, firstMessage []byte, _ string) (openAIWSIngressRoute, error) {
 	route := openAIWSIngressRoute{mode: OpenAIWSIngressModeCtxPool}
 	if s == nil || account == nil {
 		return route, fmt.Errorf("websocket ingress requires an account and service")
@@ -31,15 +30,6 @@ func (s *OpenAIGatewayService) resolveOpenAIWSIngressRoute(account *Account, fir
 		if route.mode == OpenAIWSIngressModeOff {
 			return route, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "websocket mode is disabled for this account", nil)
 		}
-	}
-	model := strings.TrimSpace(forwardModel)
-	if model == "" {
-		model = strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
-	}
-	model = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(model))
-	if route.mode != OpenAIWSIngressModePassthrough && route.protocol.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 && isOpenAIGPT6AstraModel(model) {
-		route.mode = OpenAIWSIngressModePassthrough
-		return route, nil
 	}
 	switch route.mode {
 	case OpenAIWSIngressModePassthrough:

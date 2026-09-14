@@ -60,6 +60,7 @@ type openAIWSTurnRequestSnapshot struct {
 	requestedModel     string
 	requestPayloadHash string
 	requestBodyBytes   *int64
+	semantics          service.OpenAIResponsesRequestSemantics
 }
 
 type openAIWSFastBillingIntentSnapshot struct {
@@ -2827,12 +2828,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		var turnChannelMapping atomic.Pointer[openAIWSTurnChannelMappingSnapshot]
 		turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: 1, mapping: channelMappingWS})
 		var turnRequestSnapshot atomic.Pointer[openAIWSTurnRequestSnapshot]
-		turnRequestSnapshot.Store(&openAIWSTurnRequestSnapshot{
-			turn:               1,
-			requestedModel:     reqModel,
-			requestPayloadHash: service.HashUsageRequestPayload(firstMessage),
-			requestBodyBytes:   firstRequestBodyBytes,
-		})
+		turnRequestSnapshot.Store(newOpenAIWSTurnRequestSnapshot(1, reqModel, firstMessage, firstRequestBodyBytes))
 		var turnFastBillingIntent atomic.Pointer[openAIWSFastBillingIntentSnapshot]
 		turnFastBillingIntent.Store(&openAIWSFastBillingIntentSnapshot{
 			turn:        1,
@@ -2891,12 +2887,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					model:       model,
 					serviceTier: gjson.GetBytes(payload, "service_tier").String(),
 				})
-				turnRequestSnapshot.Store(&openAIWSTurnRequestSnapshot{
-					turn:               turn,
-					requestedModel:     model,
-					requestPayloadHash: service.HashUsageRequestPayload(payload),
-					requestBodyBytes:   usageBodyBytesPtr(len(payload)),
-				})
+				turnRequestSnapshot.Store(newOpenAIWSTurnRequestSnapshot(turn, model, payload, usageBodyBytesPtr(len(payload))))
 				if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
 					writeSecurityAuditWSError(ctx, wsConn, decision)
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
@@ -2936,6 +2927,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			BeforeTurn: func(turn int) error {
 				turnScheduleResultReported.Store(false)
+				if snapshot := turnRequestSnapshot.Load(); snapshot != nil && snapshot.turn == turn {
+					reqLog.Info("openai.websocket_request_semantics",
+						zap.Int("turn", turn),
+						zap.String("request_kind", snapshot.semantics.Kind),
+						zap.Bool("prewarm", snapshot.semantics.Prewarm),
+						zap.Bool("native_compaction_v2", snapshot.semantics.NativeCompactionV2))
+				}
 				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。
 				if cyberBlockedThisConn {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)
@@ -3005,12 +3003,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				turnRequestedModel := reqModel
 				turnRequestPayloadHash := ""
 				var turnRequestBodyBytes *int64
+				var turnSemantics service.OpenAIResponsesRequestSemantics
 				if snapshot := turnRequestSnapshot.Load(); snapshot != nil && snapshot.turn == turn {
 					if model := strings.TrimSpace(snapshot.requestedModel); model != "" {
 						turnRequestedModel = model
 					}
 					turnRequestPayloadHash = snapshot.requestPayloadHash
 					turnRequestBodyBytes = snapshot.requestBodyBytes
+					turnSemantics = snapshot.semantics
 				}
 				turnUpstreamModel := ""
 				if result != nil {
@@ -3044,7 +3044,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnResponseBodyBytes = result.ResponseBodyBytes
 				}
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes)
+				h.recordCyberPolicyForRequest(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes, turnSemantics.NativeCompactionV2)
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
 					cyberBlockPendingAfterFailover,
@@ -3092,7 +3092,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					scheduleModel = turnRequestedModel
 				}
 				turnScheduleResultReported.Store(true)
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduleModel, openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
+				if !turnSemantics.Prewarm {
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduleModel, openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
+				}
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -3122,6 +3124,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						ChannelUsageFields: turnUsageFields,
 						PricingAt:          turnRecordPricingAt,
 						CyberBlocked:       cyberBlocked,
+						NativeCompactionV2: turnSemantics.NativeCompactionV2,
 					}); err != nil {
 						reqLog.Error("openai.websocket_record_usage_failed",
 							zap.Int64("account_id", account.ID),
@@ -3146,12 +3149,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if attemptModel == "" {
 				attemptModel = reqModel
 			}
-			turnRequestSnapshot.Store(&openAIWSTurnRequestSnapshot{
-				turn:               1,
-				requestedModel:     attemptModel,
-				requestPayloadHash: service.HashUsageRequestPayload(wsAttemptMessage),
-				requestBodyBytes:   attemptBodyBytes,
-			})
+			turnRequestSnapshot.Store(newOpenAIWSTurnRequestSnapshot(1, attemptModel, wsAttemptMessage, attemptBodyBytes))
 
 			// ProxyResponsesWebSocketFromClient starts its internal turn counter at
 			// one for each replacement account. Keep that transport detail, while
@@ -4307,6 +4305,12 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, requestBodyBytes, responseBodyBytes *int64) {
+	h.recordCyberPolicyForRequest(c, apiKey, account, subscription, model, forwardErrored, cyberBlockBody, channelFields, requestPayloadHash, requestBodyBytes, responseBodyBytes, service.IsOpenAINativeCompactionV2(c))
+}
+
+// Native WS passes the immutable turn flag explicitly. HTTP retains its
+// request-scoped gin marker through the wrapper above.
+func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, requestBodyBytes, responseBodyBytes *int64, nativeCompactionV2 bool) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -4367,7 +4371,6 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 	}
 	// 提前拍成标量，避免在下方 goroutine 内访问 gin.Context。
 	sessionID := service.ExtractClientSessionID(c)
-	nativeCompactionV2 := service.IsOpenAINativeCompactionV2(c)
 	apiKeyPrefix := ""
 	if apiKey != nil {
 		apiKeyPrefix = keyPrefix(apiKey.Key, 8)

@@ -371,7 +371,7 @@ func TestOpenAIWSIngressAnonymousThreadsNeverPreempt(t *testing.T) {
 	require.Empty(t, svc.openaiWSSessionPreemptions.active)
 }
 
-func TestOpenAIWSIngressEffectiveAstraRelaySkipsAndDisarmsOwner(t *testing.T) {
+func TestOpenAIWSIngressEffectiveAstraKeepsConfiguredPoolOwner(t *testing.T) {
 	for _, routerEnabled := range []bool{false, true} {
 		t.Run(fmt.Sprint(routerEnabled), func(t *testing.T) {
 			cfg := openAIWSThreadTestConfig()
@@ -383,24 +383,18 @@ func TestOpenAIWSIngressEffectiveAstraRelaySkipsAndDisarmsOwner(t *testing.T) {
 			ctx, cleanup, armed := svc.BeginOpenAIWSIngressSessionPreemption(context.Background(), c, account, first)
 			t.Cleanup(cleanup)
 			require.True(t, armed)
-			// A mapped/current-turn failover can switch the actual route to Astra
-			// even though the configured account mode and original model are pooled.
+			// Changing the mapped model must not silently change the transport or
+			// detach the raw-thread owner of a configured pooled connection.
 			next, noCleanup, armed := svc.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, first, "gpt-6-astra")
 			noCleanup()
-			require.False(t, armed)
+			require.True(t, armed)
 			require.Equal(t, ctx, next)
 			require.NoError(t, ctx.Err())
-			require.Empty(t, svc.openaiWSSessionPreemptions.active)
+			require.Len(t, svc.openaiWSSessionPreemptions.active, 1)
 			_, replacementCleanup, armed := svc.BeginOpenAIWSIngressSessionPreemption(context.Background(), newOpenAIWSThreadTestContext(7, 11, "root", "parent"), account, first)
 			t.Cleanup(replacementCleanup)
 			require.True(t, armed)
-			require.NoError(t, ctx.Err(), "the detached relay must not be canceled by a new pooled owner")
-			for range 2 {
-				relayCtx, relayCleanup, armed := svc.BeginOpenAIWSIngressSessionPreemption(context.Background(), newOpenAIWSThreadTestContext(7, 11, "root", "parent"), account, []byte(`{"model":"gpt-6-astra"}`))
-				t.Cleanup(relayCleanup)
-				require.False(t, armed)
-				require.NoError(t, relayCtx.Err())
-			}
+			require.True(t, isOpenAIWSSessionPreempted(ctx), "a replacement of the same raw thread must still preempt Astra")
 		})
 	}
 }

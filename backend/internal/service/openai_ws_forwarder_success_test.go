@@ -1160,6 +1160,9 @@ func TestOpenAIGatewayService_Forward_WSv2_CodexFingerprintHandshakeBodyParityAn
 	wantHeaderThread := scopeCodexAccountIdentityValue(account, 0, "thread", "header-thread")
 	wantHeaderTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "header-turn")
 	wantHeaderWindow := scopeCodexAccountIdentityValue(account, 0, "window", "header-window")
+	wantBodyThread := scopeCodexAccountIdentityValue(account, 0, "thread", "body-thread")
+	wantBodyTurn := scopeCodexAccountIdentityValue(account, 0, "turn", "body-turn")
+	wantBodyWindow := scopeCodexAccountIdentityValue(account, 0, "window", "body-window")
 	payloadJSON := requestToJSONString(captureConn.lastWrite)
 
 	require.Equal(t, wantInstall, captureDialer.lastHeaders.Get("x-codex-installation-id"))
@@ -1179,11 +1182,11 @@ func TestOpenAIGatewayService_Forward_WSv2_CodexFingerprintHandshakeBodyParityAn
 	headerTurnMetadata := captureDialer.lastHeaders.Get("x-codex-turn-metadata")
 	require.Equal(t, wantInstall, gjson.Get(bodyTurnMetadata, "installation_id").String())
 	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
-	// WS request construction uses the client header metadata as the canonical
-	// copy in the body; session convergence only changes installation/session.
-	require.Equal(t, wantHeaderThread, gjson.Get(bodyTurnMetadata, "thread_id").String())
-	require.Equal(t, wantHeaderTurn, gjson.Get(bodyTurnMetadata, "turn_id").String())
-	require.Equal(t, wantHeaderWindow, gjson.Get(bodyTurnMetadata, "window_id").String())
+	// Body and handshake have deliberately different snapshots. Keep the body
+	// source while session convergence still changes only installation/session.
+	require.Equal(t, wantBodyThread, gjson.Get(bodyTurnMetadata, "thread_id").String())
+	require.Equal(t, wantBodyTurn, gjson.Get(bodyTurnMetadata, "turn_id").String())
+	require.Equal(t, wantBodyWindow, gjson.Get(bodyTurnMetadata, "window_id").String())
 	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
 	require.Equal(t, wantHeaderThread, gjson.Get(headerTurnMetadata, "thread_id").String())
 	require.Equal(t, wantHeaderTurn, gjson.Get(headerTurnMetadata, "turn_id").String())

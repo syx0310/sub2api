@@ -271,8 +271,8 @@ type OpenAIWSIngressHooks struct {
 	// before channel or account mapping. Ingress modes preserve it for usage
 	// attribution while MapRequestModel determines the upstream model.
 	InitialRequestModel string
-	// InitialForwardModel is the channel-mapped first-turn model. It lets the
-	// transport select Astra's duplex steering relay before per-frame mapping.
+	// InitialForwardModel is the channel-mapped first-turn model. Transport
+	// selection follows the account mode, not the model family.
 	InitialForwardModel string
 	// InitialRequestBodyBytes preserves the logical client payload size before
 	// channel/account model mapping mutates the first frame.

@@ -508,6 +508,9 @@ func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []Reason
 	canonicalMax := NormalizeMaxReasoningEffort(maxEffort)
 
 	requestModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if index, effort, present := lastOpenAIConfigurationEffort(body); present {
+		return applyOpenAIConfigurationEffortPolicy(body, index, effort, requestModel, maxEffort, mappings, overLimit)
+	}
 	result := body
 	changed := false
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {

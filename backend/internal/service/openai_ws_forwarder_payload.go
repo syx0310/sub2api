@@ -230,9 +230,15 @@ func setOpenAIWSTurnMetadata(payload map[string]any, turnMetadata string) {
 
 	switch existing := payload["client_metadata"].(type) {
 	case map[string]any:
+		if _, present := existing[openAIWSTurnMetadataHeader]; present {
+			return
+		}
 		existing[openAIWSTurnMetadataHeader] = metadata
 		payload["client_metadata"] = existing
 	case map[string]string:
+		if _, present := existing[openAIWSTurnMetadataHeader]; present {
+			return
+		}
 		next := make(map[string]any, len(existing)+1)
 		for k, v := range existing {
 			next[k] = v
@@ -240,6 +246,9 @@ func setOpenAIWSTurnMetadata(payload map[string]any, turnMetadata string) {
 		next[openAIWSTurnMetadataHeader] = metadata
 		payload["client_metadata"] = next
 	default:
+		if _, present := payload["client_metadata"]; present {
+			return
+		}
 		payload["client_metadata"] = map[string]any{
 			openAIWSTurnMetadataHeader: metadata,
 		}

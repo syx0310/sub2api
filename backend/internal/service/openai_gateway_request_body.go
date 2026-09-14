@@ -1133,7 +1133,7 @@ func normalizeOpenAIOAuthResponsesCompatibilityFields(reqBody map[string]any) bo
 	if reqBody == nil {
 		return false
 	}
-	changed := false
+	changed := normalizeCodexResponsesStreamOptionsMap(reqBody)
 	if prompt, exists := reqBody["prompt"]; exists {
 		if input, hasInput := reqBody["input"]; !hasInput || input == nil {
 			if prompt != nil {
@@ -1154,8 +1154,10 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool, 
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	normalized := body
-	changed := false
+	normalized, changed, optionsErr := normalizeCodexResponsesStreamOptionsBody(body)
+	if optionsErr != nil {
+		return body, false, optionsErr
+	}
 	prompt := gjson.GetBytes(normalized, "prompt")
 	if prompt.Exists() {
 		input := gjson.GetBytes(normalized, "input")
@@ -1560,6 +1562,9 @@ func isOpenAICodexModel(model string) bool {
 // 非空候选；body 未携带 effort 时的模型后缀推导依次尝试每个候选——OAuth 的
 // normalizeCodexModel 会剥掉 upstreamModel 的 effort 后缀，只有原始模型名还留着。
 func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
+	if _, effort, present := lastOpenAIConfigurationEffort(body); present {
+		return openAIWSTrimmedStringPtr(normalizeOpenAIReasoningEffortForModel(effort, firstNonEmpty(modelCandidates...)))
+	}
 	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
@@ -1580,6 +1585,9 @@ func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string
 }
 
 func explicitRequestedReasoningEffortFromBody(body []byte) string {
+	if _, effort, present := lastOpenAIConfigurationEffort(body); present {
+		return effort
+	}
 	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if raw == "" {
 		raw = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
@@ -1595,6 +1603,9 @@ func explicitRequestedReasoningEffortFromBody(body []byte) string {
 // Empty or unknown values return nil. "max" is preserved even for models that
 // later persist "xhigh".
 func CanonicalRequestedReasoningEffort(body []byte, modelCandidates ...string) *string {
+	if _, effort, present := lastOpenAIConfigurationEffort(body); present {
+		return openAIWSTrimmedStringPtr(NormalizeMaxReasoningEffort(effort))
+	}
 	if raw := explicitRequestedReasoningEffortFromBody(body); raw != "" {
 		canonical := NormalizeMaxReasoningEffort(raw)
 		if canonical == "" {
@@ -2333,6 +2344,9 @@ func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error
 
 // extractOpenAIReasoningEffort 的模型候选语义同 extractOpenAIReasoningEffortFromBody。
 func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...string) *string {
+	if effort, present := lastOpenAIConfigurationEffortMap(reqBody["input"]); present {
+		return openAIWSTrimmedStringPtr(normalizeOpenAIReasoningEffortForModel(effort, firstNonEmpty(modelCandidates...)))
+	}
 	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, firstNonEmpty(modelCandidates...)); present {
 		if value == "" {
 			return nil
@@ -2350,6 +2364,9 @@ func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...str
 func CanonicalRequestedReasoningEffortFromReqBody(reqBody map[string]any, modelCandidates ...string) *string {
 	if reqBody == nil {
 		return CanonicalRequestedReasoningEffort(nil, modelCandidates...)
+	}
+	if effort, present := lastOpenAIConfigurationEffortMap(reqBody["input"]); present {
+		return openAIWSTrimmedStringPtr(NormalizeMaxReasoningEffort(effort))
 	}
 	raw := ""
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {

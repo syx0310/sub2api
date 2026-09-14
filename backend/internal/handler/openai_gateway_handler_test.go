@@ -1926,6 +1926,7 @@ type openAIResponsesWSUsageLogCase struct {
 	// 不生成 response 或计费 turn。
 	midPayload                string
 	secondPayload             string
+	thirdPayload              string
 	userAgent                 *string
 	ingressMode               string
 	channelMapping            map[string]string
@@ -3066,6 +3067,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	if strings.TrimSpace(tc.secondPayload) != "" {
 		turnCount++
 	}
+	if strings.TrimSpace(tc.thirdPayload) != "" {
+		turnCount++
+	}
 	frameCount := turnCount
 	if strings.TrimSpace(tc.midPayload) != "" {
 		frameCount++
@@ -3332,6 +3336,13 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			_ = clientConn.CloseNow()
 			return openAIResponsesWSUsageLogResult{}
 		}
+		readCompleted()
+	}
+	if strings.TrimSpace(tc.thirdPayload) != "" {
+		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
+		err = clientConn.Write(writeCtx, coderws.MessageText, []byte(tc.thirdPayload))
+		cancelWrite()
+		require.NoError(t, err)
 		readCompleted()
 	}
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")

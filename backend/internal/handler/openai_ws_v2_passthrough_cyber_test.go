@@ -24,6 +24,7 @@ type openAIWSPassthroughHandlerHarness struct {
 	moderationRepo *contentModerationHandlerTestRepo
 	gatewayCache   service.GatewayCache
 	apiKey         *service.APIKey
+	usageLogs      <-chan *service.UsageLog
 }
 
 func newOpenAIWSPassthroughHandlerHarness(t *testing.T, upstreamURL string) *openAIWSPassthroughHandlerHarness {
@@ -121,6 +122,7 @@ func newOpenAIWSPassthroughHandlerHarness(t *testing.T, upstreamURL string) *ope
 		moderationRepo: moderationRepo,
 		gatewayCache:   gatewayCache,
 		apiKey:         apiKey,
+		usageLogs:      usageRepo.created,
 	}
 }
 
@@ -163,7 +165,7 @@ func TestOpenAIResponsesWebSocketV2PassthroughCyberMarkIsConsumedAfterTurn(t *te
 	defer upstreamServer.Close()
 	harness := newOpenAIWSPassthroughHandlerHarness(t, upstreamServer.URL)
 
-	requestPayload := `{"type":"response.create","model":"gpt-5.1","prompt_cache_key":"cyber-session-1","input":"test"}`
+	requestPayload := `{"type":"response.create","model":"gpt-5.1","prompt_cache_key":"cyber-session-1","input":[{"role":"user","content":"test"},{"type":"compaction_trigger"}]}`
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
 	err := harness.clientConn.Write(writeCtx, coderws.MessageText, []byte(requestPayload))
 	cancelWrite()
@@ -180,6 +182,14 @@ func TestOpenAIResponsesWebSocketV2PassthroughCyberMarkIsConsumedAfterTurn(t *te
 		return len(logs) == 1 && logs[0].Action == service.ContentModerationActionCyberPolicy &&
 			strings.Contains(logs[0].Error, "upstream_usage=in:11,out:3")
 	}, 3*time.Second, 10*time.Millisecond, "handler AfterTurn must call recordCyberPolicyIfMarked and write the risk-control event")
+	select {
+	case log := <-harness.usageLogs:
+		require.True(t, log.NativeCompactionV2, "cyber side-path must capture this turn's compact flag before asynchronous recording")
+		require.Equal(t, 11, log.InputTokens)
+		require.Equal(t, 3, log.OutputTokens)
+	case <-time.After(3 * time.Second):
+		t.Fatal("missing cyber usage log")
+	}
 
 	keyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	keyCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(requestPayload))

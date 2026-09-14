@@ -59,7 +59,7 @@ func TestOpenAIGatewayForwardNormalizesOfficialGPT6AstraRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.ReasoningEffort)
-	require.Equal(t, "low", *result.ReasoningEffort)
+	require.Equal(t, "high", *result.ReasoningEffort, "configuration_update controls actual effort, not the pinned top-level baseline")
 	out := upstream.lastBody
 	require.Equal(t, "gpt-6-astra", gjson.GetBytes(out, "model").String())
 	require.False(t, gjson.GetBytes(out, "temperature").Exists())
