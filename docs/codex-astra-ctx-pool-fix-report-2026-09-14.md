@@ -151,3 +151,32 @@ systemd-run --user --scope --expand-environment=no \
 默认 UA `codex-tui/0.153.4 (Ubuntu 24.4.0; x86_64) xterm-256color (codex-tui; 0.153.4)` 及生效版本 UI 不变；device 默认开启、session / 深层身份默认不启用的策略不变；system / developer / instructions 定制策略、typed ID / replay 防护、Pro + Spark 模型列表合并、Astra 模型目录 / 定价、成本与并发查询逻辑、Docker 法务文档构建均未改动。
 
 所有实现保留在修复分支。main 和 origin/main 仍指向本次起点，不会在本任务中自行合并或推送。
+
+## 后续补修：裸 error 的执行收尾
+
+实现提交：`008a21f72`，继续保留在 `fix/astra-ctx-pool-client-semantics` 分支；未合并 main、未 push。
+
+问题：ctx_pool 收到未命中特殊重试的普通 `error` 后仍等待响应级终端事件；上游保持打开且静默时，可继续占用连接与用户 / 账号并发槽，直到 900 秒读取超时或其他取消条件出现。该缺口属于旧执行器；Astra 回到 ctx_pool 后同样暴露。客户端已经结束响应流或尝试重连，并不保证旧执行能立即释放，尤其新连接可能先被并发为 1 的旧槽位挡住。
+
+本次补修行为：
+
+- 采用两种模式共用的固定 **500 ms** 错误补帧窗口。普通错误仍立即下发；窗口内允许同一响应的 `response.failed` 补齐权威 usage，重复 error、辅助事件不延长截止时间。
+- 若 failed / usage 超过该窗口才到达，不再等待或另行追账，本轮以截止前观察到的用量为准；这是及时释放失败执行与补采迟到用量之间的明确边界。
+- 无补帧时以 `error` 结束当前执行；有匹配 failed 时以 `response.failed` 结束。错误之后的矛盾 completed、下一次 created 或不匹配响应不会覆盖本轮结果，不建立成功锚点或压缩成功基线。
+- 上游错误连接直接废弃，既不回池也不等待正常关闭握手；用量 / AfterTurn / 并发槽只结算一次。passthrough 在收尾前不再准入同连接的新请求。
+- 补齐 `normalizeOpenAIWSTerminalEvent("error")`，使裸错误不再因终端类型为空而误计为调度成功。没有全局把 error 简单加入正常终端列表。
+- 字段兼容重试、首输出前限流切换、previous_response_not_found 的专门处理保留；错误已下发后不自动重放，更不会去掉 previous_response_id 后重发增量。
+- passthrough 的错误窗口只在专门限流处理判定之后启用；续轮首输出前限流仍发送原有 1013 重连关闭，不能被普通错误收尾改成 EOF。
+- 既有 invalid_encrypted_content lineage 回归改为验证“错误后新建连接、同一原始线程保留密文黑名单”，不再要求错误连接继续复用。独立的 response.failed 没有裸 error 前缀时维持原有行为；response.steer.failed 也不被当作此处裸错误。
+
+开销：只在遇到裸 error 后建立固定截止时间及短状态，不引入数据库查询、Redis 查询或额外常驻 goroutine；正常推理的 900 秒超时不变。继续串行测试，独立 scope 限制 3 GiB 内存、禁用验证进程 swap。
+
+验证重点：真实本地 WebSocket 的上游发错后保持打开、下游不主动关闭；检查用户 / 账号槽位及时释放，后续并发为 1 的请求可进入且使用新连接；检查有无 response ID、持续辅助事件、error/failed 用量归并、矛盾 completed、正常重试与显式 steer 的回归。
+
+目标回归已通过：service 3.701 秒；真实 handler 的 2 种模式 × 5 种错误场景通过（4.106 秒），两次逻辑请求各释放一次用户 / 账号槽位，恰好两次上游请求、两条不同连接、两条 usage。仅有裸 error 时保留其 3/1 token 用量；匹配 failed 到达时以 11/4 token 为准，不相加重复计费；矛盾 completed 的 99/99 token 不计入。首次测试中的账号槽计数失败来自测试 fixture 未向选号器注入并发服务，补齐测试依赖后通过，未因此改变生产准入逻辑。
+
+本次补修的最终全量后端回归通过：`go test -p 1 -parallel 2 -tags=unit ./...`，handler 42.590 秒、service 177.289 秒，命令退出码 0；包括原有 `LaterTurnPreOutputRateLimitRequestsReconnect` 的 1013 关闭码断言。以 GOMAXPROCS=2、GOGC=50、GOMEMLIMIT=1024MiB 和独立 3 GiB / 不使用 swap 的 scope 执行，单进程峰值 RSS 约 2.54 GiB。
+
+相关竞态回归通过：`go test -p 1 -parallel 1 -race -tags=unit ./internal/service ./internal/handler ./internal/service/openai_ws_v2 -run 'BareError|InvalidEncryptedContentLineage|CyberTerminal|LaterTurnPreOutputRateLimit|ClientDisconnectStillDrains|ClientSemantics|WSReasoning|WSNativeCompaction|ParentSubagents|GPT6AstraSteering|SucceededForScheduling' -count=1`；service 8.600 秒、handler 5.734 秒、relay 1.044 秒，退出码 0，无数据竞争报告。使用 GOMAXPROCS=1 和相同 3 GiB 硬内存上限，swap 为 0；编译触发内存回收但没有 OOM / OOM kill。
+
+全量静态检查 `go vet -p 1 -tags=unit ./...` 通过，退出码 0。后端 `go build -p 1 -tags embed -o <临时目录>/sub2api ./cmd/server` 通过，63.38 秒、退出码 0、峰值 RSS 约 1.48 GiB。`git diff --check` 通过。本次仅改后端，不重复运行此前已通过且无代码变更的前端测试 / 打包；未启动生成的二进制、未调用真实 OpenAI 账号。
