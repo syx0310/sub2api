@@ -303,6 +303,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		OpenAICodexUserAgent:                                   settings.OpenAICodexUserAgent,
 		OpenAICodexClientVersion:                               settings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                         settings.OpenAICodexClientVersionSynced,
+		OpenAICodexEffectiveClientVersion:                      h.settingService.GetOpenAICodexClientVersion(c.Request.Context()),
 		OpenAICodexVersionAutoSyncEnabled:                      settings.OpenAICodexVersionAutoSyncEnabled,
 		MinCodexVersion:                                        settings.MinCodexVersion,
 		MaxCodexVersion:                                        settings.MaxCodexVersion,

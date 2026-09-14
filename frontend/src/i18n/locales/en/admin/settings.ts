@@ -529,6 +529,7 @@ export default {
         openaiCodexVersionAutoSync: 'Auto-sync Codex version',
         openaiCodexVersionAutoSyncHint: 'Fetches the latest stable client version from the official repository every 6 hours, so you never need to upgrade this service just to keep the version current. When disabled, only the version above or the built-in default is used.',
         openaiCodexVersionSyncedValue: 'Currently synced: {version}',
+        openaiCodexEffectiveVersionValue: 'Currently effective: {version}',
         codexHardeningTitle: "Codex Settings",
         codexClientRestrictionTitle: "Codex client restriction",
         codexHardeningDesc:

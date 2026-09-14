@@ -5797,6 +5797,12 @@
                   >
                     {{ codexSyncedVersionLabel }}
                   </p>
+                  <p
+                    v-if="codexEffectiveVersionLabel"
+                    class="mt-0.5 text-xs font-medium text-primary-600 dark:text-primary-400"
+                  >
+                    {{ codexEffectiveVersionLabel }}
+                  </p>
                 </div>
                 <Toggle v-model="form.openai_codex_version_auto_sync_enabled" />
               </div>
@@ -9839,6 +9845,8 @@ const form = reactive<SettingsForm>({
   openai_codex_client_version: "",
   // 只读展示：自动同步任务写入的官方最新稳定版，不参与提交（提交载荷按字段显式构造）
   openai_codex_client_version_synced: "",
+  // 只读展示：按实际优先级生效的 Codex 版本
+  openai_codex_effective_client_version: "",
   openai_codex_version_auto_sync_enabled: true,
   // codex_cli_only 加固
   min_codex_version: "",
@@ -10825,6 +10833,14 @@ const codexSyncedVersionLabel = computed(() => {
   if (!synced) return "";
   return t("admin.settings.gatewayForwarding.openaiCodexVersionSyncedValue", {
     version: synced,
+  });
+});
+
+const codexEffectiveVersionLabel = computed(() => {
+  const effective = form.openai_codex_effective_client_version?.trim();
+  if (!effective) return "";
+  return t("admin.settings.gatewayForwarding.openaiCodexEffectiveVersionValue", {
+    version: effective,
   });
 });
 

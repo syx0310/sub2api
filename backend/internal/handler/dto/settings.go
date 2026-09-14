@@ -216,6 +216,7 @@ type SystemSettings struct {
 	OpenAICodexUserAgent                   string `json:"openai_codex_user_agent"`
 	OpenAICodexClientVersion               string `json:"openai_codex_client_version"`
 	OpenAICodexClientVersionSynced         string `json:"openai_codex_client_version_synced"`
+	OpenAICodexEffectiveClientVersion      string `json:"openai_codex_effective_client_version"`
 	OpenAICodexVersionAutoSyncEnabled      bool   `json:"openai_codex_version_auto_sync_enabled"`
 
 	// codex_cli_only 加固

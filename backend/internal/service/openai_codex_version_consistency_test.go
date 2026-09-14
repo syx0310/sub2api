@@ -16,4 +16,9 @@ func TestCodexVersionConstants_Consistency(t *testing.T) {
 
 	require.True(t, strings.Contains(DefaultOpenAICodexUserAgent, codexCLIVersion),
 		"DefaultOpenAICodexUserAgent must embed codexCLIVersion")
+	require.Equal(t,
+		"codex-tui/0.153.4 (Ubuntu 24.4.0; x86_64) xterm-256color (codex-tui; 0.153.4)",
+		codexCLIUserAgent,
+		"default outbound Codex identity must match the supported TUI fingerprint",
+	)
 }

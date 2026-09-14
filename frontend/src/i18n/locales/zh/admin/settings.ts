@@ -522,6 +522,7 @@ export default {
         openaiCodexVersionAutoSync: '自动同步 Codex 版本号',
         openaiCodexVersionAutoSyncHint: '每 6 小时从官方仓库获取最新稳定版客户端版本号，无需为了跟版本而升级本服务。关闭后仅使用上方手填版本或内置版本。',
         openaiCodexVersionSyncedValue: '当前同步到：{version}',
+        openaiCodexEffectiveVersionValue: '当前生效版本：{version}',
         codexHardeningTitle: 'Codex 设置',
         codexClientRestrictionTitle: 'Codex 客户端限制',
         codexHardeningDesc:
