@@ -2002,7 +2002,7 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 		req.Header.Set("User-Agent", "codex_cli_rs/0.135.0")
 		ginCtx.Request = req
 
-		proxyCtx, cancelProxy := context.WithTimeout(r.Context(), 20*time.Second)
+		proxyCtx, cancelProxy := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancelProxy()
 		errCh <- svc.ProxyResponsesWebSocketFromClient(proxyCtx, ginCtx, conn, account, "sk-test", firstMessage, hooks)
 	}))
@@ -2021,7 +2021,10 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 
 	var eventTypes []string
 	for {
-		readCtx, cancelRead := context.WithTimeout(context.Background(), 10*time.Second)
+		// This is a frame-size/protocol regression, not a latency benchmark.
+		// Race instrumentation of 17MiB JSON scans can exceed ten seconds on
+		// one CPU; keep the payload and assertions intact with a bounded budget.
+		readCtx, cancelRead := context.WithTimeout(context.Background(), 30*time.Second)
 		msgType, event, readErr := clientConn.Read(readCtx)
 		cancelRead()
 		require.NoError(t, readErr)

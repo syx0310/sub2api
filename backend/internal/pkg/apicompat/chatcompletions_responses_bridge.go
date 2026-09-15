@@ -527,6 +527,22 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			})
 			pendingReasoning = ""
 			continue
+		case "agent_message":
+			// Plaintext agent messages must not vanish at the Chat boundary.
+			// Opaque encrypted content requires native Responses, not a text cast.
+			text, err := agentMessageText(item["content"])
+			if err != nil {
+				return nil, nil, err
+			}
+			if text == "" {
+				pendingReasoning = ""
+				continue
+			}
+			content, _ := json.Marshal(text)
+			messages = append(messages, ChatMessage{Role: "user", Content: content})
+			pendingReasoning = ""
+			lastTurnReasoning = ""
+			continue
 		case "input_text", "text":
 			content, _ := json.Marshal(rawString(item["text"]))
 			messages = append(messages, ChatMessage{Role: "user", Content: content})
@@ -584,6 +600,32 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 	}
 
 	return messages, mediaByCallID, nil
+}
+
+// Match Codex's plaintext_agent_message_content: encrypted parts are not text.
+func agentMessageText(raw json.RawMessage) (string, error) {
+	raw = bytesTrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", fmt.Errorf("invalid agent_message content: %w", err)
+	}
+	var texts []string
+	for _, part := range parts {
+		switch rawString(part["type"]) {
+		case "input_text", "text":
+			texts = append(texts, rawString(part["text"]))
+		case "encrypted_content":
+			return "", fmt.Errorf("encrypted agent_message content requires a native Responses upstream")
+		}
+	}
+	return strings.Join(texts, "\n"), nil
 }
 
 // extractToolOutputMedia rewrites only recognized image nodes. Media-free

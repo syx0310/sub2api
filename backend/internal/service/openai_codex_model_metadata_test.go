@@ -9,6 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAstraGenericMetadataPreservesBothCodexContextWindows(t *testing.T) {
+	descriptor := configuredGPT6AstraModelDescriptor()
+	original := descriptor
+	applyUpstreamModelMetadataToCodexDescriptor(&descriptor, codexModelMetadataOverride{UpstreamModelMetadata: UpstreamModelMetadata{
+		ContextWindow: 64000, MaxContextWindow: 1050000,
+	}})
+	require.Equal(t, original.ContextWindow, descriptor.ContextWindow, "API limits do not define the Codex compact window")
+	require.Equal(t, original.MaxContextWindow, descriptor.MaxContextWindow, "generic maximum must not override the Codex catalog")
+	require.Equal(t, original.AutoCompactTokenLimit, descriptor.AutoCompactTokenLimit)
+}
+
 func TestAstraUltraCatalogPreservesWorkflowMetadata(t *testing.T) {
 	// Ultra is a Codex workflow. Its inference effort must survive catalog sync,
 	// aliases and group generation instead of silently falling back to max.

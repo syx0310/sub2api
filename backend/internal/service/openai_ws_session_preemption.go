@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -18,7 +20,16 @@ const (
 	openAIWSSessionPreemptOwnerTTL      = 2 * time.Hour
 	openAIWSSessionPreemptWatchInterval = 2 * time.Second
 	openAIWSSessionPreemptCachePrefix   = "wspreempt:"
+	// openAIWSSessionPreemptCloseGrace 是被抢占连接从收到关闭帧到被取消的最长等待：
+	// 关闭帧在 Close 一开始就写出，其余时间只是等对端回应，到点直接取消。
+	openAIWSSessionPreemptCloseGrace    = time.Second
+	openAIWSSessionPreemptedCloseReason = "session preempted by a newer connection"
 )
+
+// openAIWSPreemptClientCloser 是被抢占时用来给旧客户端发关闭帧的连接，*coderws.Conn 满足该接口。
+type openAIWSPreemptClientCloser interface {
+	Close(code coderws.StatusCode, reason string) error
+}
 
 // OpenAIWSSessionPreemptionCache is an optional GatewayCache capability. The
 // production Redis cache implements all operations atomically; cache stubs do
@@ -42,9 +53,10 @@ type openAIWSSessionPreemptKey struct {
 type openAIWSSessionPreemptContextKey struct{}
 
 type openAIWSSessionPreemptRegistration struct {
-	mu     sync.Mutex
-	active bool
-	detach func()
+	mu        sync.Mutex
+	active    bool
+	detach    func()
+	preempted atomic.Bool
 }
 
 // Serialize cache writes with ownership loss. A canceled socket must not write
@@ -71,6 +83,20 @@ func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemption(
 	c *gin.Context,
 	account *Account,
 	firstClientMessage []byte,
+	forwardModels ...string,
+) (context.Context, func(), bool) {
+	return s.BeginOpenAIWSIngressSessionPreemptionWithClient(ctx, c, account, firstClientMessage, nil, forwardModels...)
+}
+
+// BeginOpenAIWSIngressSessionPreemptionWithClient 与 BeginOpenAIWSIngressSessionPreemption 相同，
+// 另外登记客户端连接：本连接被更新的连接取代时，先给它发带原因的关闭帧，再取消上下文，
+// 客户端因此能立即重试，而不是在裸断开后静默等到空闲超时。
+func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemptionWithClient(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	firstClientMessage []byte,
+	clientConn openAIWSPreemptClientCloser,
 	forwardModels ...string,
 ) (context.Context, func(), bool) {
 	if ctx == nil {
@@ -102,6 +128,12 @@ func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemption(
 	}
 
 	preemptGroupID := getOpenAIGroupIDFromContext(c)
+	var notifyPreempted func()
+	if clientConn != nil {
+		notifyPreempted = func() {
+			_ = clientConn.Close(coderws.StatusTryAgainLater, openAIWSSessionPreemptedCloseReason)
+		}
+	}
 	preemptCtx, cleanup, armed, preemptedPrevious := s.beginOpenAIWSSessionPreemptContext(
 		ctx,
 		account,
@@ -109,6 +141,7 @@ func (s *OpenAIGatewayService) BeginOpenAIWSIngressSessionPreemption(
 		getAPIKeyIDFromContext(c),
 		scope.hash,
 		false,
+		notifyPreempted,
 	)
 	if !armed {
 		return ctx, func() {}, false
@@ -180,6 +213,7 @@ func (s *OpenAIGatewayService) beginOpenAIWSSessionPreemptContext(
 	groupID, apiKeyID int64,
 	sessionHash string,
 	httpIngressWSOneShot bool,
+	notifyPreempted func(),
 ) (context.Context, func(), bool, bool) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -198,13 +232,31 @@ func (s *OpenAIGatewayService) beginOpenAIWSSessionPreemptContext(
 	ownerToken := uuid.NewString()
 	preempt := func() {
 		registration.mu.Lock()
-		defer registration.mu.Unlock()
-		if registration.active {
-			registration.active = false
-			cancel(errOpenAIWSSessionPreempted)
-			logOpenAIWSModeInfo("ingress_ws_thread_preempted group_id=%d api_key_id=%d account_id=%d thread_hash=%s reason=newer_same_thread_connection",
-				key.groupID, key.apiKeyID, account.ID, truncateOpenAIWSLogValue(key.sessionHash, 24))
+		if !registration.active {
+			registration.mu.Unlock()
+			return
 		}
+		registration.active = false
+		registration.preempted.Store(true)
+		registration.mu.Unlock()
+		logOpenAIWSModeInfo("ingress_ws_thread_preempted group_id=%d api_key_id=%d account_id=%d thread_hash=%s reason=newer_same_thread_connection",
+			key.groupID, key.apiKeyID, account.ID, truncateOpenAIWSLogValue(key.sessionHash, 24))
+		if notifyPreempted == nil {
+			cancel(errOpenAIWSSessionPreempted)
+			return
+		}
+		// Fence the old owner's writes immediately, but notify the client before
+		// canceling active I/O. Neither the pool lock nor the replacement waits
+		// for the peer's close handshake. Only the new owner clears its state.
+		notified := make(chan struct{})
+		go func() { defer close(notified); notifyPreempted() }()
+		go func() {
+			select {
+			case <-notified:
+			case <-time.After(openAIWSSessionPreemptCloseGrace):
+			}
+			cancel(errOpenAIWSSessionPreempted)
+		}()
 	}
 	previousRemoteOwner, remoteClaimed := s.claimOpenAIWSSessionPreemptOwner(ctx, key, ownerToken)
 	preemptedPrevious := remoteClaimed && previousRemoteOwner != "" && previousRemoteOwner != ownerToken
@@ -314,7 +366,13 @@ func (s *OpenAIGatewayService) watchOpenAIWSSessionPreemptOwner(ctx context.Cont
 }
 
 func isOpenAIWSSessionPreempted(ctx context.Context) bool {
-	return ctx != nil && errors.Is(context.Cause(ctx), errOpenAIWSSessionPreempted)
+	if ctx == nil {
+		return false
+	}
+	if state, _ := ctx.Value(openAIWSSessionPreemptContextKey{}).(*openAIWSSessionPreemptRegistration); state != nil && state.preempted.Load() {
+		return true
+	}
+	return errors.Is(context.Cause(ctx), errOpenAIWSSessionPreempted)
 }
 
 func IsOpenAIWSSessionPreemptedError(err error) bool {

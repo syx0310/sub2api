@@ -349,6 +349,21 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 	if !contextKnown {
 		result.ContextWindow = 0
 	}
+	for i, candidate := range candidates {
+		maxContextWindow := candidate.MaxContextWindow
+		if maxContextWindow <= 0 {
+			// Older snapshots only stored the default window. Keep that bound
+			// until a sync supplies the upstream's explicit maximum.
+			maxContextWindow = candidate.ContextWindow
+		}
+		if maxContextWindow <= 0 {
+			result.MaxContextWindow = 0
+			break
+		}
+		if i == 0 || maxContextWindow < result.MaxContextWindow {
+			result.MaxContextWindow = maxContextWindow
+		}
+	}
 	return result
 }
 
@@ -364,6 +379,7 @@ func applyUpstreamModelMetadataToCodexDescriptor(
 	// Native manifests keep their existing fields in the completion path.
 	if isOpenAIGPT6AstraModel(descriptor.Slug) {
 		metadata.ContextWindow = 0
+		metadata.MaxContextWindow = 0
 		// A native Codex workflow declaration, unlike generic API pricing/model
 		// metadata, can explicitly narrow the available effort levels.
 		if len(metadata.CodexToolCapabilities["multi_agent_reasoning_effort"]) == 0 &&
@@ -415,6 +431,10 @@ func applyUpstreamModelMetadataToCodexDescriptor(
 	if metadata.ContextWindow > 0 {
 		descriptor.ContextWindow = metadata.ContextWindow
 		descriptor.MaxContextWindow = metadata.ContextWindow
+	}
+	if metadata.MaxContextWindow > 0 {
+		descriptor.MaxContextWindow = metadata.MaxContextWindow
+		descriptor.ContextWindow = min(descriptor.ContextWindow, metadata.MaxContextWindow)
 	}
 }
 

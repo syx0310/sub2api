@@ -30,8 +30,10 @@ func TestOpenAIWSThreadScopeIdentityAndPrecedence(t *testing.T) {
 	}{
 		{"underscore_headers", http.Header{"Session_id": {"root"}, "Thread_id": {"child"}}, ""},
 		{"first_frame_metadata", nil, `{"client_metadata":{"session_id":"root","thread_id":"child"}}`},
-		{"headers_win", http.Header{"Session-Id": {"root"}, "Thread-Id": {"child"}, "Thread_id": {"other"}}, `{"client_metadata":{"session_id":"wrong","thread_id":"wrong"}}`},
-		{"header_session_body_thread", http.Header{"Session-Id": {"root"}}, `{"client_metadata":{"session_id":"wrong","thread_id":"child"}}`},
+		{"legacy_hyphen_headers_win", http.Header{"Session-Id": {"root"}, "Thread-Id": {"child"}, "Thread_id": {"other"}}, ""},
+		{"body_projections_win", http.Header{"Session-Id": {"wrong"}, "Thread-Id": {"wrong"}}, `{"client_metadata":{"session_id":"root","thread_id":"child"}}`},
+		{"header_session_body_thread", http.Header{"Session-Id": {"root"}}, `{"client_metadata":{"thread_id":"child"}}`},
+		{"canonical_body_wins", http.Header{"Session-Id": {"wrong"}, "Thread-Id": {"wrong"}}, `{"client_metadata":{"session_id":"wrong","thread_id":"wrong","x-codex-turn-metadata":"{\"session_id\":\"root\",\"thread_id\":\"child\"}"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newOpenAIWSThreadTestContext(7, 11, "", "")
