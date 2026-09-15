@@ -149,6 +149,7 @@ type relayState struct {
 	completedTurnRing       []string
 	completedTurnNext       int
 	completedRequests       int64
+	turnCompletions         chan relayExitSignal
 	pendingTurnStart        atomic.Pointer[time.Time]
 	pendingBareError        *observedUpstreamEvent
 	pendingSteerSubmissions []relaySteerSubmission
@@ -239,7 +240,10 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
+	state := &relayState{
+		requestModel:    result.RequestModel,
+		turnCompletions: make(chan relayExitSignal, 1),
+	}
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
 		if firstTurnStartedAt.IsZero() {
@@ -306,6 +310,11 @@ func Relay(
 	requestedTurns := &atomic.Int64{}
 	requestedTurns.Store(1)
 	completedTurns := &atomic.Int64{}
+	allTurnsCompleted := func() bool {
+		// Automatic continuations enter the request tracker before their
+		// admission callback publishes the requested-turn counter.
+		return completedTurns.Load() >= requestedTurns.Load() && !openAIWSRelayHasPendingTurn(state)
+	}
 	registerRelayRequest(state, firstClientMessage)
 	emitRelayTrace(onTrace, RelayTraceEvent{
 		Stage:        "relay_start",
@@ -442,7 +451,7 @@ func Relay(
 	turnCompleted := firstExit.turnCompleted
 
 	// 客户端断开后尽力继续读取上游短窗口，捕获延迟 usage/terminal 事件用于计费。
-	hasPendingTurn := completedTurns.Load() < requestedTurns.Load()
+	hasPendingTurn := !allTurnsCompleted()
 	if hasPendingTurn && ((firstExit.stage == "read_client" && firstExit.graceful) ||
 		firstExit.stage == "write_upstream" ||
 		(firstExit.stage == "write_client" && !firstExit.turnCompleted)) {
@@ -451,7 +460,16 @@ func Relay(
 		if firstExit.stage == "write_upstream" {
 			writeErrorDrainRemaining = options.WriteErrorDrainRemaining
 		}
-		secondExit, hasSecondExit, turnCompleted = waitRelayDrainExit(exitCh, drainTimeout, turnCompleted, writeErrorDrainRemaining)
+		emitRelayTrace(onTrace, RelayTraceEvent{
+			Stage:           "drain_start",
+			Direction:       relayDirectionFromStage(firstExit.stage),
+			Graceful:        firstExit.graceful,
+			WroteDownstream: firstExit.wroteDownstream,
+		})
+		secondExit, hasSecondExit, turnCompleted = waitRelayDrainExit(
+			exitCh, drainTimeout, turnCompleted, writeErrorDrainRemaining,
+			state.turnCompletions, allTurnsCompleted,
+		)
 	} else {
 		relayCancel()
 		_ = upstreamConn.Close()
@@ -476,7 +494,7 @@ func Relay(
 	// fallback. Join the reader before touching relayState or firing the final
 	// turn callback; otherwise a late read can race Relay's result settlement.
 	<-upstreamDone
-	turnCompleted = turnCompleted || completedTurns.Load() >= requestedTurns.Load()
+	turnCompleted = turnCompleted || allTurnsCompleted()
 
 	if pending := finalizePendingBareError(state, nowFn()); pending.terminal {
 		if options.OnTerminalObserved != nil {
@@ -484,7 +502,7 @@ func Relay(
 		}
 		if emitTurnComplete(options.OnTurnComplete, state, pending, 0) {
 			completedTurns.Add(1)
-			turnCompleted = completedTurns.Load() >= requestedTurns.Load()
+			turnCompleted = allTurnsCompleted()
 		}
 	}
 	enrichResult(&result, state, nowFn().Sub(startAt))
@@ -706,6 +724,21 @@ func runUpstreamToClient(
 		completed := emitTurnComplete(onTurnComplete, state, observed, responseBodyBytes)
 		if completed && completedTurns != nil {
 			completedTurns.Add(1)
+			// A client may close after receiving the terminal but before its
+			// accounting callback returns. Wake drain after settlement; another
+			// upstream frame is neither required nor guaranteed. Buffer/coalesce
+			// notifications so completion just before drain starts is not lost.
+			if state != nil {
+				select {
+				case state.turnCompletions <- relayExitSignal{
+					stage:           "drain_terminal",
+					graceful:        true,
+					wroteDownstream: wroteDownstream,
+					turnCompleted:   true,
+				}:
+				default:
+				}
+			}
 		}
 		return completed
 	}
@@ -1170,13 +1203,17 @@ func emitTurnComplete(
 	observed observedUpstreamEvent,
 	responseBodyBytes int64,
 ) bool {
-	if onTurnComplete == nil || !observed.terminal {
+	if !observed.terminal {
 		return false
 	}
 	responseID := strings.TrimSpace(observed.responseID)
 	if observed.requestSequence <= 0 || !observed.terminalMatched ||
 		(responseID == "" && strings.TrimSpace(observed.eventType) != "error") {
 		return false
+	}
+	// Protocol completion must not depend on an optional accounting observer.
+	if onTurnComplete == nil {
+		return true
 	}
 	onTurnComplete(RelayTurnResult{
 		RequestModel:          observed.requestModel,
@@ -1915,6 +1952,8 @@ func waitRelayDrainExit(
 	timeout time.Duration,
 	turnCompleted bool,
 	writeErrorDrainRemaining func() time.Duration,
+	turnCompletions <-chan relayExitSignal,
+	allTurnsCompleted func() bool,
 ) (relayExitSignal, bool, bool) {
 	if timeout <= 0 {
 		timeout = 200 * time.Millisecond
@@ -1926,6 +1965,13 @@ func waitRelayDrainExit(
 	hasExit := false
 	for {
 		select {
+		case sig := <-turnCompletions:
+			// The buffered signal may describe an earlier turn. Only stop when
+			// every admitted request has settled, including explicit or automatic
+			// continuations; otherwise retain the original drain deadline.
+			if allTurnsCompleted != nil && allTurnsCompleted() {
+				return sig, true, true
+			}
 		case sig := <-exitCh:
 			last = sig
 			hasExit = true
