@@ -62,7 +62,7 @@ func TestOpenAIWSBareErrorReleasesSilentExecution(t *testing.T) {
 						t.Errorf("upstream accept: %v", err)
 						return
 					}
-					defer conn.CloseNow()
+					defer func() { _ = conn.CloseNow() }()
 					defer func() { upstreamClosed <- struct{}{} }()
 					_, _, err = conn.Read(ctx)
 					if err != nil {

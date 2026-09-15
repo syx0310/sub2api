@@ -356,12 +356,20 @@ func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
 	require.NotContains(t, req, "top_logprobs")
 	require.NotContains(t, req, "prompt_cache_retention")
 	require.Equal(t, []any{"reasoning.encrypted_content"}, req["include"])
-	require.Equal(t, "low", req["reasoning"].(map[string]any)["effort"])
+	reasoning, ok := req["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "low", reasoning["effort"])
 	require.NotContains(t, req, "truncation")
 	require.NotContains(t, req, "context_management")
-	input := req["input"].([]any)
-	require.Equal(t, "configuration_update", input[0].(map[string]any)["type"], "configuration updates must pass through unchanged")
-	require.Equal(t, "high", input[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+	input, ok := req["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+	update, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "configuration_update", update["type"], "configuration updates must pass through unchanged")
+	updateReasoning, ok := update["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "high", updateReasoning["effort"])
 
 	chat := map[string]any{"reasoning_effort": "ultra", "logprobs": true, "top_logprobs": 3}
 	require.True(t, normalizeGPT6AstraRequestMap(chat, true))
@@ -373,7 +381,14 @@ func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
 		map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "minimal"}},
 	}}
 	require.True(t, normalizeGPT6AstraRequestMap(configurationUpdate, false))
-	require.Equal(t, "low", configurationUpdate["input"].([]any)[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+	normalizedInput, ok := configurationUpdate["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, normalizedInput, 1)
+	normalizedUpdate, ok := normalizedInput[0].(map[string]any)
+	require.True(t, ok)
+	normalizedReasoning, ok := normalizedUpdate["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "low", normalizedReasoning["effort"])
 }
 
 func TestShouldPreserveOpenAIPromptCacheOptionsOnlyForOfficialAstra(t *testing.T) {

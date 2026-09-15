@@ -1202,10 +1202,12 @@ func (c *concurrencyCache) CleanupExpiredAccountSlotKeys(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	members, err := c.rdb.ZRangeByScore(ctx, apiKeyActiveIndexKey, &redis.ZRangeBy{
-		Min:   "-inf",
-		Max:   strconv.FormatInt(now, 10),
-		Count: activeIndexCleanupBatchSize,
+	members, err := c.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:     apiKeyActiveIndexKey,
+		Start:   "-inf",
+		Stop:    strconv.FormatInt(now, 10),
+		ByScore: true,
+		Count:   activeIndexCleanupBatchSize,
 	}).Result()
 	if err != nil {
 		return fmt.Errorf("read expired API-key active index members: %w", err)

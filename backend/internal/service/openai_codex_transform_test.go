@@ -2044,16 +2044,24 @@ func TestApplyCodexOAuthTransform_GPT6AstraPreservesConfigurationUpdate(t *testi
 
 	result := applyCodexOAuthTransform(reqBody, true, false)
 	require.True(t, result.Modified)
-	require.Equal(t, "low", reqBody["reasoning"].(map[string]any)["effort"])
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "low", reasoning["effort"])
 	require.NotContains(t, reqBody, "temperature")
 	require.NotContains(t, reqBody, "top_p")
 	require.NotContains(t, reqBody, "top_logprobs")
 	require.NotContains(t, reqBody, "truncation")
 	require.NotContains(t, reqBody, "context_management")
 	require.Equal(t, []any{"reasoning.encrypted_content"}, reqBody["include"])
-	input := reqBody["input"].([]any)
-	require.Equal(t, "configuration_update", input[0].(map[string]any)["type"])
-	require.Equal(t, "high", input[0].(map[string]any)["reasoning"].(map[string]any)["effort"])
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+	update, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "configuration_update", update["type"])
+	updateReasoning, ok := update["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "high", updateReasoning["effort"])
 }
 
 func TestApplyCodexOAuthTransform_NormalizesPromptAndCommands(t *testing.T) {

@@ -1891,9 +1891,11 @@ func openAIGroupForcesFast(ctx context.Context, account *Account, model string) 
 	if ctx == nil || account == nil || account.Platform != PlatformOpenAI {
 		return false
 	}
+	if isOpenAIGPT6AstraModel(model) && account.IsOpenAIEUDataResidency() {
+		return false
+	}
 	group, _ := ctx.Value(ctxkey.Group).(*Group)
-	return !(isOpenAIGPT6AstraModel(model) && account.IsOpenAIEUDataResidency()) &&
-		IsGroupContextValid(group) && groupSupportsOpenAIFast(group.Platform) &&
+	return IsGroupContextValid(group) && groupSupportsOpenAIFast(group.Platform) &&
 		group.ForceOpenAIFast && openAIModelSupportsPriorityServiceTier(model)
 }
 

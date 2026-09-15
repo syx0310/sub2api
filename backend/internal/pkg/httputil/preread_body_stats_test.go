@@ -27,7 +27,8 @@ func TestPrereadBodyPreservesOriginalRequestStats(t *testing.T) {
 				writer = encoder
 			}
 			if writer == nil {
-				compressed.WriteString(samplePayload)
+				_, err := compressed.WriteString(samplePayload)
+				require.NoError(t, err)
 			} else {
 				_, err := io.WriteString(writer, samplePayload)
 				require.NoError(t, err)

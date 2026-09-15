@@ -114,7 +114,10 @@ func TestOpenAIHTTP2KeepAliveKeepsHealthySilentGenerationAlive(t *testing.T) {
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("flush SSE headers: %v", err)
+			return
+		}
 		timer := time.NewTimer(longStreamHTTP2ReadIdleTimeout + longStreamHTTP2PingTimeout + time.Second)
 		defer timer.Stop()
 		select {
