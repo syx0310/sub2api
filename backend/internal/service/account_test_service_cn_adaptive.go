@@ -166,7 +166,10 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 	// the OpenAI probe's synthetic instructions.
 	delete(payload, "instructions")
 	payloadBytes, _ := json.Marshal(payload)
-	payloadBytes = normalizeDeepSeekResponsesRequestBody(account, payloadBytes)
+	payloadBytes, err = normalizeDeepSeekResponsesRequestBody(account, payloadBytes)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid adaptive Responses payload: %s", err.Error()))
+	}
 
 	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过原生 /responses 测试自适应 Responses 端点"})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))

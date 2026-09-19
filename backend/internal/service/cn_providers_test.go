@@ -813,6 +813,13 @@ func TestBuildOpenAIResponsesURLForPlatform(t *testing.T) {
 
 // TestNormalizeDeepSeekResponsesRequestBody 无状态适配：强制 store=false、
 // 清除 previous_response_id；非原生 CN Responses 协议原样返回。
+func requireNormalizedCNResponsesBody(t *testing.T, account *Account, body []byte) []byte {
+	t.Helper()
+	normalized, err := normalizeDeepSeekResponsesRequestBody(account, body)
+	require.NoError(t, err)
+	return normalized
+}
+
 func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 	t.Parallel()
 
@@ -821,7 +828,7 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Credentials: map[string]any{"api_protocol": APIProtocolResponses},
 	}
 	body := []byte(`{"model":"deepseek-v4-pro","store":true,"previous_response_id":"resp_123","input":"hi"}`)
-	normalized := normalizeDeepSeekResponsesRequestBody(deepseekResponses, body)
+	normalized := requireNormalizedCNResponsesBody(t, deepseekResponses, body)
 	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
 	require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(normalized, "model").String())
@@ -830,19 +837,29 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Platform: PlatformDeepseek, Type: AccountTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": APIProtocolAdaptive},
 	}
-	adaptiveNormalized := normalizeDeepSeekResponsesRequestBody(deepseekAdaptive, body)
+	adaptiveNormalized := requireNormalizedCNResponsesBody(t, deepseekAdaptive, body)
 	require.False(t, gjson.GetBytes(adaptiveNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(adaptiveNormalized, "previous_response_id").Exists())
 
+	mediaBody := []byte(`{"model":"deepseek-v4.1-flash","store":true,"input":[{"type":"function_call","call_id":"call_image","name":"view_image","arguments":"{}"},{"type":"function_call_output","call_id":"call_image","output":[{"type":"input_image","image_url":"data:image/png;base64,AQID"}]}]}`)
+	mediaNormalized := requireNormalizedCNResponsesBody(t, deepseekResponses, mediaBody)
+	require.False(t, gjson.GetBytes(mediaNormalized, "store").Bool())
+	require.Equal(t, gjson.String, gjson.GetBytes(mediaNormalized, "input.1.output").Type)
+	require.NotContains(t, gjson.GetBytes(mediaNormalized, "input.1.output").String(), "data:image/png")
+	require.Equal(t, "message", gjson.GetBytes(mediaNormalized, "input.2.type").String())
+	require.Equal(t, "user", gjson.GetBytes(mediaNormalized, "input.2.role").String())
+	require.Equal(t, "input_image", gjson.GetBytes(mediaNormalized, "input.2.content.1.type").String())
+	require.Equal(t, "data:image/png;base64,AQID", gjson.GetBytes(mediaNormalized, "input.2.content.1.image_url").String())
+
 	// 非 responses 协议（deepseek CC 账号）原样返回
 	deepseekCC := &Account{Platform: PlatformDeepseek, Type: AccountTypeAPIKey}
-	require.Equal(t, string(body), string(normalizeDeepSeekResponsesRequestBody(deepseekCC, body)))
+	require.Equal(t, string(body), string(requireNormalizedCNResponsesBody(t, deepseekCC, body)))
 
 	kimiResponses := &Account{
 		Platform: PlatformKimi, Type: AccountTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": APIProtocolResponses},
 	}
-	kimiNormalized := normalizeDeepSeekResponsesRequestBody(kimiResponses, body)
+	kimiNormalized := requireNormalizedCNResponsesBody(t, kimiResponses, body)
 	require.False(t, gjson.GetBytes(kimiNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(kimiNormalized, "previous_response_id").Exists())
 
@@ -850,13 +867,13 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Platform: PlatformKimi, Type: AccountTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": APIProtocolAdaptive, "account_mode": AccountModeCoding},
 	}
-	kimiCodingNormalized := normalizeDeepSeekResponsesRequestBody(kimiCodingAdaptive, body)
+	kimiCodingNormalized := requireNormalizedCNResponsesBody(t, kimiCodingAdaptive, body)
 	require.False(t, gjson.GetBytes(kimiCodingNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(kimiCodingNormalized, "previous_response_id").Exists())
 
 	// openai 账号原样返回
 	openai := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	require.Equal(t, string(body), string(normalizeDeepSeekResponsesRequestBody(openai, body)))
+	require.Equal(t, string(body), string(requireNormalizedCNResponsesBody(t, openai, body)))
 }
 
 // TestGetAnthropicAPIKeyAuthScheme_CNProvider CN 账号可经 extra 覆写鉴权方案，

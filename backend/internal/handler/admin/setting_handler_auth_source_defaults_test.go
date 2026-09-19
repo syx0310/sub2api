@@ -153,7 +153,7 @@ func TestSettingHandler_GetSettings_InjectsAuthSourceDefaults(t *testing.T) {
 	require.Equal(t, 9.5, data["auth_source_default_email_balance"])
 	require.Equal(t, float64(8), data["auth_source_default_email_concurrency"])
 	require.Equal(t, true, data["force_email_on_third_party_signup"])
-	require.Equal(t, "0.153.4", data["openai_codex_effective_client_version"])
+	require.Equal(t, "0.155.1", data["openai_codex_effective_client_version"])
 
 	subscriptions, ok := data["auth_source_default_email_subscriptions"].([]any)
 	require.True(t, ok)

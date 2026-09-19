@@ -43,7 +43,10 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 
 	// Convert tools
 	if len(req.Tools) > 0 {
-		out.Tools = convertResponsesToAnthropicTools(req.Tools)
+		out.Tools, err = convertResponsesToAnthropicTools(req.Tools)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Convert tool_choice (reverse of convertAnthropicToolChoiceToResponses)
@@ -662,9 +665,17 @@ func parseContentBlocks(raw json.RawMessage) []AnthropicContentBlock {
 
 // convertResponsesToAnthropicTools maps Responses API tools to Anthropic format.
 // Reverse of convertAnthropicToolsToResponses.
-func convertResponsesToAnthropicTools(tools []ResponsesTool) []AnthropicTool {
+func convertResponsesToAnthropicTools(tools []ResponsesTool) ([]AnthropicTool, error) {
 	var out []AnthropicTool
 	for _, t := range tools {
+		var schema json.RawMessage
+		if t.Type != "web_search" && t.Type != "google_search" && t.Type != "web_search_20250305" {
+			var err error
+			schema, err = normalizeAnthropicInputSchema(t.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q schema cannot be represented faithfully by this Anthropic bridge: %w", t.Name, err)
+			}
+		}
 		switch t.Type {
 		case "web_search", "google_search", "web_search_20250305":
 			out = append(out, AnthropicTool{
@@ -675,13 +686,13 @@ func convertResponsesToAnthropicTools(tools []ResponsesTool) []AnthropicTool {
 			out = append(out, AnthropicTool{
 				Name:        t.Name,
 				Description: t.Description,
-				InputSchema: normalizeAnthropicInputSchema(t.Parameters),
+				InputSchema: schema,
 			})
 		case "custom":
 			out = append(out, AnthropicTool{
 				Name:        t.Name,
 				Description: t.Description,
-				InputSchema: normalizeAnthropicInputSchema(t.Parameters),
+				InputSchema: schema,
 			})
 		default:
 			// Pass through unknown tool types
@@ -689,25 +700,32 @@ func convertResponsesToAnthropicTools(tools []ResponsesTool) []AnthropicTool {
 				Type:        t.Type,
 				Name:        t.Name,
 				Description: t.Description,
-				InputSchema: normalizeAnthropicInputSchema(t.Parameters),
+				InputSchema: schema,
 			})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // normalizeAnthropicInputSchema ensures input_schema is a valid object schema.
-func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
+// Codex 会把部分内置工具（例如 codex_app 的 automation_update）的 parameters
+// 根节点声明成对象分支的 oneOf/anyOf，Anthropic 只接受 object 根节点，这里把
+// 顶层联合摊平成单个 object schema。
+func normalizeAnthropicInputSchema(schema json.RawMessage) (json.RawMessage, error) {
 	const emptyObjectSchema = `{"type":"object","properties":{}}`
 
 	trimmed := strings.TrimSpace(string(schema))
 	if trimmed == "" || trimmed == "null" {
-		return json.RawMessage(emptyObjectSchema)
+		return json.RawMessage(emptyObjectSchema), nil
 	}
 
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &m); err != nil {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
+		return json.RawMessage(emptyObjectSchema), nil
+	}
+
+	if err := flattenAnthropicRootUnions(m); err != nil {
+		return nil, err
 	}
 
 	typeRaw, ok := m["type"]
@@ -716,7 +734,7 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 	} else {
 		var typ string
 		if err := json.Unmarshal(typeRaw, &typ); err != nil || typ != "object" {
-			return json.RawMessage(emptyObjectSchema)
+			return json.RawMessage(emptyObjectSchema), nil
 		}
 	}
 
@@ -726,9 +744,9 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 
 	out, err := json.Marshal(m)
 	if err != nil {
-		return json.RawMessage(emptyObjectSchema)
+		return json.RawMessage(emptyObjectSchema), nil
 	}
-	return out
+	return out, nil
 }
 
 // convertResponsesToAnthropicToolChoice maps Responses tool_choice to Anthropic format.
