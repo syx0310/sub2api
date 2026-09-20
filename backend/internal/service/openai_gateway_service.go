@@ -289,6 +289,7 @@ type OpenAIForwardResult struct {
 	ClientDisconnect      bool
 	RequestBodyBytes      *int64
 	ResponseBodyBytes     *int64
+	CodexTurnState        CodexTurnStateLengths
 	ImageCount            int
 	ImageSize             string
 	ImageInputSize        string

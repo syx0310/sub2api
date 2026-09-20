@@ -563,6 +563,22 @@ func TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 120, cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds)
 }
 
+func TestLoadCodexTurnStateLengthObservation(t *testing.T) {
+	t.Run("enabled_by_default", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.False(t, cfg.Gateway.DisableCodexTurnStateLengthObservation)
+	})
+	t.Run("disable_via_environment", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("GATEWAY_DISABLE_CODEX_TURN_STATE_LENGTH_OBSERVATION", "true")
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.True(t, cfg.Gateway.DisableCodexTurnStateLengthObservation)
+	})
+}
+
 func TestLoadOpenAIWSForceHTTPFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_FORCE_HTTP", "true")

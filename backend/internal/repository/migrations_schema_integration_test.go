@@ -111,6 +111,9 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "openai_ws_mode", "boolean", 0, false)
 	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, false)
 	requireColumnDefaultContains(t, tx, "usage_logs", "native_compaction_v2", "false")
+	for _, column := range []string{"codex_turn_state_request_header_bytes", "codex_turn_state_request_metadata_bytes", "codex_turn_state_response_header_bytes", "codex_turn_state_response_metadata_bytes"} {
+		requireColumn(t, tx, "usage_logs", column, "integer", 0, true)
+	}
 	requireColumn(t, tx, "usage_logs", "image_input_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_output_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_size_source", "character varying", 16, true)

@@ -772,6 +772,7 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 		IPAddress:               l.IPAddress,
 		RequestBodyBytes:        l.RequestBodyBytes,
 		ResponseBodyBytes:       l.ResponseBodyBytes,
+		CodexTurnState:          l.CodexTurnState.Display(),
 		Account:                 AccountSummaryFromService(l.Account),
 	}
 }

@@ -4425,6 +4425,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(c *gin.Context, apiKe
 			cancel()
 		}
 	}
+	codexTurnStateLengths := service.ObservedCodexTurnStateLengths(c)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -4448,6 +4449,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(c *gin.Context, apiKe
 		}
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
+				CodexTurnState:     codexTurnStateLengths,
 				APIKey:             apiKey,
 				Account:            account,
 				Subscription:       subscription,

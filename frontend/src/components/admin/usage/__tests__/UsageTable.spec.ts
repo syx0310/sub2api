@@ -96,6 +96,7 @@ const DataTableStub = {
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-body_size" :row="row" />
+        <slot name="cell-codex_turn_state" :row="row" />
         <slot name="cell-request_id" :row="row" />
         <slot name="cell-upstream_request_id" :row="row" />
       </div>
@@ -649,6 +650,25 @@ describe('admin UsageTable body size column', () => {
     expect(wrapper.text()).toContain('1.50 KB')
     expect(wrapper.text()).toContain('Resp:')
     expect(wrapper.text()).toContain('2.00 KB')
+  })
+})
+
+describe('admin UsageTable turn-state lengths', () => {
+  it.each([
+    [undefined, '—'],
+    [{ request_header_bytes: 0, request_metadata_bytes: 292, response_header_bytes: null, response_metadata_bytes: 356 }, '0 B'],
+  ])('renders optional observations without confusing zero and absent', (observation, expected) => {
+    const wrapper = mount(UsageTable, {
+      props: { data: [{ ...baseImageRow, codex_turn_state: observation }], loading: false, columns: [{ key: 'codex_turn_state', label: 'Turn State Length' }] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    const text = wrapper.get('[data-test="codex-turn-state-lengths"]').text()
+    expect(text).toContain(expected)
+    if (observation) {
+      expect(text).toContain('292 B')
+      expect(text).toContain('356 B')
+      expect(text).toContain('—')
+    }
   })
 })
 

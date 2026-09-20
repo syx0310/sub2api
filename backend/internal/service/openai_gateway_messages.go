@@ -35,6 +35,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 ) (*OpenAIForwardResult, error) {
 	rememberOpenCodeInboundBody(c, body)
 	beginUpstreamResponseModelObservation(c)
+	clearCodexTurnStateLengthObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
@@ -405,7 +406,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				return nil, fmt.Errorf("build grok retry request: %w", err)
 			}
 		}
+		turnStateLengths := s.observeCodexTurnStateHTTPRequest(c, account, upstreamReq, responsesBody)
 		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
+		if resp != nil {
+			turnStateLengths.responseHeaders(resp.Header)
+		}
 		if err != nil {
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 		}
@@ -665,6 +670,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
+		CodexTurnState:                observedCodexTurnStateLengths(c),
 		ResponseID:                    finalResponse.ID,
 		Usage:                         usage,
 		Model:                         originalModel,
@@ -972,6 +978,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
+			CodexTurnState:                observedCodexTurnStateLengths(c),
 			ResponseID:                    responseID,
 			Usage:                         usage,
 			Model:                         originalModel,
@@ -1012,6 +1019,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			return false
 		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
+		codexTurnStateObserverFromContext(c).event([]byte(payload), event.Type)
 		s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
 
 		eventType := strings.TrimSpace(event.Type)

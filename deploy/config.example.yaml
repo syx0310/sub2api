@@ -306,6 +306,9 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # Disable only length diagnostics in admin usage; never changes token forwarding.
+  # GATEWAY_DISABLE_CODEX_TURN_STATE_LENGTH_OBSERVATION=true (restart required).
+  disable_codex_turn_state_length_observation: false
   # Model used for OpenAI /responses/compact upstream requests (default: gpt-5.5).
   # OpenAI /responses/compact 上游模型（默认 gpt-5.5）。
   # Use this to avoid compact failures when newer models are not yet supported by the compact endpoint.

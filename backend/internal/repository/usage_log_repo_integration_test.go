@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -101,6 +102,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		responseBytes := int64(3400 + len(path))
 		upstreamRequestID := "upstream-" + path
 		sessionID := "session-" + path
+		zero, requestState, responseState := 0, 292, 99
 		return &service.UsageLog{
 			UserID:                    user.ID,
 			APIKeyID:                  apiKey.ID,
@@ -115,6 +117,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 			ActualCost:                0.5,
 			RequestBodyBytes:          &requestBytes,
 			ResponseBodyBytes:         &responseBytes,
+			CodexTurnState:            service.CodexTurnStateLengths{RequestHeaderBytes: &zero, RequestMetadataBytes: &requestState, ResponseHeaderBytes: &responseState},
 			LongContextBillingApplied: true,
 			CreatedAt:                 time.Now().UTC(),
 		}
@@ -125,18 +128,23 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		var requestBytes, responseBytes int64
 		var longContext bool
 		var upstreamRequestID, sessionID string
+		var requestHeader, requestMetadata, responseHeader, responseMetadata sql.NullInt64
 		err := integrationDB.QueryRowContext(
 			ctx,
-			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied, upstream_request_id, session_id FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
+			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied, upstream_request_id, session_id, codex_turn_state_request_header_bytes, codex_turn_state_request_metadata_bytes, codex_turn_state_response_header_bytes, codex_turn_state_response_metadata_bytes FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
 			log.RequestID,
 			log.APIKeyID,
-		).Scan(&requestBytes, &responseBytes, &longContext, &upstreamRequestID, &sessionID)
+		).Scan(&requestBytes, &responseBytes, &longContext, &upstreamRequestID, &sessionID, &requestHeader, &requestMetadata, &responseHeader, &responseMetadata)
 		require.NoError(t, err)
 		require.Equal(t, *log.RequestBodyBytes, requestBytes)
 		require.Equal(t, *log.ResponseBodyBytes, responseBytes)
 		require.True(t, longContext)
 		require.Equal(t, *log.UpstreamRequestID, upstreamRequestID)
 		require.Equal(t, *log.SessionID, sessionID)
+		require.Equal(t, sql.NullInt64{Valid: true, Int64: 0}, requestHeader)
+		require.Equal(t, sql.NullInt64{Valid: true, Int64: 292}, requestMetadata)
+		require.Equal(t, sql.NullInt64{Valid: true, Int64: 99}, responseHeader)
+		require.False(t, responseMetadata.Valid)
 	}
 
 	t.Run("single", func(t *testing.T) {
@@ -151,6 +159,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		require.True(t, stored.LongContextBillingApplied)
 		require.Equal(t, log.UpstreamRequestID, stored.UpstreamRequestID)
 		require.Equal(t, log.SessionID, stored.SessionID)
+		require.Equal(t, log.CodexTurnState, stored.CodexTurnState)
 	})
 
 	t.Run("create_batch", func(t *testing.T) {

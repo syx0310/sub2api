@@ -117,6 +117,19 @@ func TestUsageLogStaticInsertShape_PlaceholdersMatchArgTypes(t *testing.T) {
 
 // TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring 把 upstream_request_id 钉在
 // session_id 之前，与参数类型表保持同位；缺失时落 NULL 而不是空串。
+func TestPrepareUsageLogInsert_CodexTurnStateLengths(t *testing.T) {
+	zero, length := 0, 292
+	prepared := prepareUsageLogInsert(&service.UsageLog{
+		CodexTurnState: service.CodexTurnStateLengths{RequestHeaderBytes: &zero, ResponseMetadataBytes: &length},
+	})
+	want := []sql.NullInt64{{Int64: 0, Valid: true}, {}, {}, {Int64: 292, Valid: true}}
+	for i, value := range want {
+		index := len(prepared.args) - 5 + i
+		require.Equal(t, "integer", usageLogInsertArgTypes[index])
+		require.Equal(t, value, prepared.args[index])
+	}
+}
+
 func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	upstreamRequestID := "req_upstream_123"
 	prepared := prepareUsageLogInsert(&service.UsageLog{
@@ -129,7 +142,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 4
+	idx := len(prepared.args) - 8
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)

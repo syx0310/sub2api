@@ -1762,6 +1762,13 @@ export interface UsageLogAccountSummary {
   name: string
 }
 
+export interface CodexTurnStateLengths {
+  request_header_bytes: number | null
+  request_metadata_bytes: number | null
+  response_header_bytes: number | null
+  response_metadata_bytes: number | null
+}
+
 export interface AdminUsageLog extends UsageLog {
   upstream_model?: string | null
   upstream_reasoning_effort?: string | null
@@ -1784,6 +1791,7 @@ export interface AdminUsageLog extends UsageLog {
   // 请求/返回逻辑 payload 大小（仅管理员可见）
   request_body_bytes?: number | null
   response_body_bytes?: number | null
+  codex_turn_state?: CodexTurnStateLengths | null
 
   // 最小账号信息（仅管理员接口返回）
   account?: UsageLogAccountSummary

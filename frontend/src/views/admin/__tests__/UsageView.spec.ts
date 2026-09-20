@@ -34,6 +34,7 @@ const messages: Record<string, string> = {
   'admin.usage.failedToLoadUser': 'Failed to load user',
 	'admin.usage.requestId': 'Request ID',
 	'admin.usage.upstreamRequestId': 'Upstream ID',
+  'admin.usage.codexTurnStateLength': 'Turn State Length',
 	'usage.requestedModel': 'Requested model',
 	'usage.sentUpstreamModel': 'Sent upstream model',
 	'usage.upstreamResponseModel': 'Upstream response model',
@@ -520,8 +521,15 @@ describe('admin UsageView request ID column visibility', () => {
     )
     expect(localStorage.setItem).toHaveBeenCalledWith(
       'usage-hidden-columns-version',
-      'upstream-request-id-hidden-by-default',
+      'codex-turn-state-hidden-by-default',
     )
+    expect(usageTable.props('columns').some((column: { key: string }) => column.key === 'codex_turn_state')).toBe(false)
+    const turnStateToggle = wrapper.findAll('button').find((button) => button.text() === 'Turn State Length')
+    expect(turnStateToggle).toBeDefined()
+    await turnStateToggle!.trigger('click')
+    const keys = usageTable.props('columns').map((column: { key: string }) => column.key)
+    expect(keys.indexOf('codex_turn_state')).toBe(keys.indexOf('body_size') + 1)
+    wrapper.unmount()
   })
 
   it('keeps upstream ID hidden by default and allows enabling it from column settings', async () => {
@@ -563,6 +571,38 @@ describe('admin UsageView request ID column visibility', () => {
     expect(usageTable.props('columns')).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'upstream_request_id', label: 'Upstream ID' })]),
     )
+  })
+})
+
+describe('admin UsageView turn-state column preference migration', () => {
+  afterEach(() => {
+    vi.mocked(localStorage.getItem).mockReset().mockReturnValue(null)
+  })
+
+  it.each([
+    ['upstream-request-id-hidden-by-default', false],
+    ['codex-turn-state-hidden-by-default', true],
+  ])('preserves old choices for preference version %s', async (version, visible) => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) => {
+      if (key === 'usage-hidden-columns') return JSON.stringify(['model'])
+      if (key === 'usage-hidden-columns-version') return version as string
+      return null
+    })
+    list.mockResolvedValue({ items: [], total: 0, pages: 0 })
+    const wrapper = mount(UsageView, { global: { stubs: {
+      AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
+      UsageTable: UsageTableStub, UsageExportProgress: true, UsageCleanupDialog: true,
+      UserBalanceHistoryModal: true, AuditLogModal: true, Pagination: true, Select: true,
+      DateRangePicker: true, Icon: true, TokenUsageTrend: true, ModelDistributionChart: true,
+      GroupDistributionChart: true, EndpointDistributionChart: true, UserTokenRanking: true,
+    } } })
+    await wrapper.vm.$nextTick()
+    const keys = wrapper.findComponent(UsageTableStub).props('columns').map((column: { key: string }) => column.key)
+    expect(keys).not.toContain('model')
+    expect(keys).toContain('request_id')
+    expect(keys).toContain('upstream_request_id')
+    expect(keys.includes('codex_turn_state')).toBe(visible)
+    wrapper.unmount()
   })
 })
 

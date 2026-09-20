@@ -77,6 +77,7 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300}
 	requestBodyBytes := int64(111)
 	responseBodyBytes := int64(222)
+	turnStateLength := 292
 
 	// 流式 cyber：上游 response.failed 报告了真实 token，须按真实 token 计费并扣费，
 	// 与 WS cyber / 正常请求口径一致（不再是 tokens=0 免费行）。
@@ -90,6 +91,7 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 		OutputTokens:      300,
 		RequestBodyBytes:  &requestBodyBytes,
 		ResponseBodyBytes: &responseBodyBytes,
+		CodexTurnState:    CodexTurnStateLengths{ResponseHeaderBytes: &turnStateLength},
 	})
 
 	require.Equal(t, 1, usageRepo.calls)
@@ -101,6 +103,7 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	require.True(t, usageRepo.lastLog.Stream, "cyber 不覆盖真实 stream 字段")
 	require.Equal(t, &requestBodyBytes, usageRepo.lastLog.RequestBodyBytes)
 	require.Equal(t, &responseBodyBytes, usageRepo.lastLog.ResponseBodyBytes)
+	require.Equal(t, &turnStateLength, usageRepo.lastLog.CodexTurnState.ResponseHeaderBytes)
 
 	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1)
 	require.Greater(t, usageRepo.lastLog.ActualCost, 0.0, "流式 cyber 有真实 token，须计费")

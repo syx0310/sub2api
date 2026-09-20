@@ -360,6 +360,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, err
 	}
 
+	turnStateLengths := s.newCodexTurnStateLengthObserver(account)
+	turnStateLengths.requestObject(nil, payload)
+	if !lease.Reused() {
+		turnStateLengths.requestObject(wsHeaders, payload)
+		turnStateLengths.responseHeaders(lease.HandshakeHeaders())
+	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
@@ -451,6 +457,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               lease.HandshakeHeaders(),
+			CodexTurnState:                turnStateLengths.snapshot(),
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 			ClientDisconnect:              clientDisconnected,
@@ -631,6 +638,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			continue
 		}
 		responseModelObserver.ObserveOpenAI(message, eventType)
+		turnStateLengths.event(message, eventType)
 		eventCount++
 		if firstEventType == "" {
 			firstEventType = eventType

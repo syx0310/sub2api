@@ -864,6 +864,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	agentTaskRecoveryTried := false
+	var pendingTurnStateHandshake CodexTurnStateLengths
 	var acquireTurnLease func(int, string, bool, bool) (*openAIWSConnLease, error)
 	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool, forceNewConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
@@ -931,6 +932,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			return nil, acquireErr
 		}
+		pendingTurnStateHandshake = CodexTurnStateLengths{}
+		if !lease.Reused() {
+			observation := s.newCodexTurnStateLengthObserver(account)
+			observation.request(req.Headers, nil)
+			observation.responseHeaders(lease.HandshakeHeaders())
+			pendingTurnStateHandshake = observation.snapshot()
+		}
 		connID := strings.TrimSpace(lease.ConnID())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			turnState = handshakeTurnState
@@ -971,6 +979,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnStart := time.Now()
 		wroteDownstream := false
 		var downstreamBytes int64
+		turnStateLengths := s.newCodexTurnStateLengthObserver(account)
+		if turnStateLengths != nil {
+			turnStateLengths.value = pendingTurnStateHandshake
+		}
+		pendingTurnStateHandshake = CodexTurnStateLengths{}
+		turnStateLengths.request(nil, payload)
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -1030,7 +1044,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
 				RequestedReasoningEffort:      requestedReasoningEffort, Stream: reqStream, OpenAIWSMode: true,
 				UpstreamTerminalEvent: terminalEvent, ResponseHeaders: lease.HandshakeHeaders(),
-				Duration: time.Since(turnStart), FirstTokenMs: firstTokenMs,
+				CodexTurnState: turnStateLengths.snapshot(),
+				Duration:       time.Since(turnStart), FirstTokenMs: firstTokenMs,
 				RequestBodyBytes: bodyBytesPtr(requestBodyBytes), ResponseBodyBytes: bodyBytesPtr(downstreamBytes),
 				ClientDisconnect: clientDisconnected,
 			}
@@ -1078,6 +1093,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			previousResponseNotFound := false
 			previousResponseNotFoundMessage := ""
 			responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
+			turnStateLengths.event(upstreamMessage, eventType)
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}

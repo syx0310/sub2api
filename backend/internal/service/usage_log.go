@@ -185,6 +185,7 @@ type UsageLog struct {
 	// RequestBodyBytes/ResponseBodyBytes store logical payload bytes, not compressed wire bytes.
 	RequestBodyBytes  *int64
 	ResponseBodyBytes *int64
+	CodexTurnState    CodexTurnStateLengths
 	// SessionID is the explicit client-provided request correlation identifier
 	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
 	// valid session header. It is never derived from prompt_cache_key or content.

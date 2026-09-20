@@ -547,7 +547,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if buildErr != nil {
 			return nil, buildErr
 		}
+		turnStateLengths := s.observeCodexTurnStateHTTPRequest(c, account, upstreamReq, body)
 		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
+		if resp != nil {
+			turnStateLengths.responseHeaders(resp.Header)
+		}
 		if err != nil {
 			if turn == 1 && s.openAITransportErrorFailoverEnabled(ctx) {
 				return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
@@ -669,6 +673,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
+			CodexTurnState:                observedCodexTurnStateLengths(c),
 			Duration:                      time.Since(turnStart),
 			FirstTokenMs:                  firstTokenMs,
 			RequestBodyBytes:              bodyBytesPtr(requestBodyBytes),
@@ -762,6 +767,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
 		responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
+		codexTurnStateObserverFromContext(c).event(upstreamMessage, eventType)
 		if responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
 		}

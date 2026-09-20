@@ -318,6 +318,16 @@
           <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
         </template>
 
+        <template #cell-codex_turn_state="{ row }">
+          <div v-if="row.codex_turn_state" data-test="codex-turn-state-lengths" class="space-y-0.5 whitespace-nowrap text-xs text-gray-600 dark:text-gray-400" :title="t('admin.usage.codexTurnStateLengthHint')">
+            <div>{{ t('admin.usage.codexTurnStateRequestHeader') }}: <span class="font-mono">{{ formatTurnStateLength(row.codex_turn_state.request_header_bytes) }}</span></div>
+            <div>{{ t('admin.usage.codexTurnStateRequestMetadata') }}: <span class="font-mono">{{ formatTurnStateLength(row.codex_turn_state.request_metadata_bytes) }}</span></div>
+            <div>{{ t('admin.usage.codexTurnStateResponseHeader') }}: <span class="font-mono">{{ formatTurnStateLength(row.codex_turn_state.response_header_bytes) }}</span></div>
+            <div>{{ t('admin.usage.codexTurnStateResponseMetadata') }}: <span class="font-mono">{{ formatTurnStateLength(row.codex_turn_state.response_metadata_bytes) }}</span></div>
+          </div>
+          <span v-else data-test="codex-turn-state-lengths" class="text-sm text-gray-400 dark:text-gray-500">—</span>
+        </template>
+
         <template #empty><EmptyState :message="t('usage.noRecords')" /></template>
       </DataTable>
     </div>
@@ -635,6 +645,8 @@ const showUpstreamEndpoint = props.showUpstreamEndpoint
 const ipGeoBatchLoading = ref(false)
 
 const showIpGeoToolbar = computed(() => props.columns.some((col) => col.key === 'ip_address'))
+
+const formatTurnStateLength = (value: number | null | undefined) => value == null ? '—' : `${value} B`
 
 const hasReasoningEffortMapping = (row: AdminUsageLog): boolean => {
   const requested = row.reasoning_effort?.trim() || ''
