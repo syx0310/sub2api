@@ -10,6 +10,7 @@ import (
 var codexToolCapabilityFields = []string{
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
 	"multi_agent_reasoning_effort", "multi_agent_version",
+	"supports_reasoning_effort_updates",
 }
 
 func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite bool) bool {
@@ -21,7 +22,7 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		}
 		// These Codex fields are nullable booleans or strings, never arbitrary objects.
 		if !bytes.Equal(value, []byte("null")) {
-			if field == "supports_search_tool" || field == "use_responses_lite" {
+			if field == "supports_search_tool" || field == "use_responses_lite" || field == "supports_reasoning_effort_updates" {
 				if !bytes.Equal(value, []byte("true")) && !bytes.Equal(value, []byte("false")) {
 					continue
 				}
@@ -54,7 +55,7 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		// This bridge implements client-side tool discovery, even without a native manifest.
 		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"supports_search_tool": json.RawMessage("true")}, false)
 	}
-	// Codex 0.153's bundled Astra catalog verifies these values. API-key routes
+	// The pinned Codex GPT-6 catalogs verify these values. API-key routes
 	// use standard Responses, not the ChatGPT-only Responses Lite wire.
 	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
 	if baseURL == "" {
@@ -63,7 +64,7 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 	parsed, err := url.Parse(baseURL)
 	official := err == nil && (strings.EqualFold(parsed.Hostname(), "api.openai.com") ||
 		(account.IsOpenAIOAuth() && strings.EqualFold(parsed.Hostname(), "chatgpt.com")))
-	if account.IsOpenAI() && isOpenAIGPT6AstraModel(modelID) && official {
+	if account.IsOpenAI() && isOpenAIGPT6Model(modelID) && official {
 		defaults := map[string]json.RawMessage{
 			"supports_search_tool":  json.RawMessage("true"),
 			"apply_patch_tool_type": json.RawMessage(`"freeform"`),
@@ -74,12 +75,15 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		if account.IsOpenAIOAuth() {
 			defaults["use_responses_lite"] = json.RawMessage("true")
 		}
+		if !isOpenAIGPT6AstraModel(modelID) {
+			defaults["supports_reasoning_effort_updates"] = json.RawMessage("true")
+		}
 		applyCodexToolCapabilities(capabilities, defaults, false)
 	}
 	if account.IsOpenAIApiKey() {
 		target := modelID
-		if isOpenAIGPT6AstraModel(target) {
-			target = "gpt-6-astra"
+		if isOpenAIGPT6Model(target) {
+			target = canonicalizeOpenAIModelAliasSpelling(target)
 		}
 		_, disabled := apiKeyCodexModelsWithoutResponsesLite[target]
 		if disabled {
@@ -259,7 +263,7 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 			result.CodexToolCapabilities[field] = value
 		} else if declared {
 			fallback := json.RawMessage("null")
-			if field == "supports_search_tool" || field == "use_responses_lite" {
+			if field == "supports_search_tool" || field == "use_responses_lite" || field == "supports_reasoning_effort_updates" {
 				fallback = json.RawMessage("false")
 			}
 			result.CodexToolCapabilities[field] = fallback
@@ -377,7 +381,7 @@ func applyUpstreamModelMetadataToCodexDescriptor(
 	// Account snapshots carry public API limits and reasoning levels. They do
 	// not describe Codex's compaction window or its UI-only Ultra delegation.
 	// Native manifests keep their existing fields in the completion path.
-	if isOpenAIGPT6AstraModel(descriptor.Slug) {
+	if isOpenAIGPT6Model(descriptor.Slug) {
 		metadata.ContextWindow = 0
 		metadata.MaxContextWindow = 0
 		// A native Codex workflow declaration, unlike generic API pricing/model

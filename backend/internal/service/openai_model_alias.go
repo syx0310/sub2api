@@ -36,10 +36,13 @@ func normalizeKnownOpenAICodexModel(model string) string {
 			return mapped
 		}
 	}
+	// Unknown GPT-6 names must not fall through to legacy substring guesses
+	// (for example a made-up gpt-6-sol-codex becoming gpt-5.3-codex).
+	if strings.HasPrefix(normalized, "gpt-6") {
+		return ""
+	}
 
 	switch {
-	case normalized == openai.GPT6AstraModelID:
-		return openai.GPT6AstraModelID
 	case strings.Contains(normalized, "gpt-5.6-sol"):
 		return "gpt-5.6-sol"
 	case strings.Contains(normalized, "gpt-5.6-terra"):
@@ -83,6 +86,10 @@ func normalizeKnownOpenAICodexModel(model string) string {
 
 func isOpenAIGPT6AstraModel(model string) bool {
 	return canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT6AstraModelID
+}
+
+func isOpenAIGPT6Model(model string) bool {
+	return openai.IsGPT6Model(model)
 }
 
 // isOpenAIGPT56Model 判断是否 GPT-5.6 系列模型；入参可为原始模型名

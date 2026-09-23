@@ -253,7 +253,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, policyErr
 	}
 	body = updatedBody
-	if isOpenAIGPT6AstraModel(policyModel) {
+	if isOpenAIGPT6Model(policyModel) {
 		reasoningEffort = extractOpenAIReasoningEffortFromBody(body, policyModel, reqModel)
 	}
 

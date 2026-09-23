@@ -536,6 +536,22 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:        1.5,
 	}
 
+	for model, price := range openAIGPT6SolLunaFallbackPricing {
+		s.fallbackPrices[model] = &ModelPricing{
+			InputPricePerToken:                 price.InputCostPerToken,
+			OutputPricePerToken:                price.OutputCostPerToken,
+			CacheCreationPricePerToken:         price.CacheCreationInputTokenCost,
+			CacheReadPricePerToken:             price.CacheReadInputTokenCost,
+			InputPricePerTokenPriority:         price.InputCostPerTokenPriority,
+			OutputPricePerTokenPriority:        price.OutputCostPerTokenPriority,
+			CacheCreationPricePerTokenPriority: price.CacheCreationInputTokenCostPriority,
+			CacheReadPricePerTokenPriority:     price.CacheReadInputTokenCostPriority,
+			LongContextInputThreshold:          price.LongContextInputTokenThreshold,
+			LongContextInputMultiplier:         price.LongContextInputCostMultiplier,
+			LongContextOutputMultiplier:        price.LongContextOutputCostMultiplier,
+		}
+	}
+
 	// OpenAI GPT-5.6 官方价格（USD/token）。缓存写入为输入价的 1.25 倍。
 	s.fallbackPrices["gpt-5.6-sol"] = &ModelPricing{
 		InputPricePerToken:                 5e-6,
@@ -1109,6 +1125,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		switch normalized {
 		case "gpt-6-astra":
 			return s.fallbackPrices["gpt-6-astra"]
+		case "gpt-6-sol", "gpt-6-luna":
+			return s.fallbackPrices[normalized]
 		case "gpt-5.6-sol":
 			return s.fallbackPrices["gpt-5.6-sol"]
 		case "gpt-5.6-terra":
@@ -1791,7 +1809,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		return &cloned
 	}
 	normalized := normalizeKnownOpenAICodexModel(model)
-	usesCacheWritePremium := isOpenAIGPT56Model(normalized) || isOpenAIGPT6AstraModel(normalized)
+	usesCacheWritePremium := isOpenAIGPT56Model(normalized) || isOpenAIGPT6Model(normalized)
 	needsMaxReasoningEffortMultiplier := isClaudeFable51Model(model) && pricing.MaxReasoningEffortMultiplier == nil
 	needsCacheCreationPolicy := usesCacheWritePremium && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
@@ -1818,11 +1836,11 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 }
 
 // openAIModelFastPricingRatio 返回业务口径下 OpenAI GPT 模型 Fast/priority
-// 的标准价倍率：gpt-5.6 / gpt-6-astra / gpt-5.4 为 2x，gpt-5.5 为 2.5x。未定义 Fast
+// 的标准价倍率：gpt-5.6 / gpt-6 / gpt-5.4 为 2x，gpt-5.5 为 2.5x。未定义 Fast
 // 档的模型（如 gpt-5.5-pro、gpt-5.4-mini/nano）返回 0。
 func openAIModelFastPricingRatio(normalized string) float64 {
 	switch normalized {
-	case "gpt-5.4", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra":
+	case "gpt-5.4", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna":
 		return 2.0
 	case "gpt-5.5":
 		return 2.5

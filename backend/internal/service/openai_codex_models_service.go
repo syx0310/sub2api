@@ -335,29 +335,32 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 
 // openAIConfiguredAndObservedCodexModelIDsForGroup supplements administrator
 // mappings with rollout-gated models observed in fresh per-account catalogs.
-// Astra is intentionally exact-only; future GPT-6 aliases are not inferred.
+// GPT-6 IDs are intentionally exact-only; future aliases are not inferred.
 func openAIConfiguredAndObservedCodexModelIDsForGroup(accounts []Account, group *Group) []string {
 	models := openAIConfiguredCodexModelIDsForGroup(accounts, group)
 	seen := make(map[string]struct{}, len(models)+1)
 	for _, modelID := range models {
 		seen[modelID] = struct{}{}
 	}
-	if group != nil && !group.ModelAllowlist.Allows(openai.GPT6AstraModelID) {
-		return models
-	}
 	now := time.Now()
-	for i := range accounts {
-		account := &accounts[i]
-		if account.Platform != PlatformOpenAI || !account.IsModelSupported(openai.GPT6AstraModelID) {
+	for _, modelID := range []string{openai.GPT6AstraModelID, openai.GPT6SolModelID, openai.GPT6LunaModelID} {
+		if group != nil && !group.ModelAllowlist.Allows(modelID) {
 			continue
 		}
-		if supported, known := account.UpstreamModelCatalogSupports(openai.GPT6AstraModelID, now); !known || !supported {
+		if _, exists := seen[modelID]; exists {
 			continue
 		}
-		if _, exists := seen[openai.GPT6AstraModelID]; !exists {
-			models = append(models, openai.GPT6AstraModelID)
+		for i := range accounts {
+			account := &accounts[i]
+			if account.Platform != PlatformOpenAI || !account.IsModelSupported(modelID) {
+				continue
+			}
+			if supported, known := account.UpstreamModelCatalogSupports(modelID, now); !known || !supported {
+				continue
+			}
+			models = append(models, modelID)
+			break
 		}
-		break
 	}
 	sort.Strings(models)
 	return models
@@ -441,7 +444,9 @@ type configuredCodexModelDescriptor struct {
 	Description                       string                          `json:"description"`
 	DefaultReasoningLevel             *string                         `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels          []configuredCodexReasoningLevel `json:"supported_reasoning_levels"`
-	MultiAgentReasoningEffort         *string                         `json:"multi_agent_reasoning_effort,omitempty"`
+	MultiAgentReasoningEffort         *string                         `json:"multi_agent_reasoning_effort"`
+	SupportsReasoningEffortUpdates    *bool                           `json:"supports_reasoning_effort_updates,omitempty"`
+	AvailableAccessPrograms           any                             `json:"available_access_programs,omitempty"`
 	ShellType                         string                          `json:"shell_type"`
 	Visibility                        string                          `json:"visibility"`
 	SupportedInAPI                    bool                            `json:"supported_in_api"`
@@ -515,6 +520,10 @@ type codexModelMetadataOverride struct {
 
 func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescriptor {
 	modelID = strings.TrimSpace(modelID)
+	if descriptor, ok := configuredGPT6SolLunaModelDescriptor(modelID); ok {
+		descriptor.Slug = modelID
+		return descriptor
+	}
 	if isOpenAIGPT6AstraModel(modelID) {
 		descriptor := configuredGPT6AstraModelDescriptor()
 		descriptor.Slug = modelID
@@ -697,13 +706,13 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
 		{Effort: "xhigh", Description: "Extra-high reasoning depth for difficult tasks"},
 	}
 	normalized := getNormalizedCodexModel(modelID)
-	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6AstraModel(modelID) {
+	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6Model(modelID) {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "max",
 			Description: "Maximum reasoning depth for complex tasks",
 		})
 	}
-	if isOpenAIGPT6AstraModel(modelID) || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
+	if isOpenAIGPT6AstraModel(modelID) || normalized == openai.GPT6SolModelID || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "ultra",
 			Description: "Maximum reasoning with automatic task delegation",
@@ -722,7 +731,7 @@ func isOpenAICodexGPTModel(modelID string) bool {
 
 func isOpenAICodexReasoningGPTModel(modelID string) bool {
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
-	return isOpenAIGPT6AstraModel(normalized) || strings.HasPrefix(normalized, "gpt-5")
+	return isOpenAIGPT6Model(normalized) || strings.HasPrefix(normalized, "gpt-5")
 }
 
 func isOpenAICodexImageInputModel(modelID string) bool {
@@ -730,7 +739,7 @@ func isOpenAICodexImageInputModel(modelID string) bool {
 	if isCodexSparkModel(normalized) {
 		return false
 	}
-	return isOpenAIGPT6AstraModel(normalized) ||
+	return isOpenAIGPT6Model(normalized) ||
 		strings.HasPrefix(normalized, "gpt-5") ||
 		strings.HasPrefix(normalized, "gpt-4o") ||
 		strings.HasPrefix(normalized, "gpt-4.1") ||
@@ -2135,6 +2144,8 @@ func CodexModelsManifestETag(body []byte) string {
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
 	"gpt-6-astra":   {},
+	"gpt-6-sol":     {},
+	"gpt-6-luna":    {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},
 	"gpt-5.6-luna":  {},
@@ -2168,8 +2179,8 @@ func adjustAPIKeyCodexModelsManifest(body []byte, account *Account) ([]byte, err
 		if account != nil {
 			target = account.GetMappedModel(slug)
 		}
-		if isOpenAIGPT6AstraModel(target) {
-			target = "gpt-6-astra"
+		if isOpenAIGPT6Model(target) {
+			target = canonicalizeOpenAIModelAliasSpelling(target)
 		}
 		if _, targeted := apiKeyCodexModelsWithoutResponsesLite[target]; !targeted {
 			continue
@@ -2559,7 +2570,7 @@ func mergeMissingCodexModelFields(current, defaults map[string]json.RawMessage) 
 	changed := false
 	for key, defaultValue := range defaults {
 		currentValue, exists := current[key]
-		if exists && stringSliceContains(codexToolCapabilityFields, key) {
+		if exists && (stringSliceContains(codexToolCapabilityFields, key) || key == "available_access_programs" || key == "default_service_tier") {
 			continue
 		}
 		if !exists || (bytes.Equal(bytes.TrimSpace(currentValue), []byte("null")) &&

@@ -108,12 +108,12 @@ func filterOpenAIResponsesNoneReasoningEffortForAccount(account *Account, body [
 	return out, nil
 }
 
-// normalizeGPT6AstraRequestMap applies the model-specific migration rules from
+// normalizeGPT6RequestMap applies the model-specific migration rules from
 // the OpenAI API contract after channel/account model mapping has selected the
 // actual upstream model. It leaves unrelated request fields and the structure
 // of configuration_update input items intact while normalizing unsupported
 // client-only reasoning presets inside them.
-func normalizeGPT6AstraRequestMap(reqBody map[string]any, chatCompletions bool) bool {
+func normalizeGPT6RequestMap(reqBody map[string]any, model string, chatCompletions bool) bool {
 	if reqBody == nil {
 		return false
 	}
@@ -151,20 +151,20 @@ func normalizeGPT6AstraRequestMap(reqBody map[string]any, chatCompletions bool) 
 	}
 
 	if effort, ok := reqBody["reasoning_effort"].(string); ok {
-		if normalized, normalize := normalizeGPT6AstraReasoningEffort(effort); normalize {
+		if normalized, normalize := normalizeGPT6ReasoningEffort(effort, model); normalize {
 			reqBody["reasoning_effort"] = normalized
 			changed = true
 		}
 	}
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok {
-			if normalized, normalize := normalizeGPT6AstraReasoningEffort(effort); normalize {
+			if normalized, normalize := normalizeGPT6ReasoningEffort(effort, model); normalize {
 				reasoning["effort"] = normalized
 				changed = true
 			}
 		}
 	}
-	if !chatCompletions && normalizeGPT6AstraConfigurationUpdateEfforts(reqBody["input"]) {
+	if !chatCompletions && normalizeGPT6ConfigurationUpdateEfforts(reqBody["input"], model) {
 		changed = true
 	}
 	if !chatCompletions && openAIResponsesInputHasConfigurationUpdate(reqBody["input"]) {
@@ -183,20 +183,25 @@ func normalizeGPT6AstraRequestMap(reqBody map[string]any, chatCompletions bool) 
 	return changed
 }
 
-func normalizeGPT6AstraReasoningEffort(raw string) (string, bool) {
+func normalizeGPT6ReasoningEffort(raw, model string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "none", "minimal":
+		// Fork policy: use low for all three GPT-6 models, including Sol/Luna
+		// whose public API also supports none. Do not inject a missing effort.
 		return "low", true
 	case "ultra":
-		// Ultra is a Codex client preset. The client enables automatic task
-		// delegation separately and sends Astra's underlying xhigh effort.
-		return "xhigh", true
+		// Codex resolves Ultra using multi_agent_reasoning_effort, or max when
+		// it is null. Delegation is a separate client behavior, never injected here.
+		if isOpenAIGPT6AstraModel(model) {
+			return "xhigh", true
+		}
+		return "max", true
 	default:
 		return raw, false
 	}
 }
 
-func normalizeGPT6AstraConfigurationUpdateEfforts(rawInput any) bool {
+func normalizeGPT6ConfigurationUpdateEfforts(rawInput any, model string) bool {
 	items, ok := rawInput.([]any)
 	if !ok {
 		return false
@@ -212,7 +217,7 @@ func normalizeGPT6AstraConfigurationUpdateEfforts(rawInput any) bool {
 			continue
 		}
 		if effort, ok := reasoning["effort"].(string); ok {
-			if normalized, normalize := normalizeGPT6AstraReasoningEffort(effort); normalize {
+			if normalized, normalize := normalizeGPT6ReasoningEffort(effort, model); normalize {
 				reasoning["effort"] = normalized
 				changed = true
 			}
@@ -235,7 +240,7 @@ func openAIResponsesInputHasConfigurationUpdate(rawInput any) bool {
 	return false
 }
 
-func normalizeGPT6AstraRequestBody(body []byte, chatCompletions bool) ([]byte, bool, error) {
+func normalizeGPT6RequestBody(body []byte, chatCompletions bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -243,7 +248,7 @@ func normalizeGPT6AstraRequestBody(body []byte, chatCompletions bool) ([]byte, b
 	if err := decodeOpenAIJSONUseNumber(body, &reqBody); err != nil {
 		return body, false, err
 	}
-	if !normalizeGPT6AstraRequestMap(reqBody, chatCompletions) {
+	if !normalizeGPT6RequestMap(reqBody, firstNonEmptyString(reqBody["model"]), chatCompletions) {
 		return body, false, nil
 	}
 	normalized, err := marshalOpenAIUpstreamJSON(reqBody)
@@ -254,15 +259,15 @@ func normalizeGPT6AstraRequestBody(body []byte, chatCompletions bool) ([]byte, b
 }
 
 func shouldPreserveOpenAIPromptCacheOptions(account *Account, upstreamModel string) bool {
-	if account == nil || !account.IsOpenAIApiKey() || !isOpenAIGPT6AstraModel(upstreamModel) {
+	if account == nil || !account.IsOpenAIApiKey() || !isOpenAIGPT6Model(upstreamModel) {
 		return false
 	}
 	baseURL := strings.TrimSpace(account.GetOpenAIBaseURL())
 	return baseURL == "" || isOfficialOpenAIModelsBaseURL(baseURL)
 }
 
-func filterGPT6AstraPromptCacheOptionsForAccount(body []byte, account *Account, upstreamModel string) ([]byte, bool, error) {
-	if !isOpenAIGPT6AstraModel(upstreamModel) || shouldPreserveOpenAIPromptCacheOptions(account, upstreamModel) ||
+func filterGPT6PromptCacheOptionsForAccount(body []byte, account *Account, upstreamModel string) ([]byte, bool, error) {
+	if !isOpenAIGPT6Model(upstreamModel) || shouldPreserveOpenAIPromptCacheOptions(account, upstreamModel) ||
 		!gjson.GetBytes(body, "prompt_cache_options").Exists() {
 		return body, false, nil
 	}
@@ -1323,11 +1328,15 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool, 
 }
 
 func normalizeOpenAIResponsesReasoningMode(body []byte) ([]byte, bool, error) {
+	return normalizeOpenAIResponsesReasoningModeForModel(body, gjson.GetBytes(body, "model").String())
+}
+
+func normalizeOpenAIResponsesReasoningModeForModel(body []byte, model string) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	// Astra 的 reasoning.mode 与 reasoning.effort 是独立参数，不做兼容替换；非 Astra 维持旧 strip-mode/pro->max 行为。
-	if isOpenAIGPT6AstraModel(gjson.GetBytes(body, "model").String()) {
+	// GPT-6 mode and effort are independent; other models retain legacy behavior.
+	if isOpenAIGPT6Model(model) {
 		return body, false, nil
 	}
 	mode := gjson.GetBytes(body, "reasoning.mode")
@@ -1503,18 +1512,18 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			changed = true
 		}
 	}
-	if astraModel := gjson.GetBytes(normalized, "model").String(); isOpenAIGPT6AstraModel(astraModel) {
-		astraBody, astraChanged, err := normalizeGPT6AstraRequestBody(normalized, false)
+	if model := gjson.GetBytes(normalized, "model").String(); isOpenAIGPT6Model(model) {
+		gpt6Body, gpt6Changed, err := normalizeGPT6RequestBody(normalized, false)
 		if err != nil {
-			return body, false, fmt.Errorf("normalize GPT-6 Astra websocket body: %w", err)
+			return body, false, fmt.Errorf("normalize GPT-6 websocket body: %w", err)
 		}
-		if astraChanged {
-			normalized = astraBody
+		if gpt6Changed {
+			normalized = gpt6Body
 			changed = true
 		}
-		filteredBody, filtered, err := filterGPT6AstraPromptCacheOptionsForAccount(normalized, account, astraModel)
+		filteredBody, filtered, err := filterGPT6PromptCacheOptionsForAccount(normalized, account, model)
 		if err != nil {
-			return body, false, fmt.Errorf("filter GPT-6 Astra websocket prompt cache options: %w", err)
+			return body, false, fmt.Errorf("filter GPT-6 websocket prompt cache options: %w", err)
 		}
 		if filtered {
 			normalized = filteredBody
@@ -1909,9 +1918,9 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	if tier == "" {
 		return BetaPolicyActionPass, ""
 	}
-	// OpenAI does not offer GPT-6 Astra Fast/priority processing for EU data
-	// residency. Filtering the tier keeps the request on Standard processing.
-	if tier == OpenAIFastTierPriority && isOpenAIGPT6AstraModel(model) && account.IsOpenAIEUDataResidency() {
+	// GPT-6 EU processing is Standard-only.
+	euStandardOnly := isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency()
+	if euStandardOnly && tier != "default" && tier != "auto" && tier != OpenAIFastTierMissing {
 		return BetaPolicyActionFilter, ""
 	}
 	if s == nil || s.settingService == nil {
@@ -1925,7 +1934,11 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 		}
 		settings = fetched
 	}
-	return evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
+	action, errMsg = evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
+	if euStandardOnly && action == OpenAIFastPolicyActionForcePriority {
+		return BetaPolicyActionFilter, ""
+	}
+	return action, errMsg
 }
 
 // shouldForceOpenAIFastPriorityForMissingTier reports whether a request that
@@ -1936,7 +1949,7 @@ func (s *OpenAIGatewayService) shouldForceOpenAIFastPriorityForMissingTier(ctx c
 	if account == nil || account.Platform != PlatformOpenAI {
 		return false
 	}
-	if isOpenAIGPT6AstraModel(model) && account.IsOpenAIEUDataResidency() {
+	if isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency() {
 		return false
 	}
 	action, _ := s.evaluateOpenAIFastPolicy(ctx, account, model, OpenAIFastTierMissing)
@@ -2046,7 +2059,7 @@ func openAIGroupForcesFast(ctx context.Context, account *Account, model string) 
 	if ctx == nil || account == nil || account.Platform != PlatformOpenAI {
 		return false
 	}
-	if isOpenAIGPT6AstraModel(model) && account.IsOpenAIEUDataResidency() {
+	if isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency() {
 		return false
 	}
 	group, _ := ctx.Value(ctxkey.Group).(*Group)
@@ -2594,7 +2607,7 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
 // supportsOpenAIReasoningEffortMax reports model families whose upstream scale
 // has a distinct max level. Other models keep the legacy max -> xhigh behavior.
 func supportsOpenAIReasoningEffortMax(model string) bool {
-	if isOpenAIGPT6AstraModel(model) || isOpenAIGPT56Model(model) {
+	if isOpenAIGPT6Model(model) || isOpenAIGPT56Model(model) {
 		return true
 	}
 

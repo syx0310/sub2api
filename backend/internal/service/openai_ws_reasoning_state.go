@@ -183,8 +183,8 @@ func (s *openAIWSReasoningSession) activate(frame *openAIWSReasoningFrame, body 
 	next := *frame
 	if next.tracked {
 		raw := next.value.policyEffort
-		if isOpenAIGPT6AstraModel(upstreamModel) {
-			raw, _ = normalizeGPT6AstraReasoningEffort(raw)
+		if isOpenAIGPT6Model(upstreamModel) {
+			raw, _ = normalizeGPT6ReasoningEffort(raw, upstreamModel)
 		}
 		next.effective = normalizeOpenAIReasoningEffortForModel(raw, upstreamModel)
 	} else if effort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, requestModel); effort != nil {

@@ -636,6 +636,14 @@ describe('UseKeyModal', () => {
     }
     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
     expect(models).not.toHaveProperty('gpt-6')
+    for (const [id, name] of [['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna']]) {
+      expect(models[id!]).toEqual({
+        name,
+        limit: { context: 1050000, output: 128000 },
+        options: { store: false },
+        variants: { low: {}, medium: {}, high: {}, xhigh: {}, max: {} }
+      })
+    }
     expect(models['gpt-6-astra']).toEqual({
       name: 'GPT-6 Astra',
       limit: { context: 1050000, output: 128000 },

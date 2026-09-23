@@ -1136,11 +1136,10 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	// 标准化模型名称（同时兼容 "models/xxx"、VertexAI 资源名等前缀）
 	modelLower := strings.ToLower(strings.TrimSpace(modelName))
 	lookupCandidates := s.buildModelLookupCandidates(modelLower)
-	// GPT-6 Astra currently has one official API model ID. Do not let the
-	// generic gpt-N base-name fallback price hypothetical aliases (for example
-	// gpt-6-astra-wm) as Astra.
+	// Only published GPT-6 IDs are priced. Never guess a family price for
+	// hypothetical aliases such as gpt-6 or gpt-6-sol-pro.
 	lastModelSegment := canonicalizeOpenAIModelAliasSpelling(modelLower)
-	if strings.HasPrefix(lastModelSegment, "gpt-6") && lastModelSegment != openai.GPT6AstraModelID {
+	if strings.HasPrefix(lastModelSegment, "gpt-6") && !isOpenAIGPT6Model(lastModelSegment) {
 		return nil
 	}
 
@@ -1451,6 +1450,11 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 // 5. gpt-5.4* -> 业务静态兜底价
 // 6. 最终回退到 DefaultTestModel (gpt-5.1-codex)
 func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
+	// These published models have distinct official rates. Do not reach the
+	// generic gpt-6 base-name fallback when a remote catalog is still incomplete.
+	if pricing := openAIGPT6SolLunaFallbackPricing[canonicalizeOpenAIModelAliasSpelling(model)]; pricing != nil {
+		return pricing
+	}
 	if strings.HasPrefix(model, "gpt-5.3-codex-spark") {
 		if pricing, ok := s.pricingData["gpt-5.1-codex"]; ok {
 			logger.LegacyPrintf("service.pricing", "[Pricing][SparkBilling] %s -> %s billing", model, "gpt-5.1-codex")

@@ -862,8 +862,8 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
-		if a.IsOpenAI() && isOpenAIGPT6AstraModel(requestedModel) {
-			if supported, known := a.UpstreamModelCatalogSupports("gpt-6-astra", time.Now()); known {
+		if a.IsOpenAI() && isOpenAIGPT6Model(requestedModel) {
+			if supported, known := a.UpstreamModelCatalogSupports(canonicalizeOpenAIModelAliasSpelling(requestedModel), time.Now()); known {
 				return supported
 			}
 		}

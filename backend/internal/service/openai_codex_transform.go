@@ -12,6 +12,8 @@ import (
 
 var codexModelMap = map[string]string{
 	"gpt-6-astra":          "gpt-6-astra",
+	"gpt-6-sol":            "gpt-6-sol",
+	"gpt-6-luna":           "gpt-6-luna",
 	"gpt-5.6-sol":          "gpt-5.6-sol",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
@@ -188,7 +190,7 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 		result.NormalizedModel = normalizedModel
 	}
-	if isOpenAIGPT6AstraModel(normalizedModel) && normalizeGPT6AstraRequestMap(reqBody, false) {
+	if isOpenAIGPT6Model(normalizedModel) && normalizeGPT6RequestMap(reqBody, normalizedModel, false) {
 		result.Modified = true
 	}
 

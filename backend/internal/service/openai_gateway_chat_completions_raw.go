@@ -74,6 +74,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	SetOpsUpstreamModel(c, upstreamModel)
+	// This fork maps none to low. Official GPT-6 function calling therefore
+	// requires Responses. Respect a forced CC route rather than silently
+	// changing its protocol, dropping tools, or disabling reasoning.
+	if isOpenAIGPT6Model(upstreamModel) && isOfficialOpenAICodexAccount(account) &&
+		(len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0) {
+		message := "GPT-6 tool calling with reasoning requires a Responses-capable account; this account is routed to Chat Completions"
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", message)
+		return nil, errors.New(message)
+	}
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		// Resolve before image bridging or other body rewrites so the fallback is
@@ -89,15 +98,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if upstreamModel != originalModel {
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
 	}
-	if isOpenAIGPT6AstraModel(upstreamModel) {
-		normalizedBody, _, normalizeErr := normalizeGPT6AstraRequestBody(upstreamBody, true)
+	if isOpenAIGPT6Model(upstreamModel) {
+		normalizedBody, _, normalizeErr := normalizeGPT6RequestBody(upstreamBody, true)
 		if normalizeErr != nil {
-			return nil, fmt.Errorf("normalize GPT-6 Astra chat request: %w", normalizeErr)
+			return nil, fmt.Errorf("normalize GPT-6 chat request: %w", normalizeErr)
 		}
 		upstreamBody = normalizedBody
-		filteredBody, _, filterErr := filterGPT6AstraPromptCacheOptionsForAccount(upstreamBody, account, upstreamModel)
+		filteredBody, _, filterErr := filterGPT6PromptCacheOptionsForAccount(upstreamBody, account, upstreamModel)
 		if filterErr != nil {
-			return nil, fmt.Errorf("filter GPT-6 Astra chat prompt cache options: %w", filterErr)
+			return nil, fmt.Errorf("filter GPT-6 chat prompt cache options: %w", filterErr)
 		}
 		upstreamBody = filteredBody
 		reasoningEffort = extractOpenAIReasoningEffortFromBody(upstreamBody, upstreamModel, billingModel, originalModel)

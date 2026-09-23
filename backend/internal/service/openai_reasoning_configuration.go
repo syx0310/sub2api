@@ -53,9 +53,19 @@ func lastOpenAIConfigurationEffortMap(input any) (effort string, present bool) {
 func applyOpenAIConfigurationEffortValue(raw, model, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) (string, error) {
 	// Reuse the existing mapping/deny/rank logic on a bounded scalar request;
 	// never overwrite the cache-preserving top-level baseline in the real body.
+	// Match ApplyReasoningEffortPolicy's no-policy fast path. Resolving a UI
+	// preset here without a policy would inject an unnecessary inherited update
+	// and could downgrade Sol's Ultra from max to Astra's xhigh.
+	if strings.TrimSpace(maxEffort) == "" && len(mappings) == 0 {
+		return raw, nil
+	}
 	value := raw
 	if strings.EqualFold(value, "ultra") {
-		value = "xhigh"
+		if isOpenAIGPT6Model(model) {
+			value, _ = normalizeGPT6ReasoningEffort(value, model)
+		} else {
+			value = "xhigh"
+		}
 	}
 	if (maxEffort != "" || len(mappings) > 0) && normalizeReasoningEffortMappingSource(value) == "" {
 		return "", &ReasoningEffortMappingDeniedError{Requested: "unrecognized configuration_update effort"}

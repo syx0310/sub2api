@@ -300,6 +300,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 	}
 
+	if isOpenAIGPT6Model(upstreamModel) {
+		responsesBody, _, err = normalizeGPT6RequestBody(responsesBody, false)
+		if err != nil {
+			return nil, fmt.Errorf("normalize GPT-6 messages request: %w", err)
+		}
+		if responsesReq.Reasoning != nil {
+			responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
+		}
+	}
+
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
 	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
 	// on the body-level service_tier field (priority/flex).

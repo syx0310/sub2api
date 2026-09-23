@@ -350,7 +350,7 @@ func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
 		},
 	}
 
-	require.True(t, normalizeGPT6AstraRequestMap(req, false))
+	require.True(t, normalizeGPT6RequestMap(req, "gpt-6-astra", false))
 	require.NotContains(t, req, "temperature")
 	require.NotContains(t, req, "top_p")
 	require.NotContains(t, req, "top_logprobs")
@@ -372,7 +372,7 @@ func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
 	require.Equal(t, "high", updateReasoning["effort"])
 
 	chat := map[string]any{"reasoning_effort": "ultra", "logprobs": true, "top_logprobs": 3}
-	require.True(t, normalizeGPT6AstraRequestMap(chat, true))
+	require.True(t, normalizeGPT6RequestMap(chat, "gpt-6-astra", true))
 	require.Equal(t, "xhigh", chat["reasoning_effort"], "Codex ultra uses Astra's xhigh wire effort")
 	require.NotContains(t, chat, "logprobs")
 	require.NotContains(t, chat, "top_logprobs")
@@ -380,7 +380,7 @@ func TestNormalizeGPT6AstraRequestMap(t *testing.T) {
 	configurationUpdate := map[string]any{"input": []any{
 		map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "minimal"}},
 	}}
-	require.True(t, normalizeGPT6AstraRequestMap(configurationUpdate, false))
+	require.True(t, normalizeGPT6RequestMap(configurationUpdate, "gpt-6-astra", false))
 	normalizedInput, ok := configurationUpdate["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, normalizedInput, 1)
@@ -404,11 +404,11 @@ func TestShouldPreserveOpenAIPromptCacheOptionsOnlyForOfficialAstra(t *testing.T
 	require.False(t, shouldPreserveOpenAIPromptCacheOptions(compatible, "gpt-6-astra"))
 
 	body := []byte(`{"model":"gpt-6-astra","prompt_cache_options":{"ttl":"30m"},"input":"hi"}`)
-	filtered, changed, err := filterGPT6AstraPromptCacheOptionsForAccount(body, compatible, "gpt-6-astra")
+	filtered, changed, err := filterGPT6PromptCacheOptionsForAccount(body, compatible, "gpt-6-astra")
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.False(t, gjson.GetBytes(filtered, "prompt_cache_options").Exists())
-	preserved, changed, err := filterGPT6AstraPromptCacheOptionsForAccount(body, official, "gpt-6-astra")
+	preserved, changed, err := filterGPT6PromptCacheOptionsForAccount(body, official, "gpt-6-astra")
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.JSONEq(t, string(body), string(preserved))

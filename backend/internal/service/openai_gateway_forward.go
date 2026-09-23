@@ -83,7 +83,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		body = sanitizedToolBody
 	}
 	if account.IsOpenAIOAuthLike() {
-		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(body)
+		// Resolve the actual model before applying legacy mode stripping; an
+		// administrator's public alias may target a GPT-6 model with native pro.
+		requested := gjson.GetBytes(body, "model").String()
+		compact := isOpenAIResponsesCompactPath(c)
+		_, reasoningModel := resolveOpenAIForwardMappedModels(account, requested, compact)
+		if compact {
+			if fallback := s.resolveOpenAICompactFallbackModel(account, requested); fallback != "" {
+				reasoningModel = fallback
+			}
+		}
+		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningModeForModel(body, reasoningModel)
 		if reasoningErr != nil {
 			return nil, fmt.Errorf("normalize OpenAI Responses reasoning.mode: %w", reasoningErr)
 		}
@@ -406,12 +416,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Upstream model resolved: %s -> %s (account: %s, type: %s, isCodexCLI: %v)", billingModel, upstreamModel, account.Name, account.Type, isCodexCLI)
 		}
 	}
-	if isOpenAIGPT6AstraModel(upstreamModel) {
+	if isOpenAIGPT6Model(upstreamModel) {
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		if normalizeGPT6AstraRequestMap(decoded, false) {
+		if normalizeGPT6RequestMap(decoded, upstreamModel, false) {
 			markDecodedModified()
 		}
 	} else if strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()) == "minimal" {
@@ -643,7 +653,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			markPatchDelete("prompt_cache_options")
 		}
 	}
-	if isCodexCLI && isOpenAIGPT6AstraModel(upstreamModel) &&
+	if isCodexCLI && isOpenAIGPT6Model(upstreamModel) &&
 		!shouldPreserveOpenAIPromptCacheOptions(account, upstreamModel) && gjson.GetBytes(body, "prompt_cache_options").Exists() {
 		markPatchDelete("prompt_cache_options")
 	}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // AnthropicToResponses converts an Anthropic Messages request directly into
@@ -490,11 +492,10 @@ func boolPtr(v bool) *bool {
 
 // isReasoningModel reports whether model is a reasoning model that does not
 // support sampling parameters (temperature, top_p) via the Responses API.
-// All gpt-5.x models and GPT-6 Astra are reasoning-only; the Responses API returns
-// "Unsupported parameter: temperature" if these fields are present.
+// GPT-6 Sol/Luna also use reasoning here: the fork maps none to low.
 func isReasoningModel(model string) bool {
 	model = strings.TrimSpace(model)
-	return strings.HasPrefix(model, "gpt-5") || model == "gpt-6-astra"
+	return strings.HasPrefix(model, "gpt-5") || openai.IsGPT6Model(model)
 }
 
 // normalizeToolParameters ensures the tool parameter schema is valid for

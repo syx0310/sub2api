@@ -205,8 +205,8 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if isOpenAIGPT6AstraModel(upstreamModel) {
-		if normalized, normalize := normalizeGPT6AstraReasoningEffort(chatReq.ReasoningEffort); normalize {
+	if isOpenAIGPT6Model(upstreamModel) {
+		if normalized, normalize := normalizeGPT6ReasoningEffort(chatReq.ReasoningEffort, upstreamModel); normalize {
 			chatReq.ReasoningEffort = normalized
 		}
 	}
@@ -244,14 +244,14 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)
 		}
-		if isOpenAIGPT6AstraModel(upstreamModel) {
-			responsesBody, _, err = normalizeGPT6AstraRequestBody(responsesBody, false)
+		if isOpenAIGPT6Model(upstreamModel) {
+			responsesBody, _, err = normalizeGPT6RequestBody(responsesBody, false)
 			if err != nil {
-				return nil, fmt.Errorf("normalize GPT-6 Astra responses-shape request: %w", err)
+				return nil, fmt.Errorf("normalize GPT-6 responses-shape request: %w", err)
 			}
-			responsesBody, _, err = filterGPT6AstraPromptCacheOptionsForAccount(responsesBody, account, upstreamModel)
+			responsesBody, _, err = filterGPT6PromptCacheOptionsForAccount(responsesBody, account, upstreamModel)
 			if err != nil {
-				return nil, fmt.Errorf("filter GPT-6 Astra prompt cache options: %w", err)
+				return nil, fmt.Errorf("filter GPT-6 prompt cache options: %w", err)
 			}
 		}
 		// Strip Responses API parameters that no Codex upstream accepts.
@@ -297,6 +297,12 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		responsesBody, err = json.Marshal(responsesReq)
 		if err != nil {
 			return nil, fmt.Errorf("marshal responses request: %w", err)
+		}
+		if isOpenAIGPT6Model(upstreamModel) {
+			responsesBody, _, err = normalizeGPT6RequestBody(responsesBody, false)
+			if err != nil {
+				return nil, fmt.Errorf("normalize GPT-6 converted responses request: %w", err)
+			}
 		}
 	}
 
@@ -477,7 +483,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if tier := resolvedOpenAIUpstreamServiceTier(c, extractOpenAIServiceTierFromBody(responsesBody)); tier != nil {
 			result.ServiceTier = tier
 		}
-		if responsesReq.Reasoning != nil && responsesReq.Reasoning.Effort != "" {
+		if isOpenAIGPT6Model(upstreamModel) {
+			result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(responsesBody, upstreamModel)
+		} else if responsesReq.Reasoning != nil && responsesReq.Reasoning.Effort != "" {
 			re := responsesReq.Reasoning.Effort
 			result.ReasoningEffort = &re
 		}
