@@ -21,13 +21,16 @@ import (
 
 func TestGPT6SolLunaHTTPForwardKeepsClientInstructions(t *testing.T) {
 	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
-		for _, route := range []string{"oauth", "passthrough", "apikey"} {
+		for _, route := range []string{"oauth", "passthrough", "apikey", "compatible_apikey"} {
 			t.Run(model+"/"+route, func(t *testing.T) {
 				s := newAstraOAuthSetup(t, route == "passthrough")
 				s.account.Credentials["model_mapping"] = map[string]any{"public-alias": model}
-				if route == "apikey" {
+				if route == "apikey" || route == "compatible_apikey" {
 					s.account.Type = AccountTypeAPIKey
 					s.account.Credentials = map[string]any{"api_key": "test", "base_url": "https://api.openai.com/v1", "model_mapping": map[string]any{"public-alias": model}}
+					if route == "compatible_apikey" {
+						s.account.Credentials["base_url"] = "https://compatible.example/v1"
+					}
 					s.account.Extra["openai_responses_supported"] = true
 				}
 				inner := fmt.Sprintf(`{"id":"resp_test","model":%q,"output":[],"usage":{"input_tokens":1,"output_tokens":1}}`, model)

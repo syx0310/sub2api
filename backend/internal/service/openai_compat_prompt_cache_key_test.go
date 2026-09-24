@@ -24,6 +24,8 @@ func TestShouldAutoInjectPromptCacheKeyForCompat(t *testing.T) {
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex"))
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark"))
 	require.True(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-6-astra"))
+	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-6-sol"))
+	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-6-luna"))
 	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-4o"))
 }
 
@@ -164,4 +166,13 @@ func TestDeriveAnthropicCompatPromptCacheKey_UsesCacheControlAnchors(t *testing.
 	require.Equal(t, k1, k2)
 	require.True(t, strings.HasPrefix(k1, "anthropic-cache-"))
 	require.False(t, strings.HasPrefix(k1, compatPromptCacheKeyPrefix))
+}
+
+func TestGPT6SolLunaCompatCacheIdentity(t *testing.T) {
+	for _, model := range []string{"gpt-6-sol", "openai/gpt-6-luna", "gpt-6-sol-max"} {
+		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), "model support must not expand prompt/cache injection: %s", model)
+	}
+	for _, model := range []string{"gpt-6-sol-preview", "gpt-6-solitude", "gpt-6-luna-preview"} {
+		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
+	}
 }

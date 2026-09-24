@@ -41,13 +41,14 @@ func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole 
 		instructions = &req.Instructions
 	}
 	out := &ResponsesRequest{
-		Model:             req.Model,
-		Input:             inputJSON,
-		Instructions:      instructions,
-		Stream:            true, // upstream always streams
-		Include:           []string{"reasoning.encrypted_content"},
-		ServiceTier:       req.ServiceTier,
-		ParallelToolCalls: req.ParallelToolCalls,
+		Model:              req.Model,
+		Input:              inputJSON,
+		Instructions:       instructions,
+		Stream:             true, // upstream always streams
+		Include:            []string{"reasoning.encrypted_content"},
+		ServiceTier:        req.ServiceTier,
+		ParallelToolCalls:  req.ParallelToolCalls,
+		PromptCacheOptions: req.PromptCacheOptions,
 	}
 
 	// Reasoning models (gpt-5.x) do not accept sampling parameters.
@@ -398,26 +399,29 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
 	for _, p := range parts {
 		switch p.Type {
 		case "text":
-			if p.Text != "" {
+			if p.Text != "" || len(p.PromptCacheBreakpoint) > 0 {
 				responseParts = append(responseParts, ResponsesContentPart{
-					Type: "input_text",
-					Text: p.Text,
+					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					Type:                  "input_text",
+					Text:                  p.Text,
 				})
 			}
 		case "image_url":
 			if p.ImageURL != nil && p.ImageURL.URL != "" && !isEmptyBase64DataURI(p.ImageURL.URL) {
 				responseParts = append(responseParts, ResponsesContentPart{
-					Type:     "input_image",
-					ImageURL: p.ImageURL.URL,
+					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					Type:                  "input_image",
+					ImageURL:              p.ImageURL.URL,
 				})
 			}
 		case "file":
 			if p.File != nil && (p.File.FileData != "" || p.File.FileID != "") {
 				responseParts = append(responseParts, ResponsesContentPart{
-					Type:     "input_file",
-					Filename: p.File.Filename,
-					FileData: p.File.FileData,
-					FileID:   p.File.FileID,
+					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					Type:                  "input_file",
+					Filename:              p.File.Filename,
+					FileData:              p.File.FileData,
+					FileID:                p.File.FileID,
 				})
 			}
 		}

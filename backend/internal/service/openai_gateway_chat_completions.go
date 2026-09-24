@@ -281,6 +281,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	} else {
 		// Normal path: convert Chat Completions → Responses.
 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
+		chatReq.Model = upstreamModel
 		if account.UsesOpenAICodexProtocol() {
 			// Codex OAuth must see legacy system messages so its transform can
 			// promote them into top-level instructions before normalizing any
@@ -375,6 +376,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	}
 
 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
+	responsesBody, _, err = normalizeGPT6ResponsesSampling(responsesBody, upstreamModel)
+	if err != nil {
+		return nil, err
+	}
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError

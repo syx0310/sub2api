@@ -1137,6 +1137,7 @@ func TestBuildCodexModelsManifestForGroupLoadsAccountsOnce(t *testing.T) {
 	require.Contains(t, repo.platforms, PlatformGrok)
 	require.Contains(t, repo.platforms, PlatformDeepseek)
 	require.Contains(t, repo.platforms, PlatformMiniMax)
+	require.Contains(t, repo.platforms, PlatformOpenCodeGo)
 	require.NotContains(t, repo.platforms, PlatformComposite)
 }
 
@@ -3909,4 +3910,32 @@ func TestFetchCodexModelsManifestOAuthSharedAcrossGroupsWithIndependentFiltering
 	require.Equal(t, []string{"model-a"}, got[91])
 	require.Equal(t, []string{"model-b"}, got[92])
 	require.EqualValues(t, 1, calls.Load(), "同一账号两个分组同时请求时只发一次上游请求")
+}
+
+// Keep catalog generation separate from prompt rewriting policy.
+func TestCodexFallbackCatalogPreservesConfiguredPromptIdentity(t *testing.T) {
+	for _, model := range []string{"gemini-3-flash", "claude-sonnet-4-6", "deepseek-v4-flash", "grok-4.3", "company-coding-model", "gpt-6-astra"} {
+		d := newConfiguredCodexModelDescriptor(model)
+		require.Equal(t, openai.CodexBaseInstructionsForModel(model), d.ModelMessages.InstructionsTemplate, model)
+	}
+}
+
+func TestGPT6SolLunaCatalogKeepsAuthoritativeCapabilities(t *testing.T) {
+	for _, id := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		svc := &OpenAIGatewayService{}
+		manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"` + id + `","supported_reasoning_levels":[{"effort":"ultra"}],"default_reasoning_level":"ultra","multi_agent_reasoning_effort":"xhigh","service_tiers":[{"id":"ultrafast"}],"context_window":300000,"max_context_window":900000,"supports_search_tool":false,"apply_patch_tool_type":null}]}`)}
+		account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+		require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
+		models := decodeCodexManifestModels(t, manifest.Body)
+		require.Len(t, models, 1)
+		require.Equal(t, []string{"ultra"}, effortsFromManifestModel(t, models[0]))
+		require.Equal(t, "ultra", models[0]["default_reasoning_level"])
+		require.Equal(t, "xhigh", models[0]["multi_agent_reasoning_effort"])
+		require.Equal(t, float64(300000), models[0]["context_window"])
+		require.Equal(t, float64(900000), models[0]["max_context_window"])
+		require.Equal(t, []any{map[string]any{"id": "ultrafast"}}, models[0]["service_tiers"])
+		require.Equal(t, false, models[0]["supports_search_tool"])
+		require.Contains(t, models[0], "apply_patch_tool_type")
+		require.Nil(t, models[0]["apply_patch_tool_type"])
+	}
 }

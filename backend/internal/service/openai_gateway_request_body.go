@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -83,6 +84,12 @@ func shouldPreserveOpenAIResponsesNoneReasoningEffort(account *Account) bool {
 // compatible upstreams, while preserving official OpenAI request semantics.
 func filterOpenAIResponsesNoneReasoningEffortForAccount(account *Account, body []byte) ([]byte, error) {
 	if len(body) == 0 || shouldPreserveOpenAIResponsesNoneReasoningEffort(account) {
+		return body, nil
+	}
+	// Known GPT-6 models have a real none -> low fork policy, not a
+	// catalog-only placeholder. Preserve it until model-specific normalization,
+	// including aliases served by compatible API-key endpoints.
+	if account != nil && isOpenAIGPT6Model(account.GetMappedModel(gjson.GetBytes(body, "model").String())) {
 		return body, nil
 	}
 
@@ -282,6 +289,9 @@ func deleteOpenAIResponsesNoneReasoningEffortFromObject(account *Account, body m
 	if body == nil || shouldPreserveOpenAIResponsesNoneReasoningEffort(account) {
 		return
 	}
+	if account != nil && isOpenAIGPT6Model(account.GetMappedModel(firstNonEmptyString(body["model"]))) {
+		return
+	}
 	if effort, ok := body["reasoning_effort"].(string); ok && strings.EqualFold(strings.TrimSpace(effort), "none") {
 		delete(body, "reasoning_effort")
 	}
@@ -300,21 +310,35 @@ func deleteOpenAIResponsesNoneReasoningEffortFromObject(account *Account, body m
 // normalizeDeepSeekResponsesRequestBody 适配无状态 CN Responses 端点：
 // 强制 store=false 并清除 previous_response_id（DeepSeek / Kimi 官方
 // Responses 均不支持服务端状态存储，携带这些字段会被拒绝）。
-// 非原生 Responses 协议账号原样返回。
+//
+// DeepSeek 另需把 Codex/OpenAI 的 input_image.image_url 写成线上 serde
+// 要求的 url 字段；openai 平台但 base_url 指向 api.deepseek.com 的映射
+// 账号同样走这条出站改写（Codex 贴图会 422 missing field url）。
+// 非 CN / 非 DeepSeek 上游原样返回。
 func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) ([]byte, error) {
-	if account == nil || !account.UsesNativeCNResponses() {
+	if account == nil {
 		return body, nil
 	}
-	normalized, err := sjson.SetBytes(body, "store", false)
-	if err != nil {
+	applyStateless := account.UsesNativeCNResponses()
+	applyImages := shouldAliasDeepSeekResponsesInputImages(account)
+	if !applyStateless && !applyImages {
 		return body, nil
 	}
-	if stripped, err := sjson.DeleteBytes(normalized, "previous_response_id"); err == nil {
-		normalized = stripped
+
+	normalized := body
+	if applyStateless {
+		patched, err := sjson.SetBytes(normalized, "store", false)
+		if err != nil {
+			return body, nil
+		}
+		normalized = patched
+		if stripped, err := sjson.DeleteBytes(normalized, "previous_response_id"); err == nil {
+			normalized = stripped
+		}
 	}
 	// Stateless normalization is shared, but multimodal tool conversion is a
 	// DeepSeek-specific limitation. Do not rewrite Kimi/MiniMax/OpenCode input.
-	if account.Platform != PlatformDeepseek {
+	if account.Platform != PlatformDeepseek && !applyImages {
 		return normalized, nil
 	}
 
@@ -330,15 +354,180 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	if changed {
+		requestBody["input"] = liftedInput
+		input = liftedInput
+	}
+	if applyImages {
+		if aliased, aliasedChanged := aliasDeepSeekResponsesInputImages(input); aliasedChanged {
+			requestBody["input"] = aliased
+			changed = true
+		}
+	}
 	if !changed {
 		return normalized, nil
 	}
-	requestBody["input"] = liftedInput
 	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
 	if err != nil {
 		return nil, err
 	}
 	return rebuilt, nil
+}
+
+func shouldAliasDeepSeekResponsesInputImages(account *Account) bool {
+	return targetsDeepSeekAPIHost(account)
+}
+
+// aliasDeepSeekResponsesInputImages 把图片 part 改写成 DeepSeek 能反序列化
+// 的形状：type=input_image，同时带字符串字段 image_url 与 url。
+// 文档与部分 400 提 image_url；线上 serde 要求 url。只发其中一个都会踩坑。
+// 仅有 file_id、没有可用 URL 的 part 原样保留。
+func aliasDeepSeekResponsesInputImages(input any) (any, bool) {
+	items, ok := asDeepSeekResponsesSlice(input)
+	if !ok {
+		return input, false
+	}
+	changed := false
+	for i, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if aliasDeepSeekResponsesInputItem(item) {
+			items[i] = item
+			changed = true
+		}
+	}
+	if !changed {
+		return input, false
+	}
+	return items, true
+}
+
+func aliasDeepSeekResponsesInputItem(item map[string]any) bool {
+	changed := aliasDeepSeekResponsesImagePart(item)
+	if content, exists := item["content"]; exists {
+		if rewritten, did := aliasDeepSeekResponsesContent(content); did {
+			item["content"] = rewritten
+			changed = true
+		}
+	}
+	if output, exists := item["output"]; exists {
+		if rewritten, did := aliasDeepSeekResponsesContent(output); did {
+			item["output"] = rewritten
+			changed = true
+		}
+	}
+	return changed
+}
+
+func aliasDeepSeekResponsesContent(content any) (any, bool) {
+	parts, ok := asDeepSeekResponsesSlice(content)
+	if !ok {
+		return content, false
+	}
+	changed := false
+	for i, raw := range parts {
+		part, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if aliasDeepSeekResponsesImagePart(part) {
+			parts[i] = part
+			changed = true
+		}
+	}
+	if !changed {
+		return content, false
+	}
+	return parts, true
+}
+
+func aliasDeepSeekResponsesImagePart(part map[string]any) bool {
+	partType := strings.TrimSpace(stringValue(part["type"]))
+	switch partType {
+	case "input_image", "image_url", "image":
+	default:
+		return false
+	}
+	imageURL := extractDeepSeekResponsesImageURL(part)
+	if imageURL == "" {
+		return false
+	}
+	changed := false
+	if partType != "input_image" {
+		part["type"] = "input_image"
+		changed = true
+	}
+	if current, ok := part["image_url"].(string); !ok || strings.TrimSpace(current) != imageURL {
+		part["image_url"] = imageURL
+		changed = true
+	}
+	if current, ok := part["url"].(string); !ok || strings.TrimSpace(current) != imageURL {
+		part["url"] = imageURL
+		changed = true
+	}
+	return changed
+}
+
+func extractDeepSeekResponsesImageURL(part map[string]any) string {
+	if imageURL := deepSeekResponsesURLValue(part["url"]); imageURL != "" {
+		return imageURL
+	}
+	if imageURL := deepSeekResponsesURLValue(part["image_url"]); imageURL != "" {
+		return imageURL
+	}
+	if imageURL := deepSeekResponsesURLValue(part["image"]); imageURL != "" {
+		return imageURL
+	}
+	source, ok := part["source"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if imageURL := deepSeekResponsesURLValue(source["url"]); imageURL != "" {
+		return imageURL
+	}
+	data := strings.TrimSpace(stringValue(source["data"]))
+	if data == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(data), "data:") {
+		return data
+	}
+	mediaType := strings.TrimSpace(stringValue(source["media_type"]))
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return "data:" + mediaType + ";base64," + data
+}
+
+func deepSeekResponsesURLValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		if imageURL := strings.TrimSpace(stringValue(typed["url"])); imageURL != "" {
+			return imageURL
+		}
+		return strings.TrimSpace(stringValue(typed["image_url"]))
+	default:
+		return ""
+	}
+}
+
+func asDeepSeekResponsesSlice(value any) ([]any, bool) {
+	switch items := value.(type) {
+	case []any:
+		return items, true
+	case []map[string]any:
+		out := make([]any, len(items))
+		for i := range items {
+			out[i] = items[i]
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
@@ -972,8 +1161,11 @@ func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
-	// 使用 gjson/sjson 精确替换 model 字段，避免全量 JSON 反序列化
-	if m := gjson.GetBytes(body, "model"); m.Exists() && m.Str == fromModel {
+	// A mapped request must retain its public name even when upstream uses an alias.
+	if fromModel == "" || toModel == "" || fromModel == toModel || !gjson.ValidBytes(body) {
+		return body
+	}
+	if m := gjson.GetBytes(body, "model"); m.Type == gjson.String {
 		newBody, err := sjson.SetBytes(body, "model", toModel)
 		if err != nil {
 			return body
@@ -1327,17 +1519,52 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool, 
 	return normalized, changed, nil
 }
 
-func normalizeOpenAIResponsesReasoningMode(body []byte) ([]byte, bool, error) {
-	return normalizeOpenAIResponsesReasoningModeForModel(body, gjson.GetBytes(body, "model").String())
+func normalizeGPT6ResponsesSampling(body []byte, model string) ([]byte, bool, error) {
+	if !openai.IsGPT6SolOrLunaModelSpelling(model) {
+		return body, false, nil
+	}
+	out := body
+	changed := false
+	for _, key := range []string{"temperature", "top_p", "top_logprobs", "logprobs"} {
+		if !gjson.GetBytes(out, key).Exists() {
+			continue
+		}
+		var err error
+		out, err = sjson.DeleteBytes(out, key)
+		if err != nil {
+			return body, false, fmt.Errorf("remove GPT-6 sampling parameter %s: %w", key, err)
+		}
+		changed = true
+	}
+	if include := gjson.GetBytes(out, "include"); include.IsArray() {
+		items := include.Array()
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].String() != "message.output_text.logprobs" {
+				continue
+			}
+			var err error
+			out, err = sjson.DeleteBytes(out, fmt.Sprintf("include.%d", i))
+			if err != nil {
+				return body, false, fmt.Errorf("remove GPT-6 logprobs include: %w", err)
+			}
+			changed = true
+		}
+	}
+	return out, changed, nil
 }
 
-func normalizeOpenAIResponsesReasoningModeForModel(body []byte, model string) ([]byte, bool, error) {
+func normalizeOpenAIResponsesReasoningMode(body []byte, model string) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	// GPT-6 mode and effort are independent; other models retain legacy behavior.
+	// GPT-6 treats reasoning.mode and reasoning.effort as independent
+	// official fields. Preserve both verbatim; earlier models retain the
+	// established mode stripping and pro-to-max compatibility behavior.
+	if model == "" {
+		model = gjson.GetBytes(body, "model").String()
+	}
 	if isOpenAIGPT6Model(model) {
-		return body, false, nil
+		return normalizeGPT6ResponsesSampling(body, model)
 	}
 	mode := gjson.GetBytes(body, "reasoning.mode")
 	if !mode.Exists() || mode.Type != gjson.String {
@@ -1429,7 +1656,7 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 		changed = true
 	}
 	if account != nil && account.IsOpenAI() && account.IsOAuth() {
-		if reasoningBody, reasoningChanged, err := normalizeOpenAIResponsesReasoningMode(normalized); err != nil {
+		if reasoningBody, reasoningChanged, err := normalizeOpenAIResponsesReasoningMode(normalized, account.GetMappedModel(gjson.GetBytes(normalized, "model").String())); err != nil {
 			return body, false, err
 		} else if reasoningChanged {
 			normalized = reasoningBody
@@ -1555,7 +1782,7 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact, responsesLite boo
 	if err != nil {
 		return body, false, err
 	}
-	if reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(normalized); reasoningErr != nil {
+	if reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(normalized, ""); reasoningErr != nil {
 		return body, false, reasoningErr
 	} else if reasoningChanged {
 		normalized = reasoningBody
@@ -2583,9 +2810,7 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
 
 	switch value {
-	case "none", "minimal":
-		return ""
-	case "low", "medium", "high":
+	case "none", "minimal", "low", "medium", "high":
 		return value
 	case "xhigh", "extrahigh", "max":
 		return "xhigh"
@@ -2598,6 +2823,11 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
+	if isOpenAIGPT6Model(model) {
+		if normalized, changed := normalizeGPT6ReasoningEffort(raw, model); changed {
+			return normalized
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(raw), "max") && supportsOpenAIReasoningEffortMax(model) {
 		return "max"
 	}

@@ -157,20 +157,11 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 		return nil, nil, fmt.Errorf("validate config after secret bootstrap: %w", err)
 	}
 
-	// SIMPLE 模式：启动时补齐各平台默认分组。
-	// - anthropic/openai/gemini: 确保存在 <platform>-default
-	// - antigravity: 仅要求存在 >=2 个未软删除分组（用于 claude/gemini 混合调度场景）
-	if cfg.RunMode == config.RunModeSimple {
-		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer seedCancel()
-		if err := ensureSimpleModeDefaultGroups(seedCtx, client); err != nil {
-			_ = client.Close()
-			return nil, nil, err
-		}
-		if err := ensureSimpleModeAdminConcurrency(seedCtx, client); err != nil {
-			_ = client.Close()
-			return nil, nil, err
-		}
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer seedCancel()
+	if err := ensureSimpleModeStartup(seedCtx, client, cfg); err != nil {
+		_ = client.Close()
+		return nil, nil, err
 	}
 
 	// RELAY 模式：自动启用 backend mode 以禁用用户注册和自助服务。
@@ -185,4 +176,17 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	}
 
 	return client, drv.DB(), nil
+}
+
+// ensureSimpleModeStartup keeps admin concurrency setup independent of group seeding.
+func ensureSimpleModeStartup(ctx context.Context, client *ent.Client, cfg *config.Config) error {
+	if cfg.RunMode != config.RunModeSimple {
+		return nil
+	}
+	if cfg.SimpleMode.AutoCreateDefaultGroups {
+		if err := ensureSimpleModeDefaultGroups(ctx, client); err != nil {
+			return err
+		}
+	}
+	return ensureSimpleModeAdminConcurrency(ctx, client)
 }

@@ -373,13 +373,13 @@ func rewriteCodexTurnMetadataFields(h http.Header, fields map[string]any) {
 		return
 	}
 	var metadata map[string]any
-	if err := json.Unmarshal([]byte(raw), &metadata); err != nil || metadata == nil {
+	if err := decodeOpenAIJSONUseNumber([]byte(raw), &metadata); err != nil || metadata == nil {
 		metadata = make(map[string]any, len(fields))
 	}
 	for k, v := range fields {
 		metadata[k] = v
 	}
-	rebuilt, err := json.Marshal(metadata)
+	rebuilt, err := marshalCodexTurnMetadata(metadata)
 	if err != nil {
 		return
 	}
@@ -534,7 +534,7 @@ func applyCodexFingerprintClientMetadataRaw(body []byte, ids *codexFingerprintID
 	existing := map[string]any{}
 	if cm := gjson.GetBytes(body, "client_metadata"); cm.IsObject() {
 		captureCodexFingerprintOriginalBodySessionIDRaw(ids, gjson.GetBytes(body, "client_metadata.session_id"))
-		if err := json.Unmarshal([]byte(cm.Raw), &existing); err != nil {
+		if err := decodeOpenAIJSONUseNumber([]byte(cm.Raw), &existing); err != nil {
 			return body, false, fmt.Errorf("decode client_metadata for fingerprint: %w", err)
 		}
 	} else {
@@ -576,13 +576,13 @@ func rewriteClientMetadataEmbeddedTurnMetadata(clientMetadata map[string]any, fi
 		return
 	}
 	var metadata map[string]any
-	if err := json.Unmarshal([]byte(raw), &metadata); err != nil || metadata == nil {
+	if err := decodeOpenAIJSONUseNumber([]byte(raw), &metadata); err != nil || metadata == nil {
 		metadata = make(map[string]any, len(fields))
 	}
 	for k, v := range fields {
 		metadata[k] = v
 	}
-	if rebuilt, err := json.Marshal(metadata); err == nil {
+	if rebuilt, err := marshalCodexTurnMetadata(metadata); err == nil {
 		clientMetadata["x-codex-turn-metadata"] = string(rebuilt)
 	}
 }

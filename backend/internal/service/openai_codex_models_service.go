@@ -265,6 +265,7 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 			PlatformZhipu,
 			PlatformDeepseek,
 			PlatformMiniMax,
+			PlatformOpenCodeGo,
 		},
 		false,
 	)
@@ -585,6 +586,10 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 	}
 
 	if isClaudeCodexModel(modelID) {
+		if claude.IsOpus55(modelID) {
+			descriptor.ContextWindow = 1_000_000
+			descriptor.MaxContextWindow = 1_000_000
+		}
 		descriptor.DisplayName = claudeCodexDisplayName(modelID)
 		descriptor.Description = "Claude coding and reasoning model routed through Sub2API."
 		descriptor.SupportsParallelToolCalls = true
@@ -609,7 +614,9 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.SupportedReasoningLevels = configuredCodexGPTReasoningLevels(modelID)
 			descriptor.DefaultReasoningSummary = "none"
 			descriptor.TruncationPolicy = configuredCodexTruncationPolicy{Mode: "tokens", Limit: configuredCodexToolOutputMaxTokens}
-			if isOpenAIGPT56Model(modelID) {
+			// GPT-6 Sol/Luna retain the existing 5.6 Codex window as an offline
+			// compatibility template; live account metadata remains authoritative.
+			if isOpenAIGPT56Model(modelID) || openai.IsGPT6SolOrLunaModelSpelling(modelID) {
 				descriptor.MaxContextWindow = configuredCodexGPT56MaxContext
 			}
 		}
@@ -1164,7 +1171,7 @@ func groupCodexModelSupportsImageInput(
 			return false
 		}
 	}
-	if platform != PlatformOpenAI && platform != PlatformGrok && platform != PlatformDeepseek {
+	if platform != PlatformOpenAI && platform != PlatformGrok && platform != PlatformDeepseek && platform != PlatformOpenCodeGo {
 		return false
 	}
 
@@ -1306,7 +1313,7 @@ func accountCodexModelSupportsImageInput(account *Account, upstreamModel string)
 		return false
 	}
 	switch account.Platform {
-	case PlatformOpenAI, PlatformDeepseek:
+	case PlatformOpenAI, PlatformDeepseek, PlatformOpenCodeGo:
 		if metadata, ok := account.GetUpstreamModelMetadata(upstreamModel); ok {
 			if modalities := normalizeCodexInputModalities(metadata.InputModalities); len(modalities) > 0 {
 				// Official GPT-6 Astra metadata briefly shipped with a stale
@@ -1360,6 +1367,7 @@ func isGrokCodexImageInputModel(model string) bool {
 	case "grok-4.3",
 		"grok-4.5",
 		"grok-4.6",
+		"grok-4.7",
 		"grok-build-0.1",
 		"grok-4.20-0309-reasoning",
 		"grok-4.20-0309-non-reasoning",

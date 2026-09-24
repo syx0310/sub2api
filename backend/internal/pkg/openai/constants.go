@@ -174,3 +174,9 @@ func CodexBaseInstructionsForModel(model string) string {
 	}
 	return latestCodexInstructions()
 }
+
+// IsGPT6SolOrLunaModelSpelling recognizes published IDs, not speculative suffixes.
+func IsGPT6SolOrLunaModelSpelling(model string) bool {
+	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
+	return canonical == GPT6SolModelID || canonical == GPT6LunaModelID
+}
