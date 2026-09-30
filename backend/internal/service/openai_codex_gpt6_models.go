@@ -6,8 +6,10 @@ import (
 	"sync"
 )
 
-// Source: docs/model-catalog-2026-09-23.json. model_messages matches Codex
-// 408a77dc1a1cf95413df26b5185623cf245161d7. This is model-list metadata only;
+// Sol/Luna source: docs/model-catalog-2026-09-23.json; model_messages from
+// Codex 408a77dc1a1cf95413df26b5185623cf245161d7. GPT-6.1 Sol is pinned from
+// codex-rs/models-manager/models.json at 9ef9cb1d9fc6013f6c1994346e0ee93ad9e6f986,
+// excluding redundant base_instructions. This is model-list metadata only;
 // it must not change the gateway's existing request instructions policy.
 //
 //go:embed openai_codex_gpt6_sol_luna_models.json

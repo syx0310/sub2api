@@ -106,14 +106,14 @@ func TestGPT6SolLunaFreshCatalogAndExactRecognition(t *testing.T) {
 }
 
 func TestGPT6SolLunaNormalizationAndPro(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
 		for _, effort := range []string{"none", "minimal", "max", "ultra"} {
 			t.Run(model+"/"+effort, func(t *testing.T) {
 				body := []byte(fmt.Sprintf(`{"model":%q,"instructions":"client-owned","temperature":0.2,"top_p":0.9,"reasoning":{"mode":"pro","effort":%q},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}},{"type":"function_call_output","call_id":"ctc_client","output":"ok"}]}`, model, effort))
 				out, _, err := normalizeOpenAIResponsesWebSocketCompatibilityBody(body, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, false)
 				require.NoError(t, err)
 				want := map[string]string{"none": "low", "minimal": "low", "max": "max", "ultra": "max"}[effort]
-				if model == "gpt-6-astra" && effort == "ultra" {
+				if (model == "gpt-6-astra" || model == "gpt-6.1-sol") && effort == "ultra" {
 					want = "xhigh"
 				}
 				require.Equal(t, want, gjson.GetBytes(out, "reasoning.effort").String())
@@ -152,7 +152,7 @@ func TestGPT6SolLunaPricingAndLongContext(t *testing.T) {
 		for _, model := range []struct {
 			id            string
 			input, output float64
-		}{{"gpt-6-sol", 2e-6, 10e-6}, {"gpt-6-luna", .1e-6, .5e-6}} {
+		}{{"gpt-6-sol", 2e-6, 10e-6}, {"gpt-6.1-sol", 2e-6, 10e-6}, {"gpt-6-luna", .1e-6, .5e-6}} {
 			t.Run(source.name+"/"+model.id, func(t *testing.T) {
 				svc := NewBillingService(&config.Config{}, source.pricing)
 				for _, extra := range []int{0, 1} {
@@ -171,7 +171,11 @@ func TestGPT6SolLunaPricingAndLongContext(t *testing.T) {
 						}
 						require.InDelta(t, float64(tokens.InputTokens)*model.input*inScale, cost.InputCost, 1e-10)
 						require.InDelta(t, 100000*model.input*1.25*inScale, cost.CacheCreationCost, 1e-10)
-						require.InDelta(t, 72000*model.input*.1*inScale, cost.CacheReadCost, 1e-10)
+						cacheReadRatio := .1
+						if model.id == "gpt-6.1-sol" {
+							cacheReadRatio = .05
+						}
+						require.InDelta(t, 72000*model.input*cacheReadRatio*inScale, cost.CacheReadCost, 1e-10)
 						require.InDelta(t, 10*model.output*outScale, cost.OutputCost, 1e-10)
 					}
 				}
@@ -229,14 +233,14 @@ func TestGPT6SolLunaCapabilityFalseSurvivesSync(t *testing.T) {
 }
 
 func TestGPT6SolLunaInheritedUltraPolicy(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
 		value, err := applyOpenAIConfigurationEffortValue("ultra", model, "", nil, "")
 		require.NoError(t, err)
 		require.Equal(t, "ultra", value, "no policy must not introduce a new inherited update")
 		value, err = applyOpenAIConfigurationEffortValue("ultra", model, "max", nil, "")
 		require.NoError(t, err)
 		want := "max"
-		if model == "gpt-6-astra" {
+		if model == "gpt-6-astra" || model == "gpt-6.1-sol" {
 			want = "xhigh"
 		}
 		require.Equal(t, want, value)

@@ -92,6 +92,25 @@ var (
 		Mode:                                "responses",
 		SupportsPromptCaching:               true,
 	}
+	// GPT-6.1 Sol has its own cached-input price; never alias the old Sol table.
+	openAIGPT61SolFallbackPricing = &LiteLLMModelPricing{
+		CacheCreationInputTokenCostExplicit: true,
+		InputCostPerToken:                   2e-6,
+		InputCostPerTokenPriority:           4e-6,
+		OutputCostPerToken:                  10e-6,
+		OutputCostPerTokenPriority:          20e-6,
+		CacheCreationInputTokenCost:         2.5e-6,
+		CacheCreationInputTokenCostPriority: 5e-6,
+		CacheReadInputTokenCost:             0.1e-6,
+		CacheReadInputTokenCostPriority:     0.2e-6,
+		LongContextInputTokenThreshold:      272_000,
+		LongContextInputCostMultiplier:      2,
+		LongContextOutputCostMultiplier:     1.5,
+		SupportsServiceTier:                 true,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "responses",
+		SupportsPromptCaching:               true,
+	}
 	openAIGPT6LunaFallbackPricing = &LiteLLMModelPricing{
 		CacheCreationInputTokenCostExplicit: true,
 		InputCostPerToken:                   0.1e-6,

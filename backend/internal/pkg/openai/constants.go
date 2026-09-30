@@ -9,13 +9,14 @@ import (
 const (
 	GPT6AstraModelID = "gpt-6-astra"
 	GPT6SolModelID   = "gpt-6-sol"
+	GPT61SolModelID  = "gpt-6.1-sol"
 	GPT6LunaModelID  = "gpt-6-luna"
 )
 
 // IsGPT6Model recognizes published IDs only, not speculative aliases or snapshots.
 func IsGPT6Model(model string) bool {
 	switch CanonicalizeOpenAIModelAliasSpelling(model) {
-	case GPT6AstraModelID, GPT6SolModelID, GPT6LunaModelID:
+	case GPT6AstraModelID, GPT6SolModelID, GPT61SolModelID, GPT6LunaModelID:
 		return true
 	default:
 		return false
@@ -39,6 +40,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
+	{ID: GPT61SolModelID, Object: "model", Created: 1790726400, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
 	{ID: GPT6SolModelID, Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: GPT6LunaModelID, Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
@@ -178,5 +180,5 @@ func CodexBaseInstructionsForModel(model string) string {
 // IsGPT6SolOrLunaModelSpelling recognizes published IDs, not speculative suffixes.
 func IsGPT6SolOrLunaModelSpelling(model string) bool {
 	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
-	return canonical == GPT6SolModelID || canonical == GPT6LunaModelID
+	return canonical == GPT6SolModelID || canonical == GPT61SolModelID || canonical == GPT6LunaModelID
 }

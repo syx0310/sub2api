@@ -193,13 +193,13 @@ func normalizeGPT6RequestMap(reqBody map[string]any, model string, chatCompletio
 func normalizeGPT6ReasoningEffort(raw, model string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "none", "minimal":
-		// Fork policy: use low for all three GPT-6 models, including Sol/Luna
+		// Fork policy: use low for published GPT-6 models, including Sol/Luna
 		// whose public API also supports none. Do not inject a missing effort.
 		return "low", true
 	case "ultra":
 		// Codex resolves Ultra using multi_agent_reasoning_effort, or max when
 		// it is null. Delegation is a separate client behavior, never injected here.
-		if isOpenAIGPT6AstraModel(model) {
+		if isOpenAIGPT6AstraModel(model) || canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT61SolModelID {
 			return "xhigh", true
 		}
 		return "max", true
@@ -2145,8 +2145,13 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	if tier == "" {
 		return BetaPolicyActionPass, ""
 	}
-	// GPT-6 EU processing is Standard-only.
-	euStandardOnly := isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency()
+	// Retain the older models' existing EU policy. GPT-6.1 Sol only
+	// excludes Fast; do not drop its caller-selected Flex tier.
+	euNoFast := isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency()
+	euStandardOnly := euNoFast && canonicalizeOpenAIModelAliasSpelling(model) != openai.GPT61SolModelID
+	if euNoFast && tier == "priority" {
+		return BetaPolicyActionFilter, ""
+	}
 	if euStandardOnly && tier != "default" && tier != "auto" && tier != OpenAIFastTierMissing {
 		return BetaPolicyActionFilter, ""
 	}
@@ -2162,7 +2167,10 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 		settings = fetched
 	}
 	action, errMsg = evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
-	if euStandardOnly && action == OpenAIFastPolicyActionForcePriority {
+	if euNoFast && action == OpenAIFastPolicyActionForcePriority {
+		if !euStandardOnly {
+			return BetaPolicyActionPass, ""
+		}
 		return BetaPolicyActionFilter, ""
 	}
 	return action, errMsg

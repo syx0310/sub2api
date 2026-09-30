@@ -713,7 +713,7 @@ describe('UseKeyModal', () => {
     }
     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
     expect(models).not.toHaveProperty('gpt-6')
-    for (const [id, name] of [['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna']]) {
+    for (const [id, name] of [['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-luna', 'GPT-6 Luna']]) {
       expect(models[id!]).toEqual({
         name,
         limit: { context: 1050000, output: 128000 },
@@ -1019,6 +1019,37 @@ describe('UseKeyModal', () => {
       }
     }
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('uses the GPT-6.1 Sol catalog default without forcing Fast', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ models: [{
+        slug: 'gpt-6.1-sol',
+        default_reasoning_level: 'low',
+        supported_reasoning_levels: [{ effort: 'low' }, { effort: 'max' }, { effort: 'ultra' }],
+        default_service_tier: null
+      }] })
+    }))
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-test', baseUrl: 'https://example.com/v1', platform: 'openai' },
+      global: { stubs: {
+        BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+        Icon: { template: '<span />' }
+      } }
+    })
+    await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+    await flushPromises()
+    for (const transport of ['keys.useKeyModal.cliTabs.codexCli', 'keys.useKeyModal.cliTabs.codexCliWs']) {
+      await wrapper.findAll('button').find((button) => button.text().trim() === transport)!.trigger('click')
+      const config = wrapper.findAll('pre code').map((code) => code.text())
+        .find((content) => content.includes('model_provider = "OpenAI"'))
+      expect(config).toContain('model = "gpt-6.1-sol"')
+      expect(config).toContain('model_reasoning_effort = "low"')
+      expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+      expect(config).not.toContain('service_tier = "priority"')
+    }
   })
 
   it('derives OpenAI Codex reasoning effort from the selected catalog descriptor', async () => {
