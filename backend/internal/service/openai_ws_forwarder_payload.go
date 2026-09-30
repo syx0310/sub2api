@@ -358,6 +358,40 @@ func setPreviousResponseIDToRawPayload(payload []byte, previousResponseID string
 	return rebuilt, nil
 }
 
+// A scope is only an inference boundary, not evidence that input contains a
+// complete conversation. It never authorizes deleting an explicit response ID.
+type openAIWSContinuationScope struct {
+	threadID    string
+	windowID    string
+	requestKind string
+	lane        string
+}
+
+func readOpenAIWSContinuationScope(c *gin.Context, payload []byte) openAIWSContinuationScope {
+	metadata := readOpenAIWSExecutionMetadata(c, payload)
+	window := metadata.clientMetadata.Get(openAIWSWindowIDHeader)
+	if !window.Exists() {
+		window = metadata.turnMetadata.Get("window_id")
+	}
+	windowID := ""
+	if window.Type == gjson.String {
+		windowID = strings.TrimSpace(window.Str)
+	} else if !window.Exists() && !metadata.turnFromBody && c != nil && c.Request != nil {
+		windowID = strings.TrimSpace(c.GetHeader(openAIWSWindowIDHeader))
+	}
+	kind := strings.ToLower(strings.TrimSpace(metadata.turnMetadata.Get("request_kind").String()))
+	if kind == "" {
+		kind = openAIWSRequestKindTurn
+	}
+	// Do not pin the metadata JSON (or a large request) between turns.
+	return openAIWSContinuationScope{
+		threadID:    strings.Clone(metadata.threadID(c)),
+		windowID:    strings.Clone(windowID),
+		requestKind: strings.Clone(kind),
+		lane:        strings.Clone(metadata.lane(c)),
+	}
+}
+
 func shouldInferIngressFunctionCallOutputPreviousResponseID(
 	storeDisabled bool,
 	turn int,

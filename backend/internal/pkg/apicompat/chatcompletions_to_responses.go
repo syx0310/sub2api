@@ -161,7 +161,7 @@ func chatSystemToResponses(m ChatMessage, preserveSystemRole bool) ([]ResponsesI
 	if preserveSystemRole {
 		role = "system"
 	}
-	return []ResponsesInputItem{{Role: role, Content: content}}, nil
+	return []ResponsesInputItem{{Type: "message", Role: role, Content: content}}, nil
 }
 
 // chatDeveloperToResponses converts a developer message, preserving the role.
@@ -174,7 +174,7 @@ func chatDeveloperToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
+	return []ResponsesInputItem{{Type: "message", Role: "developer", Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and
@@ -188,7 +188,7 @@ func chatUserToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "user", Content: content}}, nil
+	return []ResponsesInputItem{{Type: "message", Role: "user", Content: content}}, nil
 }
 
 // chatAssistantToResponses converts an assistant message. If there is both
@@ -223,7 +223,7 @@ func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, ResponsesInputItem{Role: "assistant", Content: partsJSON})
+		items = append(items, ResponsesInputItem{Type: "message", Role: "assistant", Content: partsJSON})
 	}
 
 	// Emit one function_call item per tool_call.

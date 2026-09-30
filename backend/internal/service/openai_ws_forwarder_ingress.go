@@ -1312,6 +1312,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	currentPayload := firstPayload.payloadRaw
+	// Admission hooks must see client model candidates before upstream mapping.
+	currentClientPayload := firstPayload.rawForHash
 	currentOriginalModel := firstPayload.originalModel
 	currentImageBillingModel := firstPayload.imageBillingModel
 	currentImageSizeTier := firstPayload.imageSizeTier
@@ -1381,6 +1383,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	turnRetry := 0
 	lastTurnFinishedAt := time.Time{}
 	lastTurnResponseID := ""
+	var lastTurnScope openAIWSContinuationScope
 	skipBeforeTurn := false
 	resetSessionLease := func(markBroken bool) {
 		if sessionLease == nil {
@@ -1438,8 +1441,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				currentPayloadBytes = len(strippedPayload)
 			}
 		}
+		// Read the original per-request identity before fingerprint rewrites.
+		// A new window does not prove input is a full replay: only clear our
+		// inference anchor, never the client's explicit previous_response_id.
+		currentTurnScope := readOpenAIWSContinuationScope(c, currentClientPayload)
 		currentPreviousResponseID := openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
 		expectedPrev := strings.TrimSpace(lastTurnResponseID)
+		if currentTurnScope != lastTurnScope {
+			expectedPrev = ""
+		}
 		toolSignals := ToolContinuationSignals{
 			HasFunctionCallOutput: openAIWSRawPayloadHasToolCallOutput(currentPayload),
 		}
@@ -1600,6 +1610,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		responseID := strings.TrimSpace(result.RequestID)
 		lastTurnResponseID = responseID
+		lastTurnScope = currentTurnScope
 
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
@@ -1697,6 +1708,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		currentPayload = nextPayload.payloadRaw
+		currentClientPayload = nextPayload.rawForHash
 		currentOriginalModel = nextPayload.originalModel
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier

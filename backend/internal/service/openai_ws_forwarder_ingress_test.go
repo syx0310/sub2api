@@ -180,6 +180,33 @@ func TestOpenAIWSPayloadToolReplaySelfContained(t *testing.T) {
 	}
 }
 
+func TestOpenAIWSContinuationScope(t *testing.T) {
+	t.Parallel()
+	base := readOpenAIWSContinuationScope(nil, []byte(`{"client_metadata":{"thread_id":"parent","x-codex-window-id":"window-a"}}`))
+	for _, tc := range []struct {
+		name, metadata string
+		same           bool
+	}{
+		{"same", `{"thread_id":"parent","x-codex-window-id":"window-a"}`, true},
+		{"new_window", `{"thread_id":"parent","x-codex-window-id":"window-b"}`, false},
+		{"child_thread", `{"thread_id":"child","x-codex-window-id":"window-a"}`, false},
+		{"missing_window", `{"thread_id":"parent"}`, false},
+		{"nested_window", `{"x-codex-turn-metadata":"{\"thread_id\":\"parent\",\"window_id\":\"window-a\"}"}`, true},
+		{"compact", `{"x-codex-turn-metadata":"{\"thread_id\":\"parent\",\"window_id\":\"window-a\",\"request_kind\":\"compaction\"}"}`, false},
+		{"memory", `{"x-codex-turn-metadata":"{\"thread_id\":\"parent\",\"window_id\":\"window-a\",\"request_kind\":\"memory\"}"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(`{"type":"response.create","previous_response_id":"resp_client","input":[{"type":"function_call_output","call_id":"call_a","output":"ok"}],"client_metadata":` + tc.metadata + `}`)
+			require.True(t, gjson.ValidBytes(payload))
+			before := string(payload)
+			scope := readOpenAIWSContinuationScope(nil, payload)
+			require.Equal(t, tc.same, scope == base)
+			require.Equal(t, before, string(payload), "scope detection must never rewrite a client delta")
+			require.Equal(t, "resp_client", gjson.GetBytes(payload, "previous_response_id").String())
+		})
+	}
+}
+
 func TestStripCodexSparkImageGenerationToolFromRawPayload(t *testing.T) {
 	t.Run("strips_image_generation_for_spark", func(t *testing.T) {
 		payload := []byte(`{"type":"response.create","model":"gpt-5.3-codex-spark","tools":[{"type":"function","name":"shell"},{"type":"image_generation","output_format":"png"}]}`)
