@@ -1088,7 +1088,7 @@ func TestApplyAccountStatsCost_LongContextFollowsAccountGate(t *testing.T) {
 	}
 }
 
-// 分组开关只决定客户售价；账号统计成本按账号开关判断上游是否收取长上下文费率。
+// 客户售价保留 fork 的分组 AND 账号开关；账号统计成本只按账号开关判断。
 func TestOpenAIGatewayServiceRecordUsage_AccountStatsLongContextFollowsAccountGate(t *testing.T) {
 	baseCost := 300000*2.5e-6 + 2000*15e-6
 	longContextCost := 300000*2.5e-6*2 + 2000*15e-6*1.5
@@ -1099,13 +1099,20 @@ func TestOpenAIGatewayServiceRecordUsage_AccountStatsLongContextFollowsAccountGa
 		wantTotalCost    float64
 		wantAccountCost  float64
 	}{
-		{name: "group_on_account_off", groupLongContext: true, wantTotalCost: longContextCost, wantAccountCost: baseCost},
+		{name: "group_on_account_off", groupLongContext: true, wantTotalCost: baseCost, wantAccountCost: baseCost},
 		{name: "group_off_account_off", wantTotalCost: baseCost, wantAccountCost: baseCost},
 		{
 			name:            "group_off_account_on",
 			accountExtra:    map[string]any{"openai_long_context_billing_enabled": true},
-			wantTotalCost:   longContextCost,
+			wantTotalCost:   baseCost,
 			wantAccountCost: longContextCost,
+		},
+		{
+			name:             "group_on_account_on",
+			groupLongContext: true,
+			accountExtra:     map[string]any{"openai_long_context_billing_enabled": true},
+			wantTotalCost:    longContextCost,
+			wantAccountCost:  longContextCost,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

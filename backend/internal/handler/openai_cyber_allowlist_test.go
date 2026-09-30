@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,10 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 			if _, _, err := conn.Read(ctx); err != nil {
 				return
 			}
+			created := fmt.Sprintf(`{"type":"response.created","response":{"id":%q,"model":"gpt-5.1"}}`, gjson.Get(response, "response.id").String())
+			if err := conn.Write(ctx, coderws.MessageText, []byte(created)); err != nil {
+				return
+			}
 			if err := conn.Write(ctx, coderws.MessageText, []byte(response)); err != nil {
 				return
 			}
@@ -58,6 +63,9 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 	require.NoError(t, harness.clientConn.Write(ctx, coderws.MessageText, payload))
 	_, event, err := harness.clientConn.Read(ctx)
 	require.NoError(t, err)
+	require.Equal(t, "response.created", gjson.GetBytes(event, "type").String())
+	_, event, err = harness.clientConn.Read(ctx)
+	require.NoError(t, err)
 	require.Equal(t, "cyber_policy", gjson.GetBytes(event, "response.error.code").String())
 	require.Eventually(t, func() bool {
 		logs := harness.moderationRepo.logSnapshot()
@@ -67,6 +75,9 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 	require.NoError(t, err)
 	require.Empty(t, matched, "the cyber response must not write new transcript blocks")
 	require.NoError(t, harness.clientConn.Write(ctx, coderws.MessageText, payload))
+	_, event, err = harness.clientConn.Read(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "response.created", gjson.GetBytes(event, "type").String())
 	_, event, err = harness.clientConn.Read(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
