@@ -1312,8 +1312,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	currentPayload := firstPayload.payloadRaw
-	// Admission hooks must see client model candidates before upstream mapping.
-	currentClientPayload := firstPayload.rawForHash
+	// Snapshot the original per-request identity before fingerprint rewrites.
+	// Do not retain the full original frame between turns just to compare IDs.
+	currentTurnScope := readOpenAIWSContinuationScope(c, firstPayload.rawForHash)
 	currentOriginalModel := firstPayload.originalModel
 	currentImageBillingModel := firstPayload.imageBillingModel
 	currentImageSizeTier := firstPayload.imageSizeTier
@@ -1441,10 +1442,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				currentPayloadBytes = len(strippedPayload)
 			}
 		}
-		// Read the original per-request identity before fingerprint rewrites.
 		// A new window does not prove input is a full replay: only clear our
 		// inference anchor, never the client's explicit previous_response_id.
-		currentTurnScope := readOpenAIWSContinuationScope(c, currentClientPayload)
 		currentPreviousResponseID := openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
 		expectedPrev := strings.TrimSpace(lastTurnResponseID)
 		if currentTurnScope != lastTurnScope {
@@ -1708,7 +1707,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		currentPayload = nextPayload.payloadRaw
-		currentClientPayload = nextPayload.rawForHash
+		currentTurnScope = readOpenAIWSContinuationScope(c, nextPayload.rawForHash)
 		currentOriginalModel = nextPayload.originalModel
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier
