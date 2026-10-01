@@ -298,9 +298,10 @@ type OpenAIWSIngressHooks struct {
 	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
-	// BeforeForward sees the final mapped/policy-filtered request and effective
-	// effort immediately before execution. Payload is borrowed for this callback
-	// only. Repeated calls within one turn are transparent transport retries.
+	// BeforeForward sees the final request and effective effort before sending,
+	// or when observing an upstream-started automatic continuation (no new send).
+	// Payload is borrowed only for this callback. Repeated calls within one turn
+	// are transparent transport retries.
 	BeforeForward func(turn int, request OpenAIWSForwardRequest) error
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
