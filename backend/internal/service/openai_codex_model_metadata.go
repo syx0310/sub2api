@@ -52,6 +52,9 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		dst[field] = append(json.RawMessage(nil), value...)
 		changed = true
 	}
+	if _, declared := src["service_tiers"]; declared {
+		changed = reconcileCodexLegacyFastTier(dst) || changed
+	}
 	return changed
 }
 

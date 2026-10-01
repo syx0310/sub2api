@@ -56,3 +56,33 @@ func intersectCodexServiceTiers(candidates []UpstreamModelMetadata) ([]configure
 	}
 	return common, declared
 }
+
+// Codex's picker still ORs the deprecated Fast hint with service_tiers, while
+// the request builder only accepts IDs in service_tiers. Do not leave a stale
+// Fast picker option after an authoritative intersection removes priority.
+func reconcileCodexLegacyFastTier(fields map[string]json.RawMessage) bool {
+	tiers, ok := parseCodexServiceTiers(fields["service_tiers"])
+	if !ok {
+		return false
+	}
+	for _, tier := range tiers {
+		if tier.ID == OpenAIFastTierPriority {
+			return false
+		}
+	}
+	var legacy []string
+	if json.Unmarshal(fields["additional_speed_tiers"], &legacy) != nil {
+		return false
+	}
+	kept := make([]string, 0, len(legacy))
+	for _, tier := range legacy {
+		if tier != "fast" {
+			kept = append(kept, tier)
+		}
+	}
+	if len(kept) == len(legacy) {
+		return false
+	}
+	fields["additional_speed_tiers"], _ = json.Marshal(kept)
+	return true
+}
