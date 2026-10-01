@@ -312,7 +312,9 @@ func (h *OpenAIWSIngressHooks) beforeForward(turn int, payload []byte, upstreamM
 	if h == nil || h.BeforeForward == nil {
 		return nil
 	}
-	var result OpenAIForwardResult
+	// stamp only overrides tracked continuation/configuration-update state.
+	// Seed ordinary explicit effort from the final body just like forwarding.
+	result := OpenAIForwardResult{ReasoningEffort: extractOpenAIReasoningEffortFromBody(payload, upstreamModel)}
 	reasoning.stamp(&result)
 	return h.BeforeForward(turn, OpenAIWSForwardRequest{Payload: payload, UpstreamModel: upstreamModel, ReasoningEffort: result.ReasoningEffort})
 }
