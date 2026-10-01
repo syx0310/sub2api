@@ -868,8 +868,16 @@ func TestPassthroughLifecycle_GPT6AstraSteeringAutomaticContinuationRunsTurnHook
 	var beforeTurnsMu sync.Mutex
 	beforeTurns := make([]int, 0, 2)
 	automaticAuditPayloads := make(chan []byte, 1)
+	admissions := make(chan int, 2)
 	hooks := &OpenAIWSIngressHooks{
 		InitialRequestModel: "gpt-6-astra",
+		BeforeForward: func(turn int, request OpenAIWSForwardRequest) error {
+			require.Equal(t, "gpt-6-astra", request.UpstreamModel)
+			require.NotNil(t, request.ReasoningEffort)
+			require.Equal(t, "medium", *request.ReasoningEffort)
+			admissions <- turn
+			return nil
+		},
 		BeforeRequest: func(turn int, payload []byte, originalModel string) error {
 			require.Equal(t, 2, turn)
 			require.Equal(t, "gpt-6-astra", originalModel)
@@ -939,6 +947,8 @@ func TestPassthroughLifecycle_GPT6AstraSteeringAutomaticContinuationRunsTurnHook
 	require.NoError(t, err)
 	second := <-completed
 	require.Equal(t, 2, second.turn)
+	require.Equal(t, 1, <-admissions)
+	require.Equal(t, 2, <-admissions)
 	require.NotNil(t, second.result)
 	require.Equal(t, int64(len(steerPayload)), *second.result.RequestBodyBytes)
 

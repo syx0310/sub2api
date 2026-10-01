@@ -50,7 +50,8 @@
     "supports_vision": true,
     "supports_web_search": true,
     "supports_xhigh_reasoning_effort": true,
-    "cache_read_input_token_cost_batches": 5e-8
+    "cache_read_input_token_cost_batches": 5e-08,
+    "context_window": 1050000
   },
   "grok-4.7": {
     "cache_read_input_token_cost": 5e-07,

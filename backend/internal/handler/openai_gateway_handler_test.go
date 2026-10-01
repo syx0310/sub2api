@@ -1935,6 +1935,9 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
+	inflightCache          service.BillingCache
+	afterTurn              func(turn int)
+	onUpstreamFrame        func(payload []byte) error
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
 	accountPlatform        string
@@ -3134,6 +3137,13 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				return
 			}
 			upstreamPayloadCh <- payload
+			if tc.onUpstreamFrame != nil {
+				if err := tc.onUpstreamFrame(payload); err != nil {
+					t.Logf("upstream frame assertion: %v", err)
+					upstreamErrCh <- err
+					return
+				}
+			}
 			if gjson.GetBytes(payload, "type").String() == "session.update" {
 				writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
 				writeErr := conn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"session.updated"}`))
@@ -3240,7 +3250,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		cfg.SimpleModeKeyRateLimitEnabled = true
 		keyRepo = &simpleModeWSRateLimitRepo{rejectAt: tc.simpleModeRejectAtRead}
 	}
-	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, keyRepo, nil, nil, cfg, nil)
+	billingCfg := cfg
+	if tc.inflightCache != nil {
+		cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60, DefaultMaxTokens: 8192}
+		copied := *cfg
+		copied.RunMode = config.RunModeStandard
+		billingCfg = &copied
+	}
+	billingCacheSvc := service.NewBillingCacheService(tc.inflightCache, nil, nil, keyRepo, nil, nil, billingCfg, nil)
 	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
@@ -3365,6 +3382,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			if wantType == "response.completed" {
 				clientEvents = append(clientEvents, append([]byte(nil), event...))
 			}
+		}
+		if tc.afterTurn != nil {
+			tc.afterTurn(len(clientEvents))
 		}
 	}
 	readCompleted()

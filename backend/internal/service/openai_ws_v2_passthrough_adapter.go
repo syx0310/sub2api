@@ -937,6 +937,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	reasoningSession.activate(firstReasoningFrame, firstClientMessage, capturedSessionModel, initialRequestModel)
 	reasoningSession.stampPassthrough(usageMeta)
 	_, initialUpstreamModel := usageMeta.turnModels(initialRequestModel)
+	if err := hooks.beforeForward(1, firstClientMessage, initialUpstreamModel, reasoningSession); err != nil {
+		return err
+	}
 	SetOpsUpstreamModel(c, initialUpstreamModel)
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
@@ -1283,6 +1286,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				reasoningSession.activate(reasoningFrame, out, model, requestModelForThisFrame)
 				reasoningSession.stampPassthrough(usageMeta)
 				_, actualModel := usageMeta.turnModels(requestModelForThisFrame)
+				turnHooksMu.Lock()
+				admissionErr := hooks.beforeForward(turnNo, out, actualModel, reasoningSession)
+				turnHooksMu.Unlock()
+				if admissionErr != nil {
+					return payload, nil, admissionErr
+				}
 				SetOpsUpstreamModel(c, actualModel)
 				responseCreateAtCopy := responseCreateAt
 				acceptedTurnStartedAt.Store(&responseCreateAtCopy)
@@ -1424,6 +1433,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				turnStateLengths.Store(s.newCodexTurnStateLengthObserver(account))
 				reasoningSession.beginAutomatic()
 				reasoningSession.stampPassthrough(usageMeta)
+				if err := hooks.beforeForward(turnNo, auditPayload, inheritedUpstreamModel, reasoningSession); err != nil {
+					return err
+				}
 				relayUpstreamFrameConn.armDeadlineAt(auditPayload, automatic.StartedAt)
 				SetOpsUpstreamModel(c, inheritedUpstreamModel)
 				return nil

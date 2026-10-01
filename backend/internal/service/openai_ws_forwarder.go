@@ -261,6 +261,15 @@ func ShouldReportOpenAIWSAccountScheduleFailure(err error) bool {
 	return strings.HasPrefix(strings.ToLower(closeErr.Reason()), "upstream ")
 }
 
+// OpenAIWSForwardRequest is a borrowed, final request view for turn admission.
+// Automatic continuations carry their inherited upstream model separately from
+// the client-facing model in the synthetic audit payload.
+type OpenAIWSForwardRequest struct {
+	Payload         []byte
+	UpstreamModel   string
+	ReasoningEffort *string
+}
+
 // OpenAIWSIngressHooks 定义入站 WS 每个 turn 的生命周期回调。
 type OpenAIWSIngressHooks struct {
 	// ClientLifecycleContext is the request context before an ingress lease
@@ -289,10 +298,23 @@ type OpenAIWSIngressHooks struct {
 	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
+	// BeforeForward sees the final mapped/policy-filtered request and effective
+	// effort immediately before execution. Payload is borrowed for this callback
+	// only. Repeated calls within one turn are transparent transport retries.
+	BeforeForward func(turn int, request OpenAIWSForwardRequest) error
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)
 	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
+}
+
+func (h *OpenAIWSIngressHooks) beforeForward(turn int, payload []byte, upstreamModel string, reasoning *openAIWSReasoningSession) error {
+	if h == nil || h.BeforeForward == nil {
+		return nil
+	}
+	var result OpenAIForwardResult
+	reasoning.stamp(&result)
+	return h.BeforeForward(turn, OpenAIWSForwardRequest{Payload: payload, UpstreamModel: upstreamModel, ReasoningEffort: result.ReasoningEffort})
 }
 
 func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {

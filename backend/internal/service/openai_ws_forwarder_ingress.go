@@ -678,6 +678,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 			reasoningSession.activate(currentBridgePayload.reasoningFrame, bridgePayloadRaw, gjson.GetBytes(bridgePayloadRaw, "model").String(), currentBridgePayload.originalModel)
+			if err := hooks.beforeForward(turn, bridgePayloadRaw, gjson.GetBytes(bridgePayloadRaw, "model").String(), reasoningSession); err != nil {
+				return err
+			}
 			result, bridgeErr := s.proxyOpenAIWSHTTPBridgeTurn(
 				ctx,
 				c,
@@ -1568,6 +1571,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		reasoningSession.activate(currentReasoningFrame, currentPayload, gjson.GetBytes(currentPayload, "model").String(), currentOriginalModel)
+		if err := hooks.beforeForward(turn, currentPayload, gjson.GetBytes(currentPayload, "model").String(), reasoningSession); err != nil {
+			return err
+		}
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentRequestBodyBytes, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
 		if relayErr != nil {
 			lastTurnClean = false

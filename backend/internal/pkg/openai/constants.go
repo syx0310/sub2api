@@ -95,6 +95,12 @@ var instructionsGPT55 string
 //go:embed instructions_gpt6_astra.txt
 var instructionsGPT6Astra string
 
+// CodexGPT61SolMetadata is the complete official descriptor from openai/codex
+// b1e72963c3b71a9265a551e54beff078384efed9, codex-rs/models-manager/models.json.
+//
+//go:embed codex_gpt61_sol.json
+var CodexGPT61SolMetadata []byte
+
 // latestCodexInstructions 返回当前已知最新版本的 Codex base instructions，
 // 当前为 GPT-5.5；若 5.5 prompt 意外为空则回退到 DefaultInstructions 保证非空。
 func latestCodexInstructions() string {
@@ -181,4 +187,9 @@ func CodexBaseInstructionsForModel(model string) string {
 func IsGPT6SolOrLunaModelSpelling(model string) bool {
 	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
 	return canonical == GPT6SolModelID || canonical == GPT61SolModelID || canonical == GPT6LunaModelID
+}
+
+// IsGPT61SolModelSpelling recognizes the published ID, not speculative suffixes.
+func IsGPT61SolModelSpelling(model string) bool {
+	return CanonicalizeOpenAIModelAliasSpelling(model) == GPT61SolModelID
 }

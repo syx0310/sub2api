@@ -172,7 +172,7 @@ func TestGPT6SolLunaCompatCacheIdentity(t *testing.T) {
 	for _, model := range []string{"gpt-6-sol", "openai/gpt-6-luna", "gpt-6-sol-max"} {
 		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), "model support must not expand prompt/cache injection: %s", model)
 	}
-	for _, model := range []string{"gpt-6-sol-preview", "gpt-6-solitude", "gpt-6-luna-preview"} {
+	for _, model := range []string{"gpt-6.1-sol-preview", "gpt-6.1-solitude", "gpt-6-sol-preview", "gpt-6-solitude", "gpt-6-luna-preview"} {
 		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
 	}
 }

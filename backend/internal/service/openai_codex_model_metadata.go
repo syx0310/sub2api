@@ -8,6 +8,7 @@ import (
 )
 
 var codexToolCapabilityFields = []string{
+	"service_tiers",
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
 	"multi_agent_reasoning_effort", "multi_agent_version",
 	"supports_reasoning_effort_updates",
@@ -20,8 +21,14 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		if len(value) == 0 {
 			continue
 		}
-		// These Codex fields are nullable booleans or strings, never arbitrary objects.
-		if !bytes.Equal(value, []byte("null")) {
+		// ModelInfo requires service_tiers to be an array, unlike nullable scalars.
+		if field == "service_tiers" {
+			tiers, ok := parseCodexServiceTiers(value)
+			if !ok {
+				continue
+			}
+			value, _ = json.Marshal(tiers)
+		} else if !bytes.Equal(value, []byte("null")) {
 			if field == "supports_search_tool" || field == "use_responses_lite" || field == "supports_reasoning_effort_updates" {
 				if !bytes.Equal(value, []byte("true")) && !bytes.Equal(value, []byte("false")) {
 					continue
@@ -34,6 +41,11 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 			}
 		}
 		current, exists := dst[field]
+		if field == "service_tiers" && exists && !overwrite && bytes.Equal(bytes.TrimSpace(current), []byte("null")) {
+			dst[field] = json.RawMessage("[]")
+			changed = true
+			continue
+		}
 		if (exists && !overwrite) || bytes.Equal(current, value) {
 			continue
 		}
@@ -89,6 +101,17 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		if disabled {
 			capabilities["use_responses_lite"] = json.RawMessage("false")
 		}
+	}
+	// API Astra publicly supports Ultrafast. OAuth must advertise it in its
+	// account manifest; a subscription label alone does not grant the capability.
+	if account.IsOpenAIApiKey() && isOfficialOpenAIModelsBaseURL(baseURL) && isOpenAIGPT6AstraModel(modelID) && !account.IsOpenAIEUDataResidency() {
+		tiers := configuredCodexServiceTiersForModel(modelID)
+		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; 6x Standard token pricing."})
+		encoded, err := json.Marshal(tiers)
+		if err != nil {
+			panic(err)
+		}
+		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"service_tiers": encoded}, false)
 	}
 	return capabilities
 }
@@ -250,6 +273,12 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 	result := codexModelMetadataOverride{UpstreamModelMetadata: UpstreamModelMetadata{ID: strings.TrimSpace(modelID)}}
 	result.CodexToolCapabilities = make(map[string]json.RawMessage)
 	for _, field := range codexToolCapabilityFields {
+		if field == "service_tiers" {
+			if tiers, declared := intersectCodexServiceTiers(candidates); declared {
+				result.CodexToolCapabilities[field], _ = json.Marshal(tiers)
+			}
+			continue
+		}
 		value := bytes.TrimSpace(candidates[0].CodexToolCapabilities[field])
 		shared := len(value) > 0
 		declared := shared
