@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,8 +73,10 @@ type RelayAutomaticTurn struct {
 	SteerID            string
 	PreviousResponseID string
 	RequestModel       string
-	ClientPayload      []byte
-	StartedAt          time.Time
+	// ClientPayloads contains every consumed steer in submission order. These
+	// frames have already been sent upstream; they are for local audit only.
+	ClientPayloads [][]byte
+	StartedAt      time.Time
 }
 
 type RelayExit struct {
@@ -1314,7 +1317,7 @@ func acceptRelaySteer(state *relayState, payload []byte, acceptedAt time.Time) {
 		accepted.requestModel = submission.requestModel
 		accepted.payload = submission.payload
 		accepted.startedAt = submission.startedAt
-		state.pendingSteerSubmissions = append(state.pendingSteerSubmissions[:index], state.pendingSteerSubmissions[index+1:]...)
+		state.pendingSteerSubmissions = slices.Delete(state.pendingSteerSubmissions, index, index+1)
 		break
 	}
 	state.acceptedSteers = append(state.acceptedSteers, accepted)
@@ -1330,13 +1333,13 @@ func failRelaySteer(state *relayState, payload []byte) {
 	defer state.requestMu.Unlock()
 	for index, accepted := range state.acceptedSteers {
 		if steerID != "" && accepted.id == steerID {
-			state.acceptedSteers = append(state.acceptedSteers[:index], state.acceptedSteers[index+1:]...)
+			state.acceptedSteers = slices.Delete(state.acceptedSteers, index, index+1)
 			return
 		}
 	}
 	for index, submission := range state.pendingSteerSubmissions {
 		if previousResponseID != "" && submission.previousResponseID == previousResponseID {
-			state.pendingSteerSubmissions = append(state.pendingSteerSubmissions[:index], state.pendingSteerSubmissions[index+1:]...)
+			state.pendingSteerSubmissions = slices.Delete(state.pendingSteerSubmissions, index, index+1)
 			return
 		}
 	}
@@ -1352,9 +1355,10 @@ func promoteRelayAcceptedSteer(state *relayState, now time.Time) (RelayAutomatic
 		return RelayAutomaticTurn{}, false
 	}
 	accepted := state.acceptedSteers[0]
+	payloads := [][]byte{accepted.payload}
 	state.acceptedSteers[0] = relayAcceptedSteer{}
 	state.acceptedSteers = state.acceptedSteers[1:]
-	consumeAcceptedRelaySteerForExplicitRequestLocked(state, accepted.previousResponseID)
+	payloads = append(payloads, consumeAcceptedRelaySteerForExplicitRequestLocked(state, accepted.previousResponseID)...)
 	registerRelayRequestLocked(state, accepted.requestModel)
 	state.requestMu.Unlock()
 	startedAt := accepted.startedAt
@@ -1366,27 +1370,31 @@ func promoteRelayAcceptedSteer(state *relayState, now time.Time) (RelayAutomatic
 		SteerID:            accepted.id,
 		PreviousResponseID: accepted.previousResponseID,
 		RequestModel:       accepted.requestModel,
-		ClientPayload:      append([]byte(nil), accepted.payload...),
+		ClientPayloads:     payloads,
 		StartedAt:          startedAt,
 	}, true
 }
 
-func consumeAcceptedRelaySteerForExplicitRequestLocked(state *relayState, previousResponseID string) {
+func consumeAcceptedRelaySteerForExplicitRequestLocked(state *relayState, previousResponseID string) [][]byte {
 	previousResponseID = strings.TrimSpace(previousResponseID)
 	if state == nil || previousResponseID == "" || len(state.acceptedSteers) == 0 {
-		return
+		return nil
 	}
 	// Multiple accepted updates target one continuation of the same parent.
 	// Leaving a sibling here makes a later response.created look like another
 	// automatic turn. Preserve other parents and release consumed payloads.
 	kept := state.acceptedSteers[:0]
+	var payloads [][]byte
 	for _, accepted := range state.acceptedSteers {
 		if accepted.previousResponseID != previousResponseID {
 			kept = append(kept, accepted)
+		} else {
+			payloads = append(payloads, accepted.payload)
 		}
 	}
 	clear(state.acceptedSteers[len(kept):])
 	state.acceptedSteers = kept
+	return payloads
 }
 
 func relayRequestModel(state *relayState, sequence int64, completed bool) string {

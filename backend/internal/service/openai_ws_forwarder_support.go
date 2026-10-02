@@ -111,6 +111,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		}
 
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
+		s.observeCodexCreditEvent(ctx, account, message)
 		if eventType == "" {
 			continue
 		}

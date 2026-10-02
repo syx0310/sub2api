@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +62,9 @@ func TestQueryUsageCodexCredits(t *testing.T) {
 
 func TestCacheCodexCreditsSnapshot(t *testing.T) {
 	ctx := context.Background()
-	repo := &stubQuotaAccountRepo{}
+	parent := &Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	shadow := &Account{ID: 200, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parent.ID}
+	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: parent, 200: shadow}}
 	svc := &OpenAIQuotaService{accountRepo: repo}
 	balance := "1200.50"
 	usage := &OpenAIQuotaUsage{FetchedAt: 123, Credits: &OpenAICredits{HasCredits: true, Balance: &balance}}
@@ -69,7 +74,9 @@ func TestCacheCodexCreditsSnapshot(t *testing.T) {
 	encoded, err := json.Marshal(repo.extraUpdates[200][openaiQuotaCreditsKey])
 	require.NoError(t, err)
 	require.JSONEq(t, `{"credits":{"has_credits":true,"unlimited":false,"balance":"1200.50"},"fetched_at":123}`, string(encoded))
-	require.NotContains(t, repo.extraUpdates, int64(100), "a shadow row must not overwrite its parent")
+	require.Contains(t, repo.extraUpdates[100], codexCreditStateKey, "credit policy belongs to the credential owner")
+	require.NotContains(t, repo.extraUpdates[100], openaiQuotaCreditsKey, "the per-row display stays on the queried row")
+	require.NotContains(t, repo.extraUpdates[100], CodexAllowCreditUsageKey, "refresh does not grant permission")
 	require.NotContains(t, repo.extraUpdates[200], openaiQuotaResetCreditsKey)
 
 	// Missing credits from a successful read invalidate the previous balance.
@@ -79,7 +86,67 @@ func TestCacheCodexCreditsSnapshot(t *testing.T) {
 	require.JSONEq(t, `{"credits":null,"fetched_at":456}`, string(encoded))
 
 	require.Error(t, svc.CacheCreditsSnapshot(ctx, 200, nil))
-	require.Equal(t, 2, repo.extraUpdateCalls)
+	require.Equal(t, 4, repo.extraUpdateCalls)
 	repo.extraUpdateErr = errors.New("database unavailable")
 	require.ErrorContains(t, svc.CacheCreditsSnapshot(ctx, 200, usage), "database unavailable")
+}
+
+func TestCacheCodexCreditsSnapshotLatchesExhaustionUntilManualReauthorization(t *testing.T) {
+	for _, shadowRefresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shadow=%t", shadowRefresh), func(t *testing.T) {
+			now := time.Now()
+			parent := &Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{
+				CodexAllowCreditUsageKey: true, "codex_5h_used_percent": 100.0,
+				"codex_5h_reset_at": now.Add(time.Hour).Format(time.RFC3339),
+			}}
+			shadow := &Account{ID: 200, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parent.ID, Extra: map[string]any{}}
+			repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: parent, 200: shadow}}
+			svc := &OpenAIQuotaService{accountRepo: repo}
+			id := parent.ID
+			if shadowRefresh {
+				id = shadow.ID
+			}
+			refresh := func(credits *OpenAICredits) {
+				t.Helper()
+				require.NoError(t, svc.CacheCreditsSnapshot(t.Context(), id, &OpenAIQuotaUsage{FetchedAt: now.Unix(), Credits: credits}))
+				// This recording stub does not mutate stored accounts automatically.
+				for updatedID, updates := range repo.extraUpdates {
+					maps.Copy(repo.accounts[updatedID].Extra, updates)
+				}
+			}
+			refresh(&OpenAICredits{HasCredits: true})
+			gw := &OpenAIGatewayService{}
+			require.NoError(t, gw.CheckOpenAICreditPolicy(t.Context(), parent))
+			refresh(&OpenAICredits{})
+			blocked := codexCreditStateFromExtra(parent.Extra).BlockedAt
+			require.Positive(t, blocked)
+			require.Error(t, gw.CheckOpenAICreditPolicy(t.Context(), parent))
+			refresh(&OpenAICredits{HasCredits: true})
+			require.Equal(t, blocked, codexCreditStateFromExtra(parent.Extra).BlockedAt)
+			require.Error(t, gw.CheckOpenAICreditPolicy(t.Context(), parent), "manual positive balance cannot resume credit spending")
+			gw.storeCodexCreditObservation(parent, &OpenAICredits{HasCredits: true}, true, nil)
+			require.Error(t, gw.CheckOpenAICreditPolicy(t.Context(), parent), "passive positive balance cannot resume it either")
+			parent.Extra[CodexAllowCreditUsageKey] = false
+			extra, err := normalizeCodexCreditPolicyExtra(parent.Platform, parent.Type, false, maps.Clone(parent.Extra), parent)
+			require.NoError(t, err)
+			extra[CodexAllowCreditUsageKey] = true
+			extra, err = normalizeCodexCreditPolicyExtra(parent.Platform, parent.Type, false, extra, parent)
+			require.NoError(t, err)
+			parent.Extra = extra
+			require.NoError(t, gw.CheckOpenAICreditPolicy(t.Context(), parent))
+			require.NotContains(t, shadow.Extra, codexCreditStateKey)
+		})
+	}
+}
+
+func TestCacheCodexCreditsSnapshotUnknownDoesNotLatchExhaustion(t *testing.T) {
+	account := &Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{
+		codexCreditStateKey: codexCreditState{Credits: &OpenAICredits{HasCredits: true}, CreditsAt: time.Now().Add(-time.Minute).UnixMilli()},
+	}}
+	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: account}}
+	svc := &OpenAIQuotaService{accountRepo: repo}
+	require.NoError(t, svc.CacheCreditsSnapshot(t.Context(), 100, &OpenAIQuotaUsage{FetchedAt: time.Now().Unix()}))
+	state := codexCreditStateFromExtra(repo.extraUpdates[100])
+	require.Nil(t, state.Credits)
+	require.Zero(t, state.BlockedAt)
 }

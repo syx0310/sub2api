@@ -131,6 +131,24 @@ func codexCreditsPositive(credits *OpenAICredits) bool {
 	return err == nil && !math.IsInf(balance, 0) && balance > 0
 }
 
+// Manual refresh and passive observation use the same balance/latch transition.
+// Missing credit information invalidates the balance, but is not evidence of
+// exhaustion. A later positive observation never clears the exhaustion latch.
+func updateCodexCreditBalance(state *codexCreditState, credits *OpenAICredits, creditsAt, observedAt, resumeAt int64) {
+	if creditsAt >= state.CreditsAt || state.CreditsAt > observedAt {
+		state.Credits, state.CreditsAt = credits, creditsAt
+	}
+	if observedAt > state.ObservedAt {
+		state.ObservedAt = observedAt
+	}
+	if credits != nil && !codexCreditsPositive(credits) && state.BlockedAt <= resumeAt {
+		state.BlockedAt = observedAt
+		if state.BlockedAt <= resumeAt {
+			state.BlockedAt = resumeAt + 1
+		}
+	}
+}
+
 // Materialize an immutable view for quota checks. A shadow uses its own quota
 // window but inherits the credential owner's permission and credit evidence.
 func codexCreditPolicyView(ctx context.Context, account *Account) (*Account, codexCreditState) {
@@ -489,8 +507,12 @@ func (s *OpenAIGatewayService) storeCodexCreditObservation(account *Account, cre
 		c.entries[account.ID] = entry
 	}
 	before := entry.state
+	// A manual refresh may have persisted a latch since this entry was created.
+	if blocked := codexCreditStateFromExtra(account.Extra).BlockedAt; blocked > entry.state.BlockedAt {
+		entry.state.BlockedAt = blocked
+	}
 	if present {
-		entry.state.Credits, entry.state.CreditsAt = credits, now.UnixMilli()
+		updateCodexCreditBalance(&entry.state, credits, now.UnixMilli(), now.UnixMilli(), codexCreditResumeAt(account))
 	}
 	merged := maps.Clone(entry.state.Quota)
 	if merged == nil {
@@ -503,14 +525,6 @@ func (s *OpenAIGatewayService) storeCodexCreditObservation(account *Account, cre
 	if len(quota) > 0 {
 		entry.state.QuotaAt = now.UnixMilli()
 		entry.quotaRevision++
-	}
-	// Keep a credit-exhaustion latch even when a later passive frame has money.
-	// Only the administrator's off->on transition authorizes resuming overages.
-	if present && !codexCreditsPositive(credits) && entry.state.BlockedAt <= codexCreditResumeAt(account) {
-		entry.state.BlockedAt = now.UnixMilli()
-		if entry.state.BlockedAt <= codexCreditResumeAt(account) {
-			entry.state.BlockedAt = codexCreditResumeAt(account) + 1
-		}
 	}
 	critical := before.BlockedAt != entry.state.BlockedAt
 	for _, window := range []string{"5h", "7d"} {

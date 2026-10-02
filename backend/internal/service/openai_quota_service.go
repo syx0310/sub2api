@@ -248,16 +248,43 @@ func (s *OpenAIQuotaService) CacheResetCreditsSnapshot(ctx context.Context, acco
 	return s.cacheResetCreditsSnapshot(ctx, accountID, credits, nil)
 }
 
-// CacheCreditsSnapshot stores the queried row's display snapshot independently
-// of reset-credit expiration details. A successful read with absent credits
-// replaces the previous balance with unknown, never with a fabricated zero.
+// CacheCreditsSnapshot stores the queried row's display snapshot and applies
+// the same exhaustion latch as passive observations to the credential owner.
+// It never consumes reset credits or changes the administrator's permission.
 func (s *OpenAIQuotaService) CacheCreditsSnapshot(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage) error {
 	if usage == nil {
 		return infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_EMPTY_USAGE", "openai quota query returned an empty result")
 	}
-	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if account == nil {
+		return ErrAccountNotFound
+	}
+	updates := map[string]any{
 		openaiQuotaCreditsKey: openAICreditsSnapshot{Credits: usage.Credits, FetchedAt: usage.FetchedAt},
-	}); err != nil {
+	}
+	if account.IsOpenAIOAuthLike() {
+		owner := account
+		if account.IsShadow() {
+			owner, err = s.accountRepo.GetByID(ctx, *account.ParentAccountID)
+			if err != nil {
+				return err
+			}
+			if owner == nil || !owner.IsOpenAIOAuthLike() || owner.IsShadow() {
+				return ErrAccountNotFound
+			}
+		}
+		state := codexCreditStateFromExtra(owner.Extra)
+		updateCodexCreditBalance(&state, usage.Credits, usage.FetchedAt*1000, time.Now().UnixMilli(), codexCreditResumeAt(owner))
+		if owner.ID == accountID {
+			updates[codexCreditStateKey] = state
+		} else if err := s.accountRepo.UpdateExtra(ctx, owner.ID, map[string]any{codexCreditStateKey: state}); err != nil {
+			return infraerrors.New(http.StatusInternalServerError, "OPENAI_QUOTA_CACHE_WRITE_FAILED", "failed to cache Codex credit policy").WithCause(err)
+		}
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, accountID, updates); err != nil {
 		return infraerrors.New(http.StatusInternalServerError, "OPENAI_QUOTA_CACHE_WRITE_FAILED", "failed to cache Codex credits").WithCause(err)
 	}
 	return nil

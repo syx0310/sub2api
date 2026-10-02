@@ -1604,6 +1604,32 @@ func (s *AccountRepoSuite) TestUpdateExtra_ExhaustedCodexSnapshotSyncsSchedulerC
 	s.Require().Equal(100.0, cacheRecorder.setAccounts[0].Extra["codex_7d_used_percent"])
 }
 
+func (s *AccountRepoSuite) TestUpdateExtra_CodexCreditLatchSurvivesLatePassiveWrites() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "acc-credit-latch", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Extra: map[string]any{service.CodexAllowCreditUsageKey: true},
+	})
+	cache := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cache
+	now := time.Now().UnixMilli()
+	for _, step := range []struct{ blocked, want int64 }{
+		{now, now}, {0, now}, {now - 1, now}, {now + 1, now + 1},
+	} {
+		s.Require().NoError(s.repo.UpdateExtra(s.ctx, account.ID, map[string]any{
+			"codex_credit_policy_state": map[string]any{
+				"credits":    map[string]any{"has_credits": true, "unlimited": false},
+				"credits_at": now, "blocked_at": step.blocked,
+			},
+		}))
+		stored, err := s.repo.GetByID(s.ctx, account.ID)
+		s.Require().NoError(err)
+		s.Require().EqualValues(step.want, stored.Extra["codex_credit_policy_state"].(map[string]any)["blocked_at"])
+		s.Require().Equal(true, stored.Extra[service.CodexAllowCreditUsageKey])
+		cached := cache.setAccounts[len(cache.setAccounts)-1]
+		s.Require().EqualValues(step.want, cached.Extra["codex_credit_policy_state"].(map[string]any)["blocked_at"])
+	}
+}
+
 func (s *AccountRepoSuite) TestUpdateExtra_SchedulerRelevantStillEnqueuesOutbox() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:     "acc-extra-mixed",

@@ -9,9 +9,88 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestForwardOpenAIWSV2_CreditAdmissionAfterHandshake(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name                      string
+		allow, prewarm, apiKey    bool
+		used, hasCredits, balance string
+		wantBlocked               bool
+		prewarmQuota              bool
+	}{
+		{name: "exhausted permission off", used: "100", hasCredits: "true", balance: "42", wantBlocked: true},
+		{name: "denied before prewarm too", prewarm: true, used: "100", hasCredits: "true", balance: "42", wantBlocked: true},
+		{name: "prewarm reveals exhaustion", prewarm: true, prewarmQuota: true, wantBlocked: true},
+		{name: "enabled but empty", allow: true, used: "100", hasCredits: "false", balance: "0", wantBlocked: true},
+		{name: "enabled fresh credits", allow: true, used: "100", hasCredits: "true", balance: "42"},
+		{name: "subscription still available", used: "20", hasCredits: "false", balance: "0"},
+		{name: "quota unknown"},
+		{name: "API key is outside OAuth policy", apiKey: true, used: "100", hasCredits: "false", balance: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			cfg := newOpenAIWSV2TestConfig()
+			cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+			cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+			cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = tc.prewarm
+			headers := make(http.Header)
+			if tc.used != "" {
+				headers.Set("x-codex-primary-used-percent", tc.used)
+				headers.Set("x-codex-primary-window-minutes", "300")
+				headers.Set("x-codex-primary-reset-after-seconds", "120")
+				headers.Set("x-codex-credits-has-credits", tc.hasCredits)
+				headers.Set("x-codex-credits-unlimited", "false")
+				headers.Set("x-codex-credits-balance", tc.balance)
+			}
+			conn := &openAIWSCaptureConn{events: [][]byte{[]byte(`{"type":"response.completed","response":{"id":"resp_credit","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`)}}
+			if tc.prewarmQuota {
+				conn.events = append([][]byte{[]byte(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":100,"window_minutes":300,"reset_after_seconds":120}},"credits":{"has_credits":true,"unlimited":false,"balance":"42"}}`)}, conn.events...)
+			}
+			dialer := &openAIWSCaptureDialer{conn: conn, handshake: headers}
+			pool := newOpenAIWSConnPool(cfg)
+			pool.setClientDialerForTest(dialer)
+			t.Cleanup(pool.Close)
+			httpRecorder := &httpUpstreamRecorder{}
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: httpRecorder, cache: &stubGatewayCache{}, openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector(), openaiWSPool: pool}
+			account := &Account{ID: 5884, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1,
+				Credentials: map[string]any{"access_token": "test-only"}, Extra: map[string]any{"responses_websockets_v2_enabled": true, CodexAllowCreditUsageKey: tc.allow}}
+			if tc.apiKey {
+				account.Type = AccountTypeAPIKey
+				account.Credentials = map[string]any{"api_key": "test-only"}
+			}
+			require.NoError(t, svc.CheckOpenAICreditPolicy(t.Context(), account), "quota is not known at initial selection")
+			result, err := svc.Forward(t.Context(), c, account, []byte(`{"model":"gpt-5.1","stream":false,"input":"hi"}`))
+			require.Equal(t, 1, dialer.DialCount(), "policy denial must not reconnect/replay")
+			require.Empty(t, httpRecorder.requests, "policy denial must not fall back to HTTP")
+			conn.mu.Lock()
+			writes, closed := len(conn.writes), conn.closed
+			conn.mu.Unlock()
+			if tc.wantBlocked {
+				require.Error(t, err)
+				require.Equal(t, http.StatusForbidden, infraerrors.Code(err))
+				require.Nil(t, result)
+				if tc.prewarmQuota {
+					require.Equal(t, 1, writes)
+					require.Equal(t, false, conn.lastWrite["generate"], "only prewarm, never real generation, was sent")
+				} else {
+					require.Zero(t, writes, "no upstream generation or prewarm may be sent after denial")
+				}
+				require.True(t, closed, "denied lease must be released and discarded")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.True(t, result.OpenAIWSMode)
+			require.Equal(t, 1, writes)
+		})
+	}
+}
 
 // HTTP POST /v1/responses -> forwardOpenAIWSV2 keeps the canonical outbound
 // tier separate from response.completed.service_tier for usage-time billing.

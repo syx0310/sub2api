@@ -3,6 +3,7 @@ package openai_ws_v2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync/atomic"
@@ -176,6 +177,25 @@ func TestRelaySameParentSteersAreConsumedByOneContinuation(t *testing.T) {
 		}
 		require.Empty(t, state.acceptedSteers, "one successor consumes all accepted updates to the same parent, not one generation per update")
 	}
+}
+
+func TestRelayAutomaticTurnRetainsAllConsumedSteerPayloads(t *testing.T) {
+	state := &relayState{requestModel: "gpt-6-astra"}
+	first := []byte(`{"type":"response.steer","previous_response_id":"resp_parent","input":"first"}`)
+	other := []byte(`{"type":"response.steer","previous_response_id":"resp_other","input":"other"}`)
+	last := []byte(`{"type":"response.steer","previous_response_id":"resp_parent","input":"last"}`)
+	for i, payload := range [][]byte{first, other, last} {
+		registerRelaySteerSubmission(state, payload, time.Now())
+		acceptRelaySteer(state, []byte(fmt.Sprintf(`{"type":"response.steer.accepted","steer":{"id":"steer_%d","previous_response_id":%q}}`, i, gjson.GetBytes(payload, "previous_response_id").String())), time.Now())
+	}
+	turn, promoted := promoteRelayAcceptedSteer(state, time.Now())
+	require.True(t, promoted)
+	require.Equal(t, [][]byte{first, last}, turn.ClientPayloads)
+	require.Len(t, state.pendingRequestSeq, 1, "one continuation, not one per steer")
+	require.Len(t, state.acceptedSteers, 1)
+	require.Equal(t, other, state.acceptedSteers[0].payload)
+	_, promoted = promoteRelayAcceptedSteer(state, time.Now())
+	require.False(t, promoted, "cannot account the same successor a second time")
 }
 
 func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {

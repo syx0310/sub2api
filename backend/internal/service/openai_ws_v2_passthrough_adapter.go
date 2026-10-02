@@ -232,17 +232,44 @@ func buildOpenAIWSAutomaticSteerTurnPayload(
 	usageMeta *openAIWSPassthroughUsageMeta,
 	requestModel string,
 ) ([]byte, error) {
-	steer := make(map[string]any)
-	if len(automatic.ClientPayload) > 0 {
-		if err := decodeOpenAIJSONUseNumber(automatic.ClientPayload, &steer); err != nil {
+	var input any = []any{}
+	combined := make([]any, 0)
+	for _, raw := range automatic.ClientPayloads {
+		if len(raw) == 0 {
+			continue
+		}
+		var steer map[string]any
+		if err := decodeOpenAIJSONUseNumber(raw, &steer); err != nil {
 			return nil, err
 		}
+		if len(automatic.ClientPayloads) == 1 {
+			input = steer["input"]
+			break
+		}
+		// Preserve message boundaries and rich content. Concatenating strings
+		// would lose the fact that these were separate user submissions.
+		switch value := steer["input"].(type) {
+		case string:
+			combined = append(combined, map[string]any{"role": "user", "content": value})
+		case []any:
+			combined = append(combined, value...)
+		case map[string]any:
+			// Keep an upstream-accepted input item intact for audit, even if an
+			// OAuth endpoint permits a shape stricter API clients do not emit.
+			combined = append(combined, value)
+		case nil:
+		default:
+			return nil, fmt.Errorf("unsupported accepted steering input type %T", value)
+		}
+	}
+	if len(automatic.ClientPayloads) > 1 {
+		input = combined
 	}
 	payload := map[string]any{
 		"type":                 "response.create",
 		"model":                strings.TrimSpace(requestModel),
 		"previous_response_id": strings.TrimSpace(automatic.PreviousResponseID),
-		"input":                steer["input"],
+		"input":                input,
 	}
 	if payload["input"] == nil {
 		payload["input"] = []any{}
@@ -1450,7 +1477,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if !turnLifecycle.beginAutomaticContinuation(clientFrameConn.markTurnStarted) {
 					return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "overlapping automatic steering continuation is not supported", nil)
 				}
-				pushRequestBodyBytes(int64(len(automatic.ClientPayload)))
+				var requestBytes int64
+				for _, payload := range automatic.ClientPayloads {
+					requestBytes += int64(len(payload))
+				}
+				pushRequestBodyBytes(requestBytes)
 				// Automatic continuations have no new outbound request/handshake.
 				turnStateLengths.Store(s.newCodexTurnStateLengthObserver(account))
 				reasoningSession.beginAutomatic()

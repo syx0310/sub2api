@@ -1030,6 +1030,13 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"codex_5h_reset_after_seconds",
 		"codex_7d_reset_after_seconds",
 		"codex_usage_updated_at",
+		// Credit admission runs before full-account hydration, so the permission,
+		// exhaustion latch, manual resume marker and balance evidence must travel
+		// together in the candidate projection.
+		service.CodexAllowCreditUsageKey,
+		"codex_credit_policy_state",
+		"codex_credit_usage_resume_at",
+		"codex_credits_snapshot",
 		"auto_pause_5h_threshold",
 		"auto_pause_7d_threshold",
 		"auto_pause_5h_disabled",

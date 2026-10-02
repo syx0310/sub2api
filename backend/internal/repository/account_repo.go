@@ -2761,6 +2761,9 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if _, hasCreditState := updates["codex_credit_policy_state"]; hasCreditState {
+		extraExpression = preserveCodexCreditBlockedAtSQL(extraExpression)
+	}
 	if clearProbeSnapshot {
 		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 	}
@@ -2805,6 +2808,15 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	return nil
+}
+
+// A passive writer can have started before a manual balance refresh. Preserve
+// the exhaustion latch atomically against the current row, not a stale Account
+// snapshot. Reauthorization advances resume_at; it never deletes blocked_at.
+func preserveCodexCreditBlockedAtSQL(extraExpression string) string {
+	return "jsonb_set(" + extraExpression + ", '{codex_credit_policy_state,blocked_at}', " +
+		"to_jsonb(GREATEST(COALESCE((extra->'codex_credit_policy_state'->>'blocked_at')::bigint, 0), " +
+		"COALESCE(($1::jsonb->'codex_credit_policy_state'->>'blocked_at')::bigint, 0))), true)"
 }
 
 // UpdateUpstreamBillingProbeSnapshot stores a probe result only while the

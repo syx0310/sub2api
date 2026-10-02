@@ -346,6 +346,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 
+	if !lease.Reused() {
+		s.observeCodexCreditHeaders(ctx, account, lease.HandshakeHeaders(), !account.IsShadow())
+	}
+	// The handshake can be the first evidence of exhausted subscription quota.
+	// Recheck before any upstream write, including optional bridge prewarm. A
+	// policy denial is not a transport failure and must not trigger a replay.
+	if err := s.CheckOpenAICreditPolicy(ctx, account); err != nil {
+		return nil, err
+	}
 	if err := s.performOpenAIWSGeneratePrewarm(
 		ctx,
 		lease,
@@ -359,13 +368,18 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	); err != nil {
 		return nil, err
 	}
+	if s.isOpenAIWSGeneratePrewarmEnabled() {
+		// Prewarm may itself have delivered newer quota/credit evidence.
+		if err := s.CheckOpenAICreditPolicy(ctx, account); err != nil {
+			return nil, err
+		}
+	}
 
 	turnStateLengths := s.newCodexTurnStateLengthObserver(account)
 	turnStateLengths.requestObject(nil, payload)
 	if !lease.Reused() {
 		turnStateLengths.requestObject(wsHeaders, payload)
 		turnStateLengths.responseHeaders(lease.HandshakeHeaders())
-		s.observeCodexCreditHeaders(ctx, account, lease.HandshakeHeaders(), !account.IsShadow())
 	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
