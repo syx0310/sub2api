@@ -12,4 +12,9 @@ type GroupCodexModelsManifestConfig struct {
 	// usable or all upstream fetches fail: fall back to the scheduler loop
 	// (true) or return the upstream error / 503 (false, default).
 	FallbackToScheduler bool `json:"fallback_to_scheduler,omitempty"`
+	// Cache settings are independent of pinned-account selection and only apply
+	// to OAuth catalogs. Nil retains 60s fresh / 300s maximum cache age; zero is
+	// explicit (both zero disables caching). Both ages start at the last fetch.
+	OAuthCacheTTLSeconds      *int `json:"oauth_cache_ttl_seconds,omitempty"`
+	OAuthCacheStaleTTLSeconds *int `json:"oauth_cache_stale_ttl_seconds,omitempty"`
 }

@@ -386,6 +386,9 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
+	if err := validateCodexModelsCachePolicy(normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig)); err != nil {
+		return nil, err
+	}
 	// 固定账号 manifest 配置：账号绑定发生在创建之后，创建时无法校验成员关系，
 	// 拒绝开启并在创建后的编辑里配置。
 	if normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig).Enabled {
@@ -1004,7 +1007,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.ModelAllowlist = modelAllowlist
 	}
 	if input.CodexModelsManifestConfig != nil {
-		group.CodexModelsManifestConfig = *input.CodexModelsManifestConfig
+		incoming := *input.CodexModelsManifestConfig
+		// Older admin clients still send only pinned-account fields. Preserve
+		// previously configured cache times when those additive fields are absent.
+		if incoming.OAuthCacheTTLSeconds == nil {
+			incoming.OAuthCacheTTLSeconds = group.CodexModelsManifestConfig.OAuthCacheTTLSeconds
+		}
+		if incoming.OAuthCacheStaleTTLSeconds == nil {
+			incoming.OAuthCacheStaleTTLSeconds = group.CodexModelsManifestConfig.OAuthCacheStaleTTLSeconds
+		}
+		group.CodexModelsManifestConfig = incoming
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit

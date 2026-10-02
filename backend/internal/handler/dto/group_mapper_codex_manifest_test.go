@@ -11,12 +11,15 @@ import (
 // 固定账号 manifest 配置必须在管理端 DTO 完整序列化：漏映射会让编辑对话框回显
 // 关闭状态，管理员保存无关字段时会把已开启的配置静默关掉。用户侧 DTO 不携带该字段。
 func TestGroupMapperRoundTripsCodexModelsManifestConfig(t *testing.T) {
+	fresh, stale := 25, 180
 	group := &service.Group{
 		ID: 31, Name: "codex-manifest-dto", Platform: service.PlatformOpenAI, Status: service.StatusActive,
 		CodexModelsManifestConfig: service.GroupCodexModelsManifestConfig{
-			Enabled:             true,
-			AccountIDs:          []int64{101, 202},
-			FallbackToScheduler: true,
+			Enabled:                   true,
+			AccountIDs:                []int64{101, 202},
+			FallbackToScheduler:       true,
+			OAuthCacheTTLSeconds:      &fresh,
+			OAuthCacheStaleTTLSeconds: &stale,
 		},
 	}
 
@@ -24,9 +27,11 @@ func TestGroupMapperRoundTripsCodexModelsManifestConfig(t *testing.T) {
 	require.NoError(t, err)
 	var adminEnvelope struct {
 		CodexModelsManifestConfig *struct {
-			Enabled             bool    `json:"enabled"`
-			AccountIDs          []int64 `json:"account_ids"`
-			FallbackToScheduler bool    `json:"fallback_to_scheduler"`
+			Enabled                   bool    `json:"enabled"`
+			AccountIDs                []int64 `json:"account_ids"`
+			FallbackToScheduler       bool    `json:"fallback_to_scheduler"`
+			OAuthCacheTTLSeconds      int     `json:"oauth_cache_ttl_seconds"`
+			OAuthCacheStaleTTLSeconds int     `json:"oauth_cache_stale_ttl_seconds"`
 		} `json:"codex_models_manifest_config"`
 	}
 	require.NoError(t, json.Unmarshal(adminJSON, &adminEnvelope))
@@ -34,6 +39,8 @@ func TestGroupMapperRoundTripsCodexModelsManifestConfig(t *testing.T) {
 	require.True(t, adminEnvelope.CodexModelsManifestConfig.Enabled)
 	require.Equal(t, []int64{101, 202}, adminEnvelope.CodexModelsManifestConfig.AccountIDs)
 	require.True(t, adminEnvelope.CodexModelsManifestConfig.FallbackToScheduler)
+	require.Equal(t, fresh, adminEnvelope.CodexModelsManifestConfig.OAuthCacheTTLSeconds)
+	require.Equal(t, stale, adminEnvelope.CodexModelsManifestConfig.OAuthCacheStaleTTLSeconds)
 
 	userJSON, err := json.Marshal(GroupFromService(group))
 	require.NoError(t, err)

@@ -40,7 +40,8 @@ const (
 	// 三段时效：≤TTL 为新鲜（直接返回缓存，零上游请求）；TTL 到 StaleTTL 之间
 	// 乐观返回旧值并后台单飞刷新（携带上游 ETag，304 续期）；超过 StaleTTL 丢弃
 	// 缓存同步等待刷新。TTL 取 1 分钟：manifest 变化低频，1 分钟内同账号重复
-	// 请求完全吸收；StaleTTL 取 5 分钟，控制旧内容最长可见时间在分钟级。
+	// 请求完全吸收；StaleTTL 默认取 5 分钟。OAuth 路径允许分组覆盖这两个
+	// 从拉取完成时刻起算的时长；API Key 上游维持这里的默认策略。
 	openAIModelsCacheTTL              = 60 * time.Second
 	openAIModelsCacheStaleTTL         = 5 * time.Minute
 	codexModelsManifestRequestTimeout = 15 * time.Second
@@ -1682,6 +1683,7 @@ type openAIModelsRequest struct {
 	useAPIKeyUpstream   bool
 	// Cached bodies have already been converted to their requested format.
 	standardModelsList bool
+	cachePolicy        *openAIModelsCachePolicy
 }
 
 type openAIModelsCacheEntry struct {
@@ -1723,12 +1725,20 @@ func (c *openAIModelsCache) get(key string, now time.Time) (*OpenAIModelsRespons
 	return entry.manifest, openAIModelsCacheStale
 }
 
-func (c *openAIModelsCache) set(key string, manifest *OpenAIModelsResponse, now time.Time) {
+func (c *openAIModelsCache) set(key string, manifest *OpenAIModelsResponse, now time.Time, policies ...*openAIModelsCachePolicy) {
 	if manifest == nil || len(manifest.Body) > openAIModelsCacheBodyLimit {
 		return
 	}
 	remainingBodyBudget := openAIModelsCacheBodyLimit - len(manifest.Body)
 	if len(manifest.upstreamSourceBody) > remainingBodyBudget {
+		return
+	}
+	var configured *openAIModelsCachePolicy
+	if len(policies) > 0 {
+		configured = policies[0]
+	}
+	policy := effectiveOpenAIModelsCachePolicy(configured)
+	if policy.staleTTL == 0 {
 		return
 	}
 	c.mu.Lock()
@@ -1757,8 +1767,8 @@ func (c *openAIModelsCache) set(key string, manifest *OpenAIModelsResponse, now 
 	c.entries[key] = openAIModelsCacheEntry{
 		manifest:   manifest,
 		order:      c.nextOrder,
-		expiresAt:  now.Add(openAIModelsCacheTTL),
-		staleUntil: now.Add(openAIModelsCacheStaleTTL),
+		expiresAt:  now.Add(policy.freshTTL),
+		staleUntil: now.Add(policy.staleTTL),
 	}
 }
 
@@ -1869,6 +1879,7 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if useAPIKeyUpstream {
 		return s.fetchCachedOpenAIModels(ctx, request, s.fetchCodexModelsManifestUpstreamForRequest(request), ifNoneMatch)
 	}
+	request.cachePolicy, _ = ctx.Value(codexModelsCachePolicyContextKey{}).(*openAIModelsCachePolicy)
 	// OAuth 账号同样经过账号级缓存；闭包保留 agent identity 任务恢复逻辑，
 	// 错误时仍交给 handleCodexModelsManifestAccountAuthError 处理账号状态。
 	oauthFetch := func(fetchCtx context.Context, ifNoneMatch string) (*OpenAIModelsResponse, error) {
@@ -1977,11 +1988,11 @@ func (s *OpenAIGatewayService) refreshCachedOpenAIModels(cacheKey string, reques
 			return nil, err
 		}
 		if manifest.NotModified && cached != nil {
-			s.openAIModelsCache.set(cacheKey, cached, time.Now())
+			s.openAIModelsCache.set(cacheKey, cached, time.Now(), request.cachePolicy)
 			return cached, nil
 		}
 		if !manifest.NotModified {
-			s.openAIModelsCache.set(cacheKey, manifest, time.Now())
+			s.openAIModelsCache.set(cacheKey, manifest, time.Now(), request.cachePolicy)
 		}
 		return manifest, nil
 	})
@@ -2640,6 +2651,10 @@ func validateCodexModelsManifestEnvelope(body []byte) error {
 func buildOpenAIModelsCacheKey(request openAIModelsRequest) string {
 	hasher := sha256.New()
 	_, _ = fmt.Fprintf(hasher, "%d\n%d\n%t\n%s\n%s\n", request.accountID, request.credentialAccountID, request.standardModelsList, request.proxyURL, request.url)
+	// Different group policies must not reuse another policy's expiry times or
+	// singleflight refresh. Identical policies can still share raw account data.
+	policy := effectiveOpenAIModelsCachePolicy(request.cachePolicy)
+	_, _ = fmt.Fprintf(hasher, "%d\n%d\n", policy.freshTTL, policy.staleTTL)
 	headerNames := make([]string, 0, len(request.headers))
 	for name := range request.headers {
 		headerNames = append(headerNames, name)

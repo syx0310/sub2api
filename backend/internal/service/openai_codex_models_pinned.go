@@ -115,6 +115,7 @@ func mergeCodexModelsManifestBodies(bodies [][]byte) ([]byte, error) {
 //   - partial failure → successful accounts are still merged and a warning
 //     naming the failed account IDs is logged.
 func (s *OpenAIGatewayService) FetchPinnedCodexModelsManifest(ctx context.Context, group *Group, clientVersion string) (*OpenAIModelsResponse, *Account, error) {
+	ctx = WithCodexModelsCachePolicy(ctx, group)
 	results, err := s.fetchPinnedOpenAIModels(ctx, group, func(ctx context.Context, account *Account) (*OpenAIModelsResponse, error) {
 		manifest, err := s.FetchCodexModelsManifest(ctx, account, clientVersion, "")
 		if err != nil {

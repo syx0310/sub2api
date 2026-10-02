@@ -122,6 +122,35 @@
     <p v-else class="text-xs text-gray-500 dark:text-gray-400">
       {{ t("admin.groups.codexModelsManifest.disabledHint") }}
     </p>
+
+    <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-500" data-testid="codex-manifest-cache-settings">
+      <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">
+        {{ t("admin.groups.codexModelsManifest.cacheTitle") }}
+      </h4>
+      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        {{ t("admin.groups.codexModelsManifest.cacheHint") }}
+      </p>
+      <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label class="input-label">
+          {{ t("admin.groups.codexModelsManifest.cacheTTL") }}
+          <input type="number" min="0" max="86400" step="1" class="input mt-1"
+            data-testid="codex-manifest-cache-ttl"
+            :value="config.oauth_cache_ttl_seconds ?? 60"
+            @input="updateCacheSeconds('oauth_cache_ttl_seconds', $event)" />
+        </label>
+        <label class="input-label">
+          {{ t("admin.groups.codexModelsManifest.cacheStaleTTL") }}
+          <input type="number" min="0" max="86400" step="1" class="input mt-1"
+            data-testid="codex-manifest-cache-stale-ttl"
+            :value="config.oauth_cache_stale_ttl_seconds ?? 300"
+            @input="updateCacheSeconds('oauth_cache_stale_ttl_seconds', $event)" />
+        </label>
+      </div>
+      <p v-if="showCacheValidationError" role="alert" data-testid="codex-manifest-cache-validation-error"
+        class="mt-2 text-xs text-red-600 dark:text-red-400">
+        {{ t("admin.groups.codexModelsManifest.invalidCacheTTLs") }}
+      </p>
+    </div>
   </div>
 </template>
 
@@ -169,6 +198,12 @@ const searchKeyword = ref("");
 const searchResults = ref<SimpleAccount[]>([]);
 const showDropdown = ref(false);
 const showValidationError = ref(false);
+const showCacheValidationError = ref(false);
+
+const updateCacheSeconds = (key: 'oauth_cache_ttl_seconds' | 'oauth_cache_stale_ttl_seconds', event: Event) => {
+  emitUpdate({ [key]: Number((event.target as HTMLInputElement).value) });
+  showCacheValidationError.value = false;
+};
 const searchContainerRef = ref<HTMLElement | null>(null);
 
 // 点击下拉容器外部时收起（与 GroupsView 模型路由下拉同一模式）。
@@ -243,16 +278,20 @@ const removeAccount = (id: number) => {
 
 /** 校验：开启后至少一个账号。返回是否通过；不通过时展示错误提示。 */
 const validate = (): boolean => {
+  const fresh = props.modelValue.oauth_cache_ttl_seconds ?? 60;
+  const stale = props.modelValue.oauth_cache_stale_ttl_seconds ?? 300;
+  showCacheValidationError.value = !Number.isInteger(fresh) || !Number.isInteger(stale) || fresh < 0 || stale < fresh || stale > 86400;
   if (props.modelValue.enabled && props.modelValue.account_ids.length === 0) {
     showValidationError.value = true;
     return false;
   }
   showValidationError.value = false;
-  return true;
+  return !showCacheValidationError.value;
 };
 
 const resetValidation = () => {
   showValidationError.value = false;
+  showCacheValidationError.value = false;
 };
 
 defineExpose({ validate, resetValidation });

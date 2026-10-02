@@ -83,6 +83,42 @@ describe("CodexManifestAccountsField", () => {
     vi.clearAllMocks();
   });
 
+  it("shows default OAuth cache windows independently of pinned selection", () => {
+    const wrapper = mountField(disabledConfig());
+    expect((wrapper.get('[data-testid="codex-manifest-cache-ttl"]').element as HTMLInputElement).value).toBe("60");
+    expect((wrapper.get('[data-testid="codex-manifest-cache-stale-ttl"]').element as HTMLInputElement).value).toBe("300");
+    expect(wrapper.vm.validate()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("edits both cache windows without losing pinned settings", async () => {
+    const wrapper = mountInteractive({ ...enabledConfig(), account_ids: [7] });
+    await wrapper.get('[data-testid="codex-manifest-cache-ttl"]').setValue("25");
+    await wrapper.get('[data-testid="codex-manifest-cache-stale-ttl"]').setValue("180");
+    const field = wrapper.getComponent(CodexManifestAccountsField);
+    expect(field.props("modelValue")).toMatchObject({ enabled: true, account_ids: [7], oauth_cache_ttl_seconds: 25, oauth_cache_stale_ttl_seconds: 180 });
+    expect(field.vm.validate()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it.each([[300, 60], [-1, 300], [0.5, 300], [60, 86401]])("rejects invalid cache windows %s / %s even with pinning disabled", async (fresh, stale) => {
+    const wrapper = mountField({ ...disabledConfig(), oauth_cache_ttl_seconds: fresh, oauth_cache_stale_ttl_seconds: stale });
+    expect(wrapper.vm.validate()).toBe(false);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="codex-manifest-cache-validation-error"]').exists()).toBe(true);
+    wrapper.vm.resetValidation();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="codex-manifest-cache-validation-error"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("allows explicitly disabling the cache", () => {
+    const wrapper = mountField({ ...disabledConfig(), oauth_cache_ttl_seconds: 0, oauth_cache_stale_ttl_seconds: 0 });
+    expect(wrapper.vm.validate()).toBe(true);
+    expect((wrapper.get('[data-testid="codex-manifest-cache-ttl"]').element as HTMLInputElement).value).toBe("0");
+    wrapper.unmount();
+  });
+
   it("hides account controls while disabled and reveals them after enabling", async () => {
     const wrapper = mountField(disabledConfig());
 

@@ -1167,7 +1167,12 @@ export default {
         searchEmpty: '未找到匹配账号',
         fallback: '选定账号全部不可用时回退调度器',
         fallbackHint: '关闭时返回 503 / 上游错误；开启时回退到现有调度器选账路径。',
-        selectAtLeastOne: '开启固定账号后至少选择一个账号'
+        selectAtLeastOne: '开启固定账号后至少选择一个账号',
+        cacheTitle: 'Codex OAuth 上游目录缓存',
+        cacheTTL: '新鲜缓存时长（秒）',
+        cacheStaleTTL: '缓存最大可用年龄（秒）',
+        cacheHint: '独立于固定账号开关，仅影响本分组从 Codex OAuth 上游获取的目录，不改变本地目录内容或 API Key 上游策略。默认 60 秒内直接返回；60～300 秒返回旧值并后台刷新；达到 300 秒同步拉取。两个时间均从最近一次成功拉取起算，并非累加。均设为 0 可禁用缓存。',
+        invalidCacheTTLs: '缓存时间必须为整数，满足 0 ≤ 新鲜时长 ≤ 最大年龄 ≤ 86400 秒。'
       },
       compositeRoutes: {
         action: '路由',

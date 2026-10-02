@@ -667,6 +667,8 @@ export interface CodexModelsManifestConfig {
   enabled: boolean
   account_ids: number[]
   fallback_to_scheduler: boolean
+  oauth_cache_ttl_seconds?: number
+  oauth_cache_stale_ttl_seconds?: number
 }
 
 export type CompositeRouteMatchType = 'exact' | 'prefix'

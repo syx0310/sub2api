@@ -4898,6 +4898,8 @@ const createCodexManifestDefaults = (): CodexModelsManifestConfig => ({
   enabled: false,
   account_ids: [],
   fallback_to_scheduler: false,
+  oauth_cache_ttl_seconds: 60,
+  oauth_cache_stale_ttl_seconds: 300,
 });
 const editCodexManifestConfig = ref<CodexModelsManifestConfig>(createCodexManifestDefaults());
 const editCodexManifestAccountNames = ref<Record<number, string>>({});
@@ -6142,6 +6144,8 @@ const handleEdit = async (group: AdminGroup) => {
     enabled: savedCodexManifestConfig.enabled ?? false,
     account_ids: [...(savedCodexManifestConfig.account_ids ?? [])],
     fallback_to_scheduler: savedCodexManifestConfig.fallback_to_scheduler ?? false,
+    oauth_cache_ttl_seconds: savedCodexManifestConfig.oauth_cache_ttl_seconds ?? 60,
+    oauth_cache_stale_ttl_seconds: savedCodexManifestConfig.oauth_cache_stale_ttl_seconds ?? 300,
   };
   editCodexManifestAccountNames.value = {};
   for (const id of editCodexManifestConfig.value.account_ids) {
@@ -6243,6 +6247,10 @@ const handleUpdateGroup = async () => {
     editCodexManifestRef.value?.validate();
     return;
   }
+  if (editForm.platform === "openai" && editCodexManifestRef.value?.validate() === false) {
+    appStore.showError(t("admin.groups.codexModelsManifest.invalidCacheTTLs"));
+    return;
+  }
 
   submitting.value = true;
   try {
@@ -6290,6 +6298,8 @@ const handleUpdateGroup = async () => {
               enabled: editCodexManifestConfig.value.enabled,
               account_ids: [...editCodexManifestConfig.value.account_ids],
               fallback_to_scheduler: editCodexManifestConfig.value.fallback_to_scheduler,
+              oauth_cache_ttl_seconds: editCodexManifestConfig.value.oauth_cache_ttl_seconds ?? 60,
+              oauth_cache_stale_ttl_seconds: editCodexManifestConfig.value.oauth_cache_stale_ttl_seconds ?? 300,
             }
           : createCodexManifestDefaults(),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(

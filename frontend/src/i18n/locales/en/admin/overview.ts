@@ -1170,7 +1170,12 @@ export default {
         searchEmpty: 'No matching accounts',
         fallback: 'Fall back to the scheduler when all pinned accounts are unavailable',
         fallbackHint: 'Off: return 503 / the upstream error. On: fall back to the existing scheduler path.',
-        selectAtLeastOne: 'Select at least one account after enabling pinned accounts'
+        selectAtLeastOne: 'Select at least one account after enabling pinned accounts',
+        cacheTitle: 'Codex OAuth Upstream Catalog Cache',
+        cacheTTL: 'Fresh cache lifetime (seconds)',
+        cacheStaleTTL: 'Maximum usable cache age (seconds)',
+        cacheHint: 'Independent of pinned-account selection. Only affects Codex OAuth discovery for this group, not local catalog content or API key upstreams. Defaults: return cached data for 60s; serve stale data and refresh in the background until 300s; then fetch synchronously. Both ages start at the last successful fetch, not one after the other. Set both to 0 to disable caching.',
+        invalidCacheTTLs: 'Cache times must be integers satisfying 0 ≤ fresh lifetime ≤ maximum age ≤ 86400 seconds.'
       },
       compositeRoutes: {
         action: 'Routes',

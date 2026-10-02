@@ -12,6 +12,7 @@ import (
 // 否则开关在缓存路径上会静默失效（投影对账由集成测试兜底，此处覆盖快照序列化）。
 func TestAPIKeyAuthSnapshotGroupCodexModelsManifestRoundtrip(t *testing.T) {
 	groupID := int64(60)
+	fresh, stale := 25, 180
 	apiKey := &APIKey{
 		ID: 92, UserID: 46, GroupID: &groupID, Key: "sk-codex-manifest-roundtrip", Status: StatusActive,
 		User: &User{ID: 46, Status: StatusActive},
@@ -19,9 +20,11 @@ func TestAPIKeyAuthSnapshotGroupCodexModelsManifestRoundtrip(t *testing.T) {
 			ID: groupID, Name: "codex-manifest-roundtrip", Platform: PlatformOpenAI, Status: StatusActive,
 			Hydrated: true,
 			CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
-				Enabled:             true,
-				AccountIDs:          []int64{7, 8},
-				FallbackToScheduler: true,
+				Enabled:                   true,
+				AccountIDs:                []int64{7, 8},
+				FallbackToScheduler:       true,
+				OAuthCacheTTLSeconds:      &fresh,
+				OAuthCacheStaleTTLSeconds: &stale,
 			},
 		},
 	}
@@ -39,5 +42,7 @@ func TestAPIKeyAuthSnapshotGroupCodexModelsManifestRoundtrip(t *testing.T) {
 	require.True(t, materialized.Group.CodexModelsManifestConfig.Enabled)
 	require.Equal(t, []int64{7, 8}, materialized.Group.CodexModelsManifestConfig.AccountIDs)
 	require.True(t, materialized.Group.CodexModelsManifestConfig.FallbackToScheduler)
+	require.Equal(t, &fresh, materialized.Group.CodexModelsManifestConfig.OAuthCacheTTLSeconds)
+	require.Equal(t, &stale, materialized.Group.CodexModelsManifestConfig.OAuthCacheStaleTTLSeconds)
 	require.Equal(t, apiKeyAuthSnapshotVersion, cached.Snapshot.Version)
 }

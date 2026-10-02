@@ -268,6 +268,7 @@ func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Acco
 // FetchPinnedOpenAIModelsList includes explicitly enabled scheduler fallback.
 // An authoritative empty catalog is success, including after group filtering.
 func (s *OpenAIGatewayService) FetchPinnedOpenAIModelsList(ctx context.Context, group *Group, maxAccountSwitches int, ifNoneMatch string) (*OpenAIModelsResponse, *Account, error) {
+	ctx = WithCodexModelsCachePolicy(ctx, group)
 	fetch := func(ctx context.Context, account *Account) (*OpenAIModelsResponse, error) {
 		response, err := s.FetchOpenAIModelsList(ctx, account)
 		if err != nil {

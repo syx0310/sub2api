@@ -23,8 +23,10 @@ func normalizeCodexModelsManifestConfig(platform string, cfg GroupCodexModelsMan
 		return GroupCodexModelsManifestConfig{}
 	}
 	out := GroupCodexModelsManifestConfig{
-		Enabled:             cfg.Enabled,
-		FallbackToScheduler: cfg.FallbackToScheduler,
+		Enabled:                   cfg.Enabled,
+		FallbackToScheduler:       cfg.FallbackToScheduler,
+		OAuthCacheTTLSeconds:      cfg.OAuthCacheTTLSeconds,
+		OAuthCacheStaleTTLSeconds: cfg.OAuthCacheStaleTTLSeconds,
 	}
 	if len(cfg.AccountIDs) == 0 {
 		return out
@@ -53,6 +55,9 @@ func normalizeCodexModelsManifestConfig(platform string, cfg GroupCodexModelsMan
 // member of the group. Validation failures return 400 with reason
 // INVALID_CODEX_MODELS_MANIFEST_CONFIG and never reach persistence.
 func (s *adminServiceImpl) validateCodexModelsManifestConfig(ctx context.Context, groupID int64, cfg GroupCodexModelsManifestConfig) error {
+	if err := validateCodexModelsCachePolicy(cfg); err != nil {
+		return err
+	}
 	if !cfg.Enabled {
 		return nil
 	}
