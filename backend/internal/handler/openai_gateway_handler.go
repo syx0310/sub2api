@@ -3095,6 +3095,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return checkSimpleModeTurnBilling()
 			},
 			BeforeForward: func(turn int, request service.OpenAIWSForwardRequest) error {
+				if err := h.gatewayService.CheckOpenAICreditPolicy(ctx, account); err != nil {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "Codex account credit policy denied this turn", err)
+				}
 				if h.billingCacheService == nil || !h.billingCacheService.InflightReservationEnabled() {
 					return nil
 				}
@@ -3176,7 +3179,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnResponseBodyBytes = result.ResponseBodyBytes
 				}
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
-				h.recordCyberPolicyForRequest(turnBillingCtx, c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes, turnSemantics.NativeCompactionV2)
+				h.recordCyberPolicyForRequest(turnBillingCtx, c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes, turnSemantics.NativeCompactionV2, turnSemantics.Prewarm)
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
 					cyberBlockPendingAfterFailover,
@@ -4463,7 +4466,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 
 // Native WS passes the immutable turn flag explicitly. HTTP retains its
 // request-scoped gin marker through the wrapper above.
-func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Context, c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, requestBodyBytes, responseBodyBytes *int64, nativeCompactionV2 bool) {
+func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Context, c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, requestBodyBytes, responseBodyBytes *int64, nativeCompactionV2 bool, prewarm ...bool) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -4583,6 +4586,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 		}
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
+				Prewarm:            len(prewarm) > 0 && prewarm[0],
 				CodexTurnState:     codexTurnStateLengths,
 				APIKey:             apiKey,
 				Account:            account,

@@ -760,7 +760,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
 	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{
 		"type":"response.create",
-		"model":"gpt-5.5",
+		"model":"gpt-6-astra",
 		"stream":false,
 		"previous_response_id":"resp_codex_image_bridge",
 		"reasoning":{"effort":"high"},
@@ -805,7 +805,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
 	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{
 		"type":"response.create",
-		"model":"gpt-5.5",
+		"model":"gpt-6-astra",
 		"parallel_tool_calls":"false",
 		"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"},
 		"tools":[{"type":"function","name":"shell"}]

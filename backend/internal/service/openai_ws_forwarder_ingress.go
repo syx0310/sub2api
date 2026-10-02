@@ -283,13 +283,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		nextReasoningBody, reasoningFrame, policyErr := reasoningSession.prepare(normalized, originalModel, hooks)
-		if policyErr != nil {
-			return openAIWSClientPayload{}, openAIWSReasoningPolicyCloseError(policyErr)
-		}
-		normalized = nextReasoningBody
-		// Policy is scoped to the client model; compatibility must instead see
-		// the actual upstream model, including aliases mapped to Astra.
+		// Resolve the actual model before interpreting model-specific presets,
+		// while keeping policy matching scoped to the public client model.
 		requestModel := originalModel
 		if hooks != nil && hooks.MapRequestModel != nil {
 			mappedModel, mapErr := hooks.MapRequestModel(turn, originalModel)
@@ -301,12 +296,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(requestModel))
+		nextReasoningBody, reasoningFrame, policyErr := reasoningSession.prepare(normalized, originalModel, hooks, upstreamModel)
+		if policyErr != nil {
+			return openAIWSClientPayload{}, openAIWSReasoningPolicyCloseError(policyErr)
+		}
+		normalized = nextReasoningBody
 		if modelMissing || upstreamModel != originalModel {
 			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
 			if setErr != nil {
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
 			}
 			normalized = next
+		}
+		var liteCompatErr error
+		normalized, liteCompatErr = normalizeMappedGPT55LiteWSBody(account, normalized)
+		if liteCompatErr != nil {
+			return openAIWSClientPayload{}, liteCompatErr
 		}
 		responsesLite := isOpenAIResponsesLiteWebSocketPayload(normalized)
 		if compatibilityBody, compatibilityChanged, compatibilityErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(normalized, account, responsesLite); compatibilityErr != nil {
@@ -940,6 +945,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			observation := s.newCodexTurnStateLengthObserver(account)
 			observation.request(req.Headers, nil)
 			observation.responseHeaders(lease.HandshakeHeaders())
+			s.observeCodexCreditHeaders(ctx, account, lease.HandshakeHeaders(), !account.IsShadow())
 			pendingTurnStateHandshake = observation.snapshot()
 		}
 		connID := strings.TrimSpace(lease.ConnID())
@@ -1093,6 +1099,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 
 			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
+			s.observeCodexCreditEvent(ctx, account, upstreamMessage)
 			previousResponseNotFound := false
 			previousResponseNotFoundMessage := ""
 			responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
@@ -1482,8 +1489,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			} else {
 				currentPayload = updatedPayload
-				currentPayloadBytes = len(updatedPayload)
 				currentPreviousResponseID = expectedPrev
+				rebased, frame, reasoningErr := reasoningSession.rebaseInferredParent(currentReasoningFrame, currentPayload, currentOriginalModel, hooks)
+				if reasoningErr != nil {
+					return openAIWSReasoningPolicyCloseError(reasoningErr)
+				}
+				currentPayload, currentReasoningFrame = rebased, frame
+				currentPayloadBytes = len(currentPayload)
 				logOpenAIWSModeInfo(
 					"ingress_ws_function_call_output_prev_infer account_id=%d turn=%d conn_id=%s action=set_previous_response_id previous_response_id=%s",
 					account.ID,

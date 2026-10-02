@@ -256,7 +256,15 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	// 4. 执行平台特定刷新逻辑
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		// Timer delivery may lag the deadline under load, just as on the
+		// background refresh path. Enforce the boundary before persistence.
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			ctxErr = context.DeadlineExceeded
+		}
+	}
+	if ctxErr != nil {
 		// A provider implementation may ignore cancellation and return late
 		// credentials. Never persist them after the attempt/cycle boundary.
 		return nil, ctxErr

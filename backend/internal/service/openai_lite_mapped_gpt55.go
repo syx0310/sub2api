@@ -11,6 +11,13 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func normalizeMappedGPT55LiteWSBody(account *Account, body []byte) ([]byte, error) {
+	if account == nil || !account.IsOpenAIOAuthLike() || gjson.GetBytes(body, "model").String() != "gpt-5.5" || !isOpenAIResponsesLiteWebSocketPayload(body) {
+		return body, nil
+	}
+	return sjson.DeleteBytes(body, "client_metadata."+responsesLiteWSMetadataKey)
+}
+
 // The account mapping changes the model, not the upstream capability header.
 // Apply at the final HTTP request boundary, after account/model resolution.
 // Never mutate the ingress headers/body: failover may select a native account.

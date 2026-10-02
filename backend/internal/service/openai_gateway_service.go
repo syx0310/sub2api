@@ -243,6 +243,8 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
+	// Prewarm is derived from the actual generate=false execution, never metadata.
+	Prewarm    bool
 	RequestID  string
 	ResponseID string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
@@ -495,6 +497,7 @@ type OpenAIGatewayService struct {
 	openaiWSPool                   *openAIWSConnPool
 	openaiWSStateStore             OpenAIWSStateStore
 	openaiWSReasoningCache         openAIWSReasoningCache
+	codexCredits                   codexCreditObservations
 	openaiScheduler                OpenAIAccountScheduler
 	openaiWSPassthroughDialer      openAIWSClientDialer
 	openaiWSSessionPreemptions     openAIWSSessionPreemptRegistry

@@ -753,11 +753,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	} else {
 		firstClientMessage = normalized
 	}
-	nextReasoningBody, firstReasoningFrame, reasoningErr := reasoningSession.prepare(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String(), hooks)
-	if reasoningErr != nil {
-		return openAIWSReasoningPolicyCloseError(reasoningErr)
-	}
-	firstClientMessage = nextReasoningBody
 	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
@@ -802,6 +797,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 	}
+	nextReasoningBody, firstReasoningFrame, reasoningErr := reasoningSession.prepare(firstClientMessage, initialRequestModel, hooks, capturedSessionModel)
+	if reasoningErr != nil {
+		return openAIWSReasoningPolicyCloseError(reasoningErr)
+	}
+	firstClientMessage = nextReasoningBody
 	activeRequestBodyBytes := initialRequestBodyBytes
 	sealedRequestBodyBytes := int64(0)
 	hasSealedRequestBodyBytes := false
@@ -850,6 +850,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		hasSealedRequestBodyBytes = false
 		pendingRequestBodyBytes.Add(-1)
 		return value
+	}
+	firstClientMessage, reasoningErr = normalizeMappedGPT55LiteWSBody(account, firstClientMessage)
+	if reasoningErr != nil {
+		return reasoningErr
 	}
 	firstMessageResponsesLite := isOpenAIResponsesLiteWebSocketPayload(firstClientMessage)
 	if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
@@ -1010,6 +1014,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
 		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
 		cancelDial()
+		s.observeCodexCreditHeaders(ctx, account, handshakeHeaders, !account.IsShadow())
 		if err == nil {
 			break
 		}
@@ -1126,6 +1131,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			}
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			isResponseCreate := eventType == "response.create"
+			if eventType == "response.steer" {
+				if err := s.CheckOpenAICreditPolicy(ctx, account); err != nil {
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "Codex account credit policy denied steering", err)
+				}
+			}
 			responseCreateAt := time.Time{}
 			acceptedTurn := false
 			if isResponseCreate {
@@ -1162,11 +1172,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if requestModelForThisFrame != "" && strings.TrimSpace(gjson.GetBytes(payload, "model").String()) == "" {
 					payload = s.ReplaceModelInBody(payload, requestModelForThisFrame)
 				}
-				next, prepared, policyErr := reasoningSession.prepare(payload, requestModelForThisFrame, hooks)
-				if policyErr != nil {
-					return payload, nil, openAIWSReasoningPolicyCloseError(policyErr)
-				}
-				payload, reasoningFrame = next, prepared
 				if hooks != nil && hooks.MapRequestModel != nil {
 					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
 					if err != nil {
@@ -1179,6 +1184,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if upstreamModel := openAIWSPassthroughPolicyModelForFrame(account, payload); upstreamModel != "" {
 					payload = s.ReplaceModelInBody(payload, upstreamModel)
 				}
+				next, prepared, policyErr := reasoningSession.prepare(payload, requestModelForThisFrame, hooks, gjson.GetBytes(payload, "model").String())
+				if policyErr != nil {
+					return payload, nil, openAIWSReasoningPolicyCloseError(policyErr)
+				}
+				payload, reasoningFrame = next, prepared
+				payload, policyErr = normalizeMappedGPT55LiteWSBody(account, payload)
+				if policyErr != nil {
+					return payload, nil, policyErr
+				}
+				responsesLite = isOpenAIResponsesLiteWebSocketPayload(payload)
 				if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(payload, account, responsesLite); normalizeErr != nil {
 					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", normalizeErr)
 				} else if compatibilityChanged {
@@ -1316,6 +1331,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		},
 	}
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
+	if err := s.CheckOpenAICreditPolicy(ctx, account); err != nil {
+		cancelFirstWrite()
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "Codex account credit policy denied this turn after handshake", err)
+	}
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
@@ -1379,6 +1398,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				)
 			},
 			OnUpstreamEventAccepted: func(msgType coderws.MessageType, payload []byte) {
+				if msgType == coderws.MessageText {
+					s.observeCodexCreditEvent(ctx, account, payload)
+				}
 				relayUpstreamFrameConn.observeUpstreamActivity(msgType, payload)
 				if msgType == coderws.MessageText {
 					// Bare errors arm only after BeforeWriteClient has ruled out a

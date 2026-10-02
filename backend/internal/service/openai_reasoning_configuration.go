@@ -50,7 +50,7 @@ func lastOpenAIConfigurationEffortMap(input any) (effort string, present bool) {
 	return
 }
 
-func applyOpenAIConfigurationEffortValue(raw, model, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) (string, error) {
+func applyOpenAIConfigurationEffortValue(raw, model, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, upstreamModels ...string) (string, error) {
 	// Reuse the existing mapping/deny/rank logic on a bounded scalar request;
 	// never overwrite the cache-preserving top-level baseline in the real body.
 	// Match ApplyReasoningEffortPolicy's no-policy fast path. Resolving a UI
@@ -61,11 +61,18 @@ func applyOpenAIConfigurationEffortValue(raw, model, maxEffort string, mappings 
 	}
 	value := raw
 	if strings.EqualFold(value, "ultra") {
-		if isOpenAIGPT6Model(model) {
-			value, _ = normalizeGPT6ReasoningEffort(value, model)
+		effectiveModel := model
+		if len(upstreamModels) > 0 && upstreamModels[0] != "" {
+			effectiveModel = upstreamModels[0]
+		}
+		if isOpenAIGPT6Model(effectiveModel) {
+			value, _ = normalizeGPT6ReasoningEffort(value, effectiveModel)
 		} else {
 			value = "xhigh"
 		}
+	}
+	if strings.EqualFold(value, "disabled") {
+		return "", &ReasoningEffortMappingDeniedError{Requested: "disabled configuration_update effort cannot be compared with a numeric policy"}
 	}
 	if (maxEffort != "" || len(mappings) > 0) && normalizeReasoningEffortMappingSource(value) == "" {
 		return "", &ReasoningEffortMappingDeniedError{Requested: "unrecognized configuration_update effort"}
@@ -78,8 +85,8 @@ func applyOpenAIConfigurationEffortValue(raw, model, maxEffort string, mappings 
 	return gjson.GetBytes(next, "reasoning.effort").String(), nil
 }
 
-func applyOpenAIConfigurationEffortPolicy(body []byte, index int, raw, model, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) ([]byte, bool, error) {
-	value, err := applyOpenAIConfigurationEffortValue(raw, model, maxEffort, mappings, overLimit)
+func applyOpenAIConfigurationEffortPolicy(body []byte, index int, raw, model, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, upstreamModels ...string) ([]byte, bool, error) {
+	value, err := applyOpenAIConfigurationEffortValue(raw, model, maxEffort, mappings, overLimit, upstreamModels...)
 	if err != nil || value == raw {
 		return body, false, err
 	}

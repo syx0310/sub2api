@@ -53,3 +53,21 @@ func TestWSTurnSnapshotCompactionDoesNotLeak(t *testing.T) {
 	require.True(t, rebuilt.semantics.NativeCompactionV2)
 	require.Equal(t, second.requestPayloadHash, rebuilt.requestPayloadHash)
 }
+
+func TestOpenAIWSPrewarmUsagePerTurn(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
+		t.Run(mode, func(t *testing.T) {
+			result := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				ingressMode:   mode,
+				firstPayload:  `{"type":"response.create","model":"gpt-6-astra","generate":false,"input":[{"role":"user","content":"warmup"}]}`,
+				secondPayload: `{"type":"response.create","model":"gpt-6-astra","previous_response_id":"resp_usage_e2e_1","input":[]}`,
+			})
+			require.Len(t, result.logs, 2)
+			for _, log := range result.logs {
+				require.Equal(t, log.RequestID == "resp_usage_e2e_1", log.Prewarm)
+				require.Equal(t, 2, log.InputTokens)
+				require.Equal(t, 1, log.OutputTokens)
+			}
+		})
+	}
+}

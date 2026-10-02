@@ -1352,7 +1352,9 @@ func promoteRelayAcceptedSteer(state *relayState, now time.Time) (RelayAutomatic
 		return RelayAutomaticTurn{}, false
 	}
 	accepted := state.acceptedSteers[0]
+	state.acceptedSteers[0] = relayAcceptedSteer{}
 	state.acceptedSteers = state.acceptedSteers[1:]
+	consumeAcceptedRelaySteerForExplicitRequestLocked(state, accepted.previousResponseID)
 	registerRelayRequestLocked(state, accepted.requestModel)
 	state.requestMu.Unlock()
 	startedAt := accepted.startedAt
@@ -1374,13 +1376,17 @@ func consumeAcceptedRelaySteerForExplicitRequestLocked(state *relayState, previo
 	if state == nil || previousResponseID == "" || len(state.acceptedSteers) == 0 {
 		return
 	}
-	for index, accepted := range state.acceptedSteers {
+	// Multiple accepted updates target one continuation of the same parent.
+	// Leaving a sibling here makes a later response.created look like another
+	// automatic turn. Preserve other parents and release consumed payloads.
+	kept := state.acceptedSteers[:0]
+	for _, accepted := range state.acceptedSteers {
 		if accepted.previousResponseID != previousResponseID {
-			continue
+			kept = append(kept, accepted)
 		}
-		state.acceptedSteers = append(state.acceptedSteers[:index], state.acceptedSteers[index+1:]...)
-		return
 	}
+	clear(state.acceptedSteers[len(kept):])
+	state.acceptedSteers = kept
 }
 
 func relayRequestModel(state *relayState, sequence int64, completed bool) string {

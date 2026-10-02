@@ -2541,6 +2541,13 @@
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
         data-testid="auto-reset-credit-settings"
       >
+        <div class="space-y-2" data-testid="codex-credit-usage-settings">
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="codexAllowCreditUsage" type="checkbox" class="rounded" data-testid="codex-allow-credit-usage" />
+            {{ t('admin.accounts.codexCreditUsage.title') }}
+          </label>
+          <p class="input-hint">{{ t('admin.accounts.codexCreditUsage.hint') }}</p>
+        </div>
         <div class="flex items-center justify-between gap-4">
           <div class="min-w-0">
             <label class="input-label mb-0">{{ t('admin.accounts.autoResetCredit.title') }}</label>
@@ -3616,6 +3623,7 @@ const autoPause7dThreshold = ref<number | null>(null)
 const autoPause5hDisabled = ref(false)
 const autoPause7dDisabled = ref(false)
 const autoResetCreditEnabled = ref(false)
+const codexAllowCreditUsage = ref(false)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
 const upstreamBillingAutoProbeEnabled = ref(false)
@@ -4160,6 +4168,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
+	codexAllowCreditUsage.value = extra?.codex_allow_credit_usage === true
 	autoResetCredit5hThreshold.value =
 		typeof extra?.auto_reset_credit_5h_threshold === 'number' ? extra.auto_reset_credit_5h_threshold * 100 : 100
 	autoResetCredit7dThreshold.value =
@@ -5727,11 +5736,16 @@ const handleSubmit = async () => {
 		}
 		if (props.account.type === 'oauth' && !isSparkShadow.value) {
 			newExtra.auto_reset_credit_enabled = autoResetCreditEnabled.value
+			newExtra.codex_allow_credit_usage = codexAllowCreditUsage.value
 			newExtra.auto_reset_credit_5h_threshold = autoResetCredit5hThreshold.value / 100
 			newExtra.auto_reset_credit_7d_threshold = autoResetCredit7dThreshold.value / 100
+		} else {
+			delete newExtra.codex_allow_credit_usage
 		}
 		// 运行态只允许后端服务更新，账号编辑不得回写旧状态。
 		delete newExtra.codex_auto_reset_credit_state
+		delete newExtra.codex_credit_policy_state
+		delete newExtra.codex_credit_usage_resume_at
 
 		delete newExtra.codex_image_generation_bridge_enabled
       switch (codexImageToolMode.value) {

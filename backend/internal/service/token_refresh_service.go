@@ -904,7 +904,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			if releaseRate != nil {
 				releaseRate()
 			}
-			attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+			attemptTimedOut := refreshAttemptExceededDeadline(ctx, attemptCtx, time.Now())
 			if err == nil && newCredentials != nil && !attemptTimedOut {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
 				if saveErr := persistAccountCredentials(attemptCtx, s.accountRepo, account, newCredentials); saveErr != nil {
@@ -914,7 +914,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				}
 			}
 		}
-		attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		attemptTimedOut := refreshAttemptExceededDeadline(ctx, attemptCtx, time.Now())
 		cancelAttempt()
 		releaseAttempt()
 		persistedAfterAttemptDeadline := attemptTimedOut && credentialsPersisted && err == nil
@@ -1284,6 +1284,17 @@ type accountPermanentRefreshError struct {
 
 type refreshAttemptTimeoutError struct {
 	err error
+}
+
+// Context cancellation is timer-driven and can lag the actual deadline under
+// load. Reject late credentials before persistence even if Err is still nil.
+// Parent cancellation remains the caller's responsibility, not provider failure.
+func refreshAttemptExceededDeadline(parent, attempt context.Context, now time.Time) bool {
+	if parent.Err() != nil {
+		return false
+	}
+	deadline, ok := attempt.Deadline()
+	return errors.Is(attempt.Err(), context.DeadlineExceeded) || (ok && !now.Before(deadline))
 }
 
 func isProviderScopedTerminalRefreshError(err error) bool {

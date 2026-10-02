@@ -532,6 +532,13 @@ func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) 
 	if account == nil || !account.IsOpenAI() {
 		return false, openAIQuotaAutoPauseDecision{}
 	}
+	var credits codexCreditState
+	if account.IsOpenAIOAuthLike() {
+		account, credits = codexCreditPolicyView(ctx, account)
+		if paused, decision := codexCreditQuotaDecision(account, credits, time.Now()); paused {
+			return true, decision
+		}
+	}
 	// 自动用卡有独立阈值：达到消费阈值时必须先退出调度；仅达到普通暂停阈值时，
 	// 只有新鲜状态明确存在可用卡才继续放行到消费阈值。
 	if config := ResolveOpenAIAutoResetCreditConfig(account); config.Enabled {
@@ -575,12 +582,16 @@ func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) 
 	now := time.Now()
 	if !disabled5h && threshold5h > 0 {
 		if utilization, ok := resolveOpenAIQuotaUtilization(account.Extra, "5h", now); ok && utilization >= threshold5h {
-			return true, openAIQuotaAutoPauseDecision{window: "5h", threshold: threshold5h, utilization: utilization}
+			if threshold5h < 1 || !resolveAccountExtraBool(account.Extra, CodexAllowCreditUsageKey) || !codexCreditsAvailable(credits, now) {
+				return true, openAIQuotaAutoPauseDecision{window: "5h", threshold: threshold5h, utilization: utilization}
+			}
 		}
 	}
 	if !disabled7d && threshold7d > 0 {
 		if utilization, ok := resolveOpenAIQuotaUtilization(account.Extra, "7d", now); ok && utilization >= threshold7d {
-			return true, openAIQuotaAutoPauseDecision{window: "7d", threshold: threshold7d, utilization: utilization}
+			if threshold7d < 1 || !resolveAccountExtraBool(account.Extra, CodexAllowCreditUsageKey) || !codexCreditsAvailable(credits, now) {
+				return true, openAIQuotaAutoPauseDecision{window: "7d", threshold: threshold7d, utilization: utilization}
+			}
 		}
 	}
 	return false, openAIQuotaAutoPauseDecision{}
@@ -778,6 +789,12 @@ func openAIQuotaAutoPauseSettingsFromContext(ctx context.Context) OpsOpenAIAccou
 }
 
 func (s *OpenAIGatewayService) withOpenAIQuotaAutoPauseContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s != nil {
+		ctx = context.WithValue(ctx, codexCreditServiceContextKey{}, s)
+	}
 	if s == nil || s.settingService == nil {
 		return ctx
 	}

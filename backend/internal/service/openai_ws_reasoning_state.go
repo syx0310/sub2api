@@ -13,6 +13,7 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const openAIWSReasoningMaxEntries = 4096
@@ -112,7 +113,7 @@ func (s *OpenAIGatewayService) newOpenAIWSReasoningSession(ctx context.Context, 
 	}
 }
 
-func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *OpenAIWSIngressHooks) ([]byte, *openAIWSReasoningFrame, error) {
+func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *OpenAIWSIngressHooks, upstreamModels ...string) ([]byte, *openAIWSReasoningFrame, error) {
 	frame := &openAIWSReasoningFrame{semantics: ClassifyOpenAIResponsesRequest(body)}
 	frame.value.known = true
 	maxEffort, overLimit := "", ""
@@ -131,7 +132,7 @@ func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *Ope
 		}
 		found = found && parent.known
 	}
-	_, explicit, hasUpdate := lastOpenAIConfigurationEffort(body)
+	updateIndex, explicit, hasUpdate := lastOpenAIConfigurationEffort(body)
 	reset := openAIInputHasCompactedHistory(body)
 	next := body
 	var err error
@@ -139,7 +140,7 @@ func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *Ope
 	case hasUpdate:
 		frame.tracked, frame.value.override = true, true
 		frame.value.requested = explicit
-		next, _, err = ApplyReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
+		next, _, err = applyOpenAIConfigurationEffortPolicy(body, updateIndex, explicit, model, maxEffort, mappings, overLimit, upstreamModels...)
 		_, frame.value.policyEffort, _ = lastOpenAIConfigurationEffort(next)
 	case prev != "" && !reset && !found:
 		// The top-level effort is NOT evidence that the referenced conversation
@@ -152,7 +153,7 @@ func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *Ope
 		frame.tracked = true
 		frame.value = parent
 		var desired string
-		desired, err = applyOpenAIConfigurationEffortValue(parent.requested, model, maxEffort, mappings, overLimit)
+		desired, err = applyOpenAIConfigurationEffortValue(parent.requested, model, maxEffort, mappings, overLimit, upstreamModels...)
 		if err == nil && desired != parent.policyEffort {
 			next, err = appendOpenAIInheritedEffortUpdate(body, desired, parent.tailConfig)
 		}
@@ -161,7 +162,17 @@ func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *Ope
 		if requested := CanonicalRequestedReasoningEffort(body, model); requested != nil {
 			frame.value.requested = *requested
 		}
-		next, _, err = ApplyReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
+		policyBody := body
+		wireModel := gjson.GetBytes(body, "model").String()
+		if len(mappings) > 0 && wireModel != model {
+			policyBody, err = sjson.SetBytes(body, "model", model)
+		}
+		if err == nil {
+			next, _, err = ApplyReasoningEffortPolicy(policyBody, maxEffort, mappings, overLimit)
+		}
+		if err == nil && len(mappings) > 0 && wireModel != model {
+			next, err = sjson.SetBytes(next, "model", wireModel)
+		}
 		frame.value.policyEffort = explicitRequestedReasoningEffortFromBody(next)
 	}
 	if err != nil {
@@ -174,6 +185,28 @@ func (s *openAIWSReasoningSession) prepare(body []byte, model string, hooks *Ope
 		frame.value.tailConfig = parent.tailConfig
 	}
 	return next, frame, nil
+}
+
+// Re-evaluate inheritance after the compatibility layer supplies an anchor.
+// Keep the already-applied baseline if the parent has no override, so a mapping
+// such as high->medium->low is not applied twice to the same input.
+func (s *openAIWSReasoningSession) rebaseInferredParent(frame *openAIWSReasoningFrame, body []byte, model string, hooks *OpenAIWSIngressHooks) ([]byte, *openAIWSReasoningFrame, error) {
+	if frame == nil || frame.tracked {
+		return body, frame, nil
+	}
+	parentID := gjson.GetBytes(body, "previous_response_id").String()
+	var parent openAIWSReasoningValue
+	var found bool
+	if last := s.last.Load(); last != nil && last.key == openAIWSReasoningKey(s.scope, parentID) && time.Now().Before(last.expiresAt) {
+		parent, found = last.value, true
+	} else if s.cache != nil {
+		parent, found = s.cache.get(s.scope, parentID)
+	}
+	if found && parent.known && !parent.override {
+		return body, frame, nil // The already-applied explicit baseline is valid.
+	}
+	// prepare's inherited/unknown branches do not reapply the top-level policy.
+	return s.prepare(body, model, hooks, gjson.GetBytes(body, "model").String())
 }
 
 func (s *openAIWSReasoningSession) activate(frame *openAIWSReasoningFrame, body []byte, upstreamModel, requestModel string) {
@@ -200,7 +233,8 @@ func (s *openAIWSReasoningSession) observeTerminal(body []byte) {
 	if event == "response.output_item.done" {
 		if item := gjson.GetBytes(body, "item"); item.IsObject() {
 			s.outputSeen.Store(true)
-			if item.Get("type").String() == "compaction" && item.Get("encrypted_content").Type == gjson.String && s.compactionItems.Load() < 2 {
+			kind := item.Get("type").String()
+			if (kind == "compaction" || kind == "compaction_summary") && item.Get("encrypted_content").Type == gjson.String && s.compactionItems.Load() < 2 {
 				// Saturate at two: Codex requires exactly one valid compaction
 				// output item, not merely a successful terminal event.
 				s.compactionItems.Add(1)
@@ -255,6 +289,7 @@ func (s *openAIWSReasoningSession) stamp(result *OpenAIForwardResult) {
 		return
 	}
 	if frame := s.active.Load(); frame != nil {
+		result.Prewarm = frame.semantics.Prewarm
 		if frame.tracked {
 			result.ReasoningEffort = openAIWSTrimmedStringPtr(frame.effective)
 			result.RequestedReasoningEffort = openAIWSTrimmedStringPtr(NormalizeMaxReasoningEffort(frame.value.requested))

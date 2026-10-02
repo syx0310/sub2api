@@ -2149,24 +2149,22 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	// excludes Fast; do not drop its caller-selected Flex tier.
 	euNoFast := isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency()
 	euStandardOnly := euNoFast && canonicalizeOpenAIModelAliasSpelling(model) != openai.GPT61SolModelID
+	settings := openAIFastPolicySettingsFromContext(ctx)
+	if settings == nil && s != nil && s.settingService != nil {
+		settings, _ = s.settingService.GetOpenAIFastPolicySettings(ctx)
+	}
+	action, errMsg = evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
+	// Region compatibility must not turn an administrator's rejection into a
+	// Standard-tier request. Preserve first-match policy precedence otherwise.
+	if action == BetaPolicyActionBlock {
+		return action, errMsg
+	}
 	if euNoFast && tier == "priority" {
 		return BetaPolicyActionFilter, ""
 	}
 	if euStandardOnly && tier != "default" && tier != "auto" && tier != OpenAIFastTierMissing {
 		return BetaPolicyActionFilter, ""
 	}
-	if s == nil || s.settingService == nil {
-		return BetaPolicyActionPass, ""
-	}
-	settings := openAIFastPolicySettingsFromContext(ctx)
-	if settings == nil {
-		fetched, err := s.settingService.GetOpenAIFastPolicySettings(ctx)
-		if err != nil || fetched == nil {
-			return BetaPolicyActionPass, ""
-		}
-		settings = fetched
-	}
-	action, errMsg = evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
 	if euNoFast && action == OpenAIFastPolicyActionForcePriority {
 		if !euStandardOnly {
 			return BetaPolicyActionPass, ""

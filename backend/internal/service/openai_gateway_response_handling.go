@@ -319,14 +319,15 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			return
 		}
 		errorEventSent = true
-		// Responses error events use top-level code/message/param fields. A nested
-		// Chat Completions error envelope loses the classification in strict clients.
-		payload := `{"type":"error","sequence_number":0,"code":` + strconv.Quote(code) + `,"message":` + strconv.Quote(message) + `,"param":null}`
+		// A local read failure ends this response. Codex does not treat a generic
+		// top-level error as a terminal, so emit the Responses failure envelope.
+		source := []byte(`{"error":{"type":"server_error","code":` + strconv.Quote(code) + `,"message":` + strconv.Quote(message) + `}}`)
+		failure := buildOpenAIResponseFailedSSE(responseID, originalModel, source, message)
 		if err := flushBuffered(); err != nil {
 			clientDisconnected = true
 			return
 		}
-		if _, err := writePendingString("event: error\ndata: " + payload + "\n\n"); err != nil {
+		if _, err := writePendingString(failure); err != nil {
 			clientDisconnected = true
 			return
 		}
@@ -336,6 +337,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
+		failureDelivered = true
 		// The handler must not append its generic failure after this error event.
 		MarkResponseCommitted(c)
 	}
@@ -502,6 +504,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			s.observeCodexCreditEvent(ctx, account, dataBytes)
 			codexTurnStateObserverFromContext(c).event(dataBytes, eventType)
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
@@ -1713,6 +1716,11 @@ func bodyHasSSEFraming(body []byte) bool {
 }
 
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+	creditCtx := context.Background()
+	if c != nil && c.Request != nil {
+		creditCtx = c.Request.Context()
+	}
+	s.observeCodexCreditSSEBody(creditCtx, account, body)
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {

@@ -488,6 +488,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	accountExtra, err = normalizeCodexCreditPolicyExtra(input.Platform, input.Type, false, accountExtra, nil)
+	if err != nil {
+		return nil, err
+	}
 	if err := ValidateUpstreamRequestIDHeaderExtra(accountExtra); err != nil {
 		return nil, err
 	}
@@ -591,6 +595,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			effectiveType = input.Type
 		}
 		normalizedExtra, err = normalizeOpenAIAutoResetCreditExtra(account.Platform, effectiveType, account.IsShadow(), normalizedExtra)
+		if err != nil {
+			return nil, err
+		}
+		normalizedExtra, err = normalizeCodexCreditPolicyExtra(account.Platform, effectiveType, account.IsShadow(), normalizedExtra, account)
 		if err != nil {
 			return nil, err
 		}
@@ -921,6 +929,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
+	delete(updates, CodexAllowCreditUsageKey)
+	delete(updates, codexCreditStateKey)
+	delete(updates, codexCreditResumeKey)
 	updates = stripOpenAIAutoResetCreditManagedExtra(updates, true)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
@@ -950,6 +961,9 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
+	delete(input.Extra, CodexAllowCreditUsageKey)
+	delete(input.Extra, codexCreditStateKey)
+	delete(input.Extra, codexCreditResumeKey)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)

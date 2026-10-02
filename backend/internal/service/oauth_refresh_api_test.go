@@ -652,6 +652,18 @@ func TestRefreshIfNeeded_LateSuccessAfterDeadlineDoesNotPersist(t *testing.T) {
 	require.Zero(t, repo.updateCredentialsCalls, "late credentials must not cross the unified API persistence boundary")
 }
 
+func TestRefreshIfNeededUnsignaledDeadlineDoesNotPersist(t *testing.T) {
+	account := &Account{ID: 87, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive}
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{needsRefresh: true, credentials: map[string]any{"access_token": "late-test-token"}}
+	ctx := unsignaledRefreshDeadline{Context: context.Background(), deadline: time.Now().Add(-time.Second)}
+	require.NoError(t, ctx.Err(), "deterministically model an undelivered timer callback")
+	result, err := NewOAuthRefreshAPI(repo, nil).RefreshIfNeeded(ctx, account, executor, time.Hour)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, result)
+	require.Zero(t, repo.updateCredentialsCalls)
+}
+
 func TestRefreshIfNeeded_NilCredentials(t *testing.T) {
 	account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive}
 	repo := &refreshAPIAccountRepo{account: account}

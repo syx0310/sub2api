@@ -282,6 +282,9 @@ func applyAccountStatsCost(
 	if usageLog != nil && usageLog.ImageCount > 0 {
 		requestCount = usageLog.ImageCount
 	}
+	if usageLog != nil && usageLog.Prewarm {
+		requestCount = 0
+	}
 	serviceTier := ""
 	reasoningEffort := ""
 	if usageLog != nil && usageLog.ServiceTier != nil {

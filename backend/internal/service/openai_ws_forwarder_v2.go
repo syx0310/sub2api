@@ -365,6 +365,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if !lease.Reused() {
 		turnStateLengths.requestObject(wsHeaders, payload)
 		turnStateLengths.responseHeaders(lease.HandshakeHeaders())
+		s.observeCodexCreditHeaders(ctx, account, lease.HandshakeHeaders(), !account.IsShadow())
 	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
@@ -634,6 +635,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
+		if eventType == "codex.rate_limits" || eventType == "error" {
+			s.observeCodexCreditEvent(ctx, account, message)
+		}
 		if eventType == "" {
 			continue
 		}

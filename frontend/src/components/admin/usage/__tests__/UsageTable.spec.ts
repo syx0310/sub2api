@@ -58,6 +58,7 @@ const messages: Record<string, string> = {
   'usage.stream': 'Stream',
   'usage.sync': 'Sync',
   'usage.nativeCompactionV2': 'Compaction',
+  'usage.prewarm': 'Prewarm',
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
@@ -93,6 +94,7 @@ const DataTableStub = {
         <slot name="cell-model" :row="row" :value="row.model" />
         <slot name="cell-reasoning_effort" :row="row" :value="row.reasoning_effort" />
         <slot name="cell-billing_mode" :row="row" />
+        <slot name="cell-stream" :row="row" />
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-body_size" :row="row" />
@@ -133,6 +135,15 @@ const baseImageRow = {
 }
 
 describe('admin UsageTable tooltip', () => {
+  it('marks prewarm independently of the wire transport and billing mode', () => {
+    const wrapper = mount(UsageTable, {
+      props: { data: [{ ...baseImageRow, prewarm: true }, { ...baseImageRow, request_id: 'normal', prewarm: false }], loading: false, columns: [] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    expect(wrapper.findAll('[data-testid="prewarm-badge"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="prewarm-badge"]').text()).toBe('Prewarm')
+    wrapper.unmount()
+  })
   beforeEach(() => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       x: 0,

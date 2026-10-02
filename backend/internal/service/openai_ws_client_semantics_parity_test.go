@@ -20,12 +20,14 @@ import (
 // Both executors speak the real WS codec to a local upstream. Compare actual
 // dispatched frames, not just helper output or a synthetic relay state machine.
 func TestOpenAIWSClientSemanticsCtxPoolPassthroughParity(t *testing.T) {
-	for _, lite := range []bool{false, true} {
-		t.Run(fmt.Sprintf("lite=%v", lite), func(t *testing.T) { testOpenAIWSClientSemanticsParity(t, lite) })
+	for _, model := range []string{"gpt-6-astra", "gpt-5.5"} {
+		for _, lite := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/lite=%v", model, lite), func(t *testing.T) { testOpenAIWSClientSemanticsParity(t, lite, model) })
+		}
 	}
 }
 
-func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
+func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool, upstreamModel string) {
 	var reference [][]byte
 	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
 		t.Run(mode, func(t *testing.T) {
@@ -46,7 +48,7 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 					}
 					frames <- payload
 					id := fmt.Sprintf("resp_semantics_%d", turn)
-					created := fmt.Sprintf(`{"type":"response.created","response":{"id":%q,"model":"gpt-6-astra","status":"in_progress"}}`, id)
+					created := fmt.Sprintf(`{"type":"response.created","response":{"id":%q,"model":%q,"status":"in_progress"}}`, id, upstreamModel)
 					if err := conn.Write(ctx, coderws.MessageText, []byte(created)); err != nil {
 						return
 					}
@@ -60,7 +62,7 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 							return
 						}
 					}
-					completed := fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":"gpt-6-astra","status":"completed","output":%s,"usage":{"input_tokens":2,"output_tokens":1}}}`, id, output)
+					completed := fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":%q,"status":"completed","output":%s,"usage":{"input_tokens":2,"output_tokens":1}}}`, id, upstreamModel, output)
 					if err := conn.Write(ctx, coderws.MessageText, []byte(completed)); err != nil {
 						return
 					}
@@ -105,7 +107,7 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 						if model != "client-astra-alias" {
 							return "", fmt.Errorf("lost client model: %q", model)
 						}
-						return "gpt-6-astra", nil
+						return upstreamModel, nil
 					},
 					AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
 						if err != nil {
@@ -142,6 +144,10 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 				}
 				if turn == 1 {
 					body["generate"] = false
+					if upstreamModel == "gpt-5.5" && lite {
+						body["input"] = json.RawMessage(`[{"type":"additional_tools","role":"developer","tools":[]},{"role":"user","content":"hello"}]`)
+						body["reasoning"].(map[string]any)["context"] = "all_turns"
+					}
 				} else {
 					body["previous_response_id"] = fmt.Sprintf("resp_semantics_%d", turn-1)
 					delete(body, "model") // exercise session model inheritance too
@@ -182,6 +188,7 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 					require.NotNil(t, result)
 					require.Equal(t, 2, result.Usage.InputTokens)
 					require.Equal(t, 1, result.Usage.OutputTokens, "even prewarm retains actual usage")
+					require.Equal(t, turn == 1, result.Prewarm)
 					wantEffort, wantRequested := "low", "low"
 					if turn >= 3 && turn <= 5 {
 						wantEffort, wantRequested = "high", "xhigh"
@@ -197,11 +204,20 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool) {
 				select {
 				case frame := <-frames:
 					captured = append(captured, frame)
-					require.Equal(t, "gpt-6-astra", gjson.GetBytes(frame, "model").String())
-					require.Equal(t, "auto", gjson.GetBytes(frame, "reasoning.mode").String())
+					require.Equal(t, upstreamModel, gjson.GetBytes(frame, "model").String())
+					require.Equal(t, lite && upstreamModel != "gpt-5.5", isOpenAIResponsesLiteWebSocketPayload(frame))
+					if upstreamModel == "gpt-6-astra" {
+						require.Equal(t, "auto", gjson.GetBytes(frame, "reasoning.mode").String())
+					} else {
+						require.False(t, gjson.GetBytes(frame, "reasoning.mode").Exists(), "GPT-5.5 does not implement GPT-6's reasoning.mode")
+					}
 					require.Equal(t, "low", gjson.GetBytes(frame, "reasoning.effort").String(), "never rewrite the pinned cache baseline")
 					if turn == 1 {
 						require.Equal(t, gjson.False, gjson.GetBytes(frame, "generate").Type)
+						if upstreamModel == "gpt-5.5" && lite {
+							require.Equal(t, "all_turns", gjson.GetBytes(frame, "reasoning.context").String())
+							require.True(t, gjson.GetBytes(frame, `input.#(type=="additional_tools")`).Exists())
+						}
 					}
 					if turn > 1 {
 						require.Equal(t, body["previous_response_id"], gjson.GetBytes(frame, "previous_response_id").String())

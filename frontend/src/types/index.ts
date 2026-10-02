@@ -1226,6 +1226,7 @@ export interface Account {
     }
     codex_referral_snapshot?: import('./openaiReferrals').OpenAIReferralEligibility | null
     auto_reset_credit_enabled?: boolean
+    codex_allow_credit_usage?: boolean
     auto_reset_credit_5h_threshold?: number
     auto_reset_credit_7d_threshold?: number
     codex_auto_reset_credit_state?: {
@@ -1770,6 +1771,7 @@ export interface UsageLog {
   stream: boolean
   openai_ws_mode?: boolean
   native_compaction_v2: boolean
+  prewarm?: boolean
   duration_ms: number | null
   first_token_ms: number | null
 

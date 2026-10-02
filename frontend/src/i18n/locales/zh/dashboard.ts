@@ -400,6 +400,7 @@ export default {
     stream: '流式',
     sync: '同步',
     nativeCompactionV2: '压缩',
+    prewarm: '预热',
     compactionFilter: '请求类别',
     allCompactionTypes: '全部请求',
     compactionOnly: '仅原生压缩',

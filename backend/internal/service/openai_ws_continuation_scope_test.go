@@ -96,3 +96,57 @@ func TestOpenAIWSContinuationScopeGuardsOnlyImplicitAnchor(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIWSInferredAnchorInheritsConfigurationOverride(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	upstream := newStagedPassthroughConn()
+	cfg := passthroughLifecycleConfig()
+	svc := newPassthroughLifecycleService(cfg, upstream)
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&scopeCountingWSDialer{codexLengthWSDialer: codexLengthWSDialer{conn: &codexLengthWSConn{upstream}}})
+	defer pool.Close()
+	svc.openaiWSPool = pool
+	account := passthroughLifecycleAccount()
+	account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+	results := make(chan *OpenAIForwardResult, 2)
+	server, serverErr := startPassthroughHookRecordingServer(t, ctx, svc, account, &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
+		if err == nil {
+			results <- result
+		}
+	}})
+	defer server.Close()
+	first := `{"type":"response.create","model":"gpt-6-astra","store":false,"reasoning":{"effort":"low"},"input":[{"role":"user","content":"hello"},{"type":"configuration_update","reasoning":{"effort":"xhigh"}}]}`
+	client := dialPassthroughLifecycleClientWithPayload(t, server, first)
+	defer func() { _ = client.CloseNow() }()
+	requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_parent","output":[{"type":"function_call","name":"test","call_id":"call_a","arguments":"{}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`)
+	_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
+	require.NoError(t, err)
+	writeCtx, stop := context.WithTimeout(ctx, 3*time.Second)
+	err = client.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-6-astra","store":false,"reasoning":{"effort":"low"},"input":[{"type":"function_call_output","call_id":"call_a","output":"ok"}]}`))
+	stop()
+	require.NoError(t, err)
+	out := requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
+	require.Equal(t, "resp_parent", gjson.GetBytes(out, "previous_response_id").String())
+	require.Equal(t, "low", gjson.GetBytes(out, "reasoning.effort").String(), "do not rewrite the pinned top-level baseline")
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_followup","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`)
+	_, err = readPassthroughLifecycleFrame(t, client, 3*time.Second)
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			require.NotNil(t, result)
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, "xhigh", *result.ReasoningEffort)
+		case <-time.After(3 * time.Second):
+			t.Fatal("missing turn result")
+		}
+	}
+	_ = client.Close(coderws.StatusNormalClosure, "done")
+	select {
+	case <-serverErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("websocket did not finish")
+	}
+}

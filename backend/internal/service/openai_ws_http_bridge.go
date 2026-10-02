@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -241,7 +242,12 @@ func skipOpenAIWSJSONValue(payload []byte, i int) int {
 	return len(payload)
 }
 
+var errOpenAIWSHTTPBridgePrewarm = errors.New("generate=false prewarm requires a native Responses WebSocket upstream; retry generation with full input")
+
 func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, error) {
+	if ClassifyOpenAIResponsesRequest(payload).Prewarm {
+		return nil, errOpenAIWSHTTPBridgePrewarm
+	}
 	var body map[string]any
 	if err := decodeOpenAIJSONUseNumber(payload, &body); err != nil {
 		return nil, err
@@ -438,6 +444,13 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	body, err := prepareOpenAIWSHTTPBridgeBody(account, payload)
 	if err != nil {
+		if errors.Is(err, errOpenAIWSHTTPBridgePrewarm) {
+			event := buildOpenAIWSHTTPBridgeFailedEvent("", originalModel, []byte(`{"error":{"code":"unsupported_prewarm","type":"invalid_request_error"}}`), err.Error())
+			if writeErr := writeClientMessage(event); writeErr != nil {
+				return nil, writeErr
+			}
+			return nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, err.Error(), err)
+		}
 		return nil, fmt.Errorf("prepare http bridge body: %w", err)
 	}
 	grokIntentSourceBody := append([]byte(nil), body...)
@@ -769,6 +782,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			upstreamMessage = normalized
 		}
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
+		if eventType == "codex.rate_limits" || eventType == "error" {
+			s.observeCodexCreditEvent(ctx, account, upstreamMessage)
+		}
 		responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
 		codexTurnStateObserverFromContext(c).event(upstreamMessage, eventType)
 		if responseID == "" && eventResponseID != "" {

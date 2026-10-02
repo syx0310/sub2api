@@ -146,6 +146,20 @@ func TestGPT6AstraEUMissingTierRuleDoesNotInjectPriority(t *testing.T) {
 	require.JSONEq(t, string(frame), string(updated))
 }
 
+func TestEUCompatibilityCannotBypassExplicitTierBlock(t *testing.T) {
+	for _, model := range []string{"gpt-6-astra", "gpt-6.1-sol"} {
+		for _, tier := range []string{"priority", "ultrafast"} {
+			svc := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+				ServiceTier: tier, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll, ErrorMessage: "blocked by admin",
+			}}})
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"compute_residency": "EU"}}
+			action, message := svc.evaluateOpenAIFastPolicy(context.Background(), account, model, tier)
+			require.Equal(t, BetaPolicyActionBlock, action)
+			require.Equal(t, "blocked by admin", message)
+		}
+	}
+}
+
 func TestEvaluateOpenAIFastPolicy_BlockRuleCarriesMessage(t *testing.T) {
 	settings := &OpenAIFastPolicySettings{
 		Rules: []OpenAIFastPolicyRule{{

@@ -124,7 +124,7 @@ func TestPrepareUsageLogInsert_CodexTurnStateLengths(t *testing.T) {
 	})
 	want := []sql.NullInt64{{Int64: 0, Valid: true}, {}, {}, {Int64: 292, Valid: true}}
 	for i, value := range want {
-		index := len(prepared.args) - 5 + i
+		index := len(prepared.args) - 6 + i
 		require.Equal(t, "integer", usageLogInsertArgTypes[index])
 		require.Equal(t, value, prepared.args[index])
 	}
@@ -142,7 +142,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 8
+	idx := len(prepared.args) - 9
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)

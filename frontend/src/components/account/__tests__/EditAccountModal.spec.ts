@@ -1681,6 +1681,8 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
 
   it('仅对 OpenAI OAuth 母账号显示，默认关闭且阈值为 100/100', () => {
     const parent = mountModal(buildOpenAIOAuthParentAccount())
+    expect(parent.find('[data-testid="codex-credit-usage-settings"]').exists()).toBe(true)
+    expect((parent.get('[data-testid="codex-allow-credit-usage"]').element as HTMLInputElement).checked).toBe(false)
     expect(parent.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(true)
     expect((parent.get('[data-testid="auto-reset-credit-5h-threshold"]').element as HTMLInputElement).value).toBe('100')
     expect((parent.get('[data-testid="auto-reset-credit-7d-threshold"]').element as HTMLInputElement).value).toBe('100')
@@ -1690,8 +1692,24 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     for (const account of [buildAccount(), buildOpenAISetupTokenAccount(), buildOpenAISparkShadowAccount()]) {
       const wrapper = mountModal(account)
       expect(wrapper.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="codex-credit-usage-settings"]').exists()).toBe(false)
       wrapper.unmount()
     }
+  })
+
+  it('credits 只保存独立放行开关，不开启重置卡或回写余额运行态', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.extra = { codex_credit_policy_state: { blocked_at: 123 }, codex_credit_usage_resume_at: 1 }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="codex-allow-credit-usage"]').setValue(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
+    expect(extra).toMatchObject({ codex_allow_credit_usage: true, auto_reset_credit_enabled: false })
+    expect(extra).not.toHaveProperty('codex_credit_policy_state')
+    expect(extra).not.toHaveProperty('codex_credit_usage_resume_at')
+    wrapper.unmount()
   })
 
   it('独立保存两个阈值，并禁止把运行态回写到管理请求', async () => {

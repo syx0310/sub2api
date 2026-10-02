@@ -16,7 +16,7 @@ func (r *usageLogRepository) getPerformanceStats(ctx context.Context, userID int
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	query := `
 		SELECT
-			COUNT(*) as request_count,
+			COUNT(*) FILTER (WHERE NOT prewarm) as request_count,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as token_count
 		FROM usage_logs
 		WHERE created_at >= $1`
@@ -47,7 +47,7 @@ type UserStats struct {
 func (r *usageLogRepository) GetUserStats(ctx context.Context, userID int64, startTime, endTime time.Time) (*UserStats, error) {
 	query := `
 		SELECT
-			COUNT(*) as total_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as total_requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(actual_cost), 0) as total_cost,
 			COALESCE(SUM(input_tokens), 0) as input_tokens,
@@ -292,13 +292,14 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 				total_cost,
 				actual_cost,
 				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
-				COALESCE(duration_ms, 0) AS duration_ms
+				COALESCE(duration_ms, 0) AS duration_ms,
+				prewarm
 			FROM usage_logs
 			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
 				AND created_at < GREATEST($2::timestamptz, $4::timestamptz)
 		)
 		SELECT
-			COUNT(*) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz) AS total_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm AND created_at >= $1::timestamptz AND created_at < $2::timestamptz) AS total_requests,
 			COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_input_tokens,
 			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cache_creation_tokens,
@@ -306,8 +307,8 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_actual_cost,
 			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_account_cost,
-			COALESCE(SUM(duration_ms) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_duration_ms,
-			COUNT(*) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz) AS today_requests,
+			COALESCE(SUM(duration_ms) FILTER (WHERE NOT prewarm AND created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_duration_ms,
+			COUNT(*) FILTER (WHERE NOT prewarm AND created_at >= $3::timestamptz AND created_at < $4::timestamptz) AS today_requests,
 			COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_input_tokens,
 			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_creation_tokens,
@@ -405,14 +406,14 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	// 累计 Token 统计
 	totalStatsQuery := `
 		SELECT
-			COUNT(*) as total_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
+			COALESCE(AVG(duration_ms) FILTER (WHERE NOT prewarm), 0) as avg_duration_ms
 		FROM usage_logs
 		WHERE user_id = $1
 	`
@@ -437,7 +438,7 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	// 今日 Token 统计
 	todayStatsQuery := `
 		SELECT
-			COUNT(*) as today_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as today_requests,
 			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
@@ -481,10 +482,10 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	platformQuery := `
 		SELECT
 			` + usageLogEffectivePlatformExpr + ` as platform,
-			COUNT(*) as total_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as total_requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(ul.actual_cost), 0) as total_actual_cost,
-			COUNT(*) FILTER (WHERE ul.created_at >= $2) as today_requests,
+			COUNT(*) FILTER (WHERE NOT ul.prewarm AND ul.created_at >= $2) as today_requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_tokens,
 			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2), 0) as today_actual_cost
 		FROM usage_logs ul
@@ -531,7 +532,7 @@ func (r *usageLogRepository) getPerformanceStatsByAPIKey(ctx context.Context, ap
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	query := `
 		SELECT
-			COUNT(*) as request_count,
+			COUNT(*) FILTER (WHERE NOT prewarm) as request_count,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as token_count
 		FROM usage_logs
 		WHERE created_at >= $1 AND api_key_id = $2`
@@ -557,14 +558,14 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 	// 累计 Token 统计
 	totalStatsQuery := `
 		SELECT
-			COUNT(*) as total_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
+			COALESCE(AVG(duration_ms) FILTER (WHERE NOT prewarm), 0) as avg_duration_ms
 		FROM usage_logs
 		WHERE api_key_id = $1
 	`
@@ -589,7 +590,7 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 	// 今日 Token 统计
 	todayStatsQuery := `
 		SELECT
-			COUNT(*) as today_requests,
+			COUNT(*) FILTER (WHERE NOT prewarm) as today_requests,
 			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,

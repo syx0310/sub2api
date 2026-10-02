@@ -129,6 +129,9 @@
             <span data-testid="request-type-badge" class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="getRequestTypeBadgeClass(row)">
               {{ getRequestTypeLabel(row) }}
             </span>
+            <span v-if="row.prewarm" data-testid="prewarm-badge" class="inline-flex items-center rounded bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800 dark:bg-sky-900 dark:text-sky-200">
+              {{ t('usage.prewarm') }}
+            </span>
             <span
               v-if="row.native_compaction_v2"
               data-testid="native-compaction-badge"

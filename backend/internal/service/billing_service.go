@@ -1432,6 +1432,7 @@ type CostInput struct {
 	Group                     *Group
 	Tokens                    UsageTokens
 	RequestCount              int     // 按次计费时使用
+	Prewarm                   bool    // No inference request fee; observed token usage still applies.
 	UsageUnits                float64 // 音频等连续计量单位（分钟/小时/百万字符）
 	SizeTier                  string  // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
 	RateMultiplier            float64
@@ -1713,6 +1714,9 @@ func normalizeCacheCreationBreakdown(tokens UsageTokens) (int, int) {
 
 // calculatePerRequestCost 按次/图片计费
 func (s *BillingService) calculatePerRequestCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
+	if input.Prewarm {
+		return &CostBreakdown{}, nil
+	}
 	units := input.UsageUnits
 	if units <= 0 {
 		count := input.RequestCount

@@ -1980,6 +1980,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
 			rawEventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if rawEventType == "codex.rate_limits" || rawEventType == "error" {
+				s.observeCodexCreditEvent(ctx, account, dataBytes)
+			}
 			observer.ObserveOpenAI(dataBytes, rawEventType)
 			codexTurnStateObserverFromContext(c).event(dataBytes, rawEventType)
 			if needModelReplace {
@@ -2335,6 +2338,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
 func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+	creditCtx := context.Background()
+	if c != nil && c.Request != nil {
+		creditCtx = c.Request.Context()
+	}
+	s.observeCodexCreditSSEBody(creditCtx, account, body)
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {

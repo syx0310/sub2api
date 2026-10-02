@@ -88,6 +88,33 @@ func (s *UsageLogRepoSuite) TestCreate() {
 	s.Require().NotZero(log.ID)
 }
 
+func (s *UsageLogRepoSuite) TestPrewarmCountsAndTokensHaveSeparateSemantics() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "prewarm-stats@test.com"})
+	key := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-prewarm-stats", Name: "k"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "prewarm-stats"})
+	now := time.Now().UTC()
+	for _, warmup := range []bool{false, true} {
+		duration := 100
+		if warmup {
+			duration = 900
+		}
+		log := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, RequestID: uuid.NewString(), Model: "gpt-6-astra", InputTokens: 10, OutputTokens: 2, TotalCost: .2, ActualCost: .2, Prewarm: warmup, DurationMs: &duration, CreatedAt: now}
+		_, err := s.repo.Create(s.ctx, log)
+		s.Require().NoError(err)
+	}
+	stats, err := s.repo.GetUserStatsAggregated(s.ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute))
+	s.Require().NoError(err)
+	s.Equal(int64(1), stats.TotalRequests)
+	s.Equal(int64(20), stats.TotalInputTokens)
+	s.Equal(int64(4), stats.TotalOutputTokens)
+	s.InDelta(.4, stats.TotalActualCost, 1e-12)
+	s.InDelta(100, stats.AverageDurationMs, 1e-12)
+	filtered, err := s.repo.GetStatsWithFilters(s.ctx, UsageLogFilters{UserID: user.ID})
+	s.Require().NoError(err)
+	s.Equal(int64(1), filtered.TotalRequests)
+	s.Equal(int64(20), filtered.TotalInputTokens)
+}
+
 func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
@@ -119,6 +146,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 			ResponseBodyBytes:         &responseBytes,
 			CodexTurnState:            service.CodexTurnStateLengths{RequestHeaderBytes: &zero, RequestMetadataBytes: &requestState, ResponseHeaderBytes: &responseState},
 			LongContextBillingApplied: true,
+			Prewarm:                   true,
 			CreatedAt:                 time.Now().UTC(),
 		}
 	}
@@ -126,19 +154,20 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 	assertStored := func(t *testing.T, log *service.UsageLog) {
 		t.Helper()
 		var requestBytes, responseBytes int64
-		var longContext bool
+		var longContext, prewarm bool
 		var upstreamRequestID, sessionID string
 		var requestHeader, requestMetadata, responseHeader, responseMetadata sql.NullInt64
 		err := integrationDB.QueryRowContext(
 			ctx,
-			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied, upstream_request_id, session_id, codex_turn_state_request_header_bytes, codex_turn_state_request_metadata_bytes, codex_turn_state_response_header_bytes, codex_turn_state_response_metadata_bytes FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
+			"SELECT request_body_bytes, response_body_bytes, long_context_billing_applied, upstream_request_id, session_id, codex_turn_state_request_header_bytes, codex_turn_state_request_metadata_bytes, codex_turn_state_response_header_bytes, codex_turn_state_response_metadata_bytes, prewarm FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
 			log.RequestID,
 			log.APIKeyID,
-		).Scan(&requestBytes, &responseBytes, &longContext, &upstreamRequestID, &sessionID, &requestHeader, &requestMetadata, &responseHeader, &responseMetadata)
+		).Scan(&requestBytes, &responseBytes, &longContext, &upstreamRequestID, &sessionID, &requestHeader, &requestMetadata, &responseHeader, &responseMetadata, &prewarm)
 		require.NoError(t, err)
 		require.Equal(t, *log.RequestBodyBytes, requestBytes)
 		require.Equal(t, *log.ResponseBodyBytes, responseBytes)
 		require.True(t, longContext)
+		require.True(t, prewarm)
 		require.Equal(t, *log.UpstreamRequestID, upstreamRequestID)
 		require.Equal(t, *log.SessionID, sessionID)
 		require.Equal(t, sql.NullInt64{Valid: true, Int64: 0}, requestHeader)
@@ -157,6 +186,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		require.Equal(t, log.RequestBodyBytes, stored.RequestBodyBytes)
 		require.Equal(t, log.ResponseBodyBytes, stored.ResponseBodyBytes)
 		require.True(t, stored.LongContextBillingApplied)
+		require.True(t, stored.Prewarm)
 		require.Equal(t, log.UpstreamRequestID, stored.UpstreamRequestID)
 		require.Equal(t, log.SessionID, stored.SessionID)
 		require.Equal(t, log.CodexTurnState, stored.CodexTurnState)

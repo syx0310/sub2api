@@ -395,6 +395,7 @@ export default {
     stream: 'Stream',
     sync: 'Sync',
     nativeCompactionV2: 'Compaction',
+    prewarm: 'Prewarm',
     compactionFilter: 'Request Kind',
     allCompactionTypes: 'All Requests',
     compactionOnly: 'Compaction Only',

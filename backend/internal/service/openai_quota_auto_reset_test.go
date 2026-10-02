@@ -78,6 +78,10 @@ func TestShouldAutoPauseOpenAIAccountByQuota_AutoResetCreditStates(t *testing.T)
 
 	t.Run("达到用卡阈值后即使有卡也退出调度", func(t *testing.T) {
 		extra := cloneOpenAIAutoResetExtra(baseExtra)
+		// Opt in to overages explicitly to reach the independent reset-card gate.
+		// Without permission, the new credit policy rejects exhaustion first.
+		extra[CodexAllowCreditUsageKey] = true
+		extra[codexCreditStateKey] = codexCreditState{Credits: &OpenAICredits{HasCredits: true}, CreditsAt: now.UnixMilli()}
 		extra["codex_5h_used_percent"] = 100.0
 		extra[OpenAIAutoResetCreditStateExtraKey] = OpenAIAutoResetCreditState{
 			Status: OpenAIAutoResetStatusAvailable, AvailableCount: 1, CheckedAt: now.Format(time.RFC3339),

@@ -52,6 +52,7 @@ type OpenAIRecordUsageInput struct {
 // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
 // 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
 type CyberPolicyUsageInput struct {
+	Prewarm        bool
 	CodexTurnState CodexTurnStateLengths
 	APIKey         *APIKey
 	Account        *Account
@@ -87,6 +88,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		return
 	}
 	result := &OpenAIForwardResult{
+		Prewarm:        in.Prewarm,
 		CodexTurnState: in.CodexTurnState,
 		RequestID:      in.RequestID,
 		Model:          in.Model,
@@ -420,6 +422,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageSizeSource:          optionalTrimmedStringPtr(result.ImageSizeSource),
 		ImageSizeBreakdown:       imageSizeBreakdown,
 		NativeCompactionV2:       input.NativeCompactionV2,
+		Prewarm:                  result.Prewarm,
 	}
 	isVideoUsage := isGrokVideoUsageResult(result, billingModels)
 	if isVideoUsage {
@@ -639,6 +642,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 				serviceTier,
 				optionalStringValue(result.ReasoningEffort),
 				longContextBillingGate,
+				result.Prewarm,
 			)
 			if err == nil {
 				tokenCost = cost
@@ -733,12 +737,14 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	serviceTier string,
 	reasoningEffort string,
 	longContextBillingGate *bool,
+	prewarm bool,
 ) (*CostBreakdown, error) {
 	if s.resolver != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
 			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
 			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, PricingAt: pricingAt,
+			Prewarm:     prewarm,
 			ServiceTier: serviceTier, ReasoningEffort: reasoningEffort, Resolver: s.resolver,
 			LongContextBillingEnabled: longContextBillingGate,
 		})

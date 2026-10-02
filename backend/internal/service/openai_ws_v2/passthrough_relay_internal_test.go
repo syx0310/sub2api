@@ -161,6 +161,23 @@ func TestRelaySteerFailedClearsAcceptedContinuation(t *testing.T) {
 	require.False(t, promoted, "failed steering must never create an automatic turn")
 }
 
+func TestRelaySameParentSteersAreConsumedByOneContinuation(t *testing.T) {
+	for _, explicit := range []bool{true, false} {
+		state := &relayState{requestModel: "gpt-6-astra"}
+		for _, id := range []string{"steer_1", "steer_2"} {
+			registerRelaySteerSubmission(state, []byte(`{"type":"response.steer","previous_response_id":"resp_parent","input":"update"}`), time.Now())
+			acceptRelaySteer(state, []byte(`{"type":"response.steer.accepted","steer":{"id":"`+id+`","previous_response_id":"resp_parent"}}`), time.Now())
+		}
+		if explicit {
+			registerRelayRequest(state, []byte(`{"type":"response.create","previous_response_id":"resp_parent","input":[]}`))
+		} else {
+			_, promoted := promoteRelayAcceptedSteer(state, time.Now())
+			require.True(t, promoted)
+		}
+		require.Empty(t, state.acceptedSteers, "one successor consumes all accepted updates to the same parent, not one generation per update")
+	}
+}
+
 func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 	t.Parallel()
 

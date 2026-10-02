@@ -966,6 +966,10 @@ export default {
 	      failed: 'Reset request failed'
 	    }
 	  },
+      codexCreditUsage: {
+        title: 'Allow existing Codex credits after subscription quota is exhausted',
+        hint: 'Off by default. Uses passive upstream quota/credit observations; does not buy credits, redeem reset credits, poll for top-ups or retry requests after top-ups. Existing manual limits still apply. After credits are exhausted, refresh manually and turn this off and on to authorize resuming. Turning this off is a local admission policy, not an upstream guarantee of zero credit charges.'
+      },
       autoResetCredit: {
 	    title: 'Automatically use reset credits',
 	    hint: 'Uses the earliest-expiring available credit only when actual usage reaches a threshold. Off by default; the account remains paused if no credit is available or reset fails.',
