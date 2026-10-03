@@ -135,6 +135,7 @@ type AccountDuplicateRepository interface {
 // AccountBillingSettingsRepository applies an admin edit without overwriting a
 // rate_multiplier that a successful upstream probe synchronized after the edit
 // form was loaded. A nil rateMultiplier means the request did not edit it.
+// A nil creditUsageEnabled preserves the locked row's credit authorization.
 type AccountBillingSettingsRepository interface {
 	UpdateWithAccountBillingSettings(
 		ctx context.Context,
@@ -142,6 +143,7 @@ type AccountBillingSettingsRepository interface {
 		probeEnabled *bool,
 		rateSyncEnabled *bool,
 		rateMultiplier *float64,
+		creditUsageEnabled *bool,
 	) error
 }
 

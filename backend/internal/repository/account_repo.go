@@ -439,7 +439,7 @@ func (r *accountRepository) ListCRSAccountIDs(ctx context.Context) (map[string]i
 }
 
 func (r *accountRepository) Update(ctx context.Context, account *service.Account) error {
-	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier)
+	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier, nil)
 }
 
 // UpdateWithAccountBillingSettings applies an admin account edit while
@@ -451,8 +451,9 @@ func (r *accountRepository) UpdateWithAccountBillingSettings(
 	probeEnabled *bool,
 	rateSyncEnabled *bool,
 	rateMultiplier *float64,
+	creditUsageEnabled *bool,
 ) error {
-	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier)
+	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier, creditUsageEnabled)
 }
 
 func (r *accountRepository) updateAccount(
@@ -461,6 +462,7 @@ func (r *accountRepository) updateAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	explicitCreditUsageEnabled *bool,
 ) error {
 	if account == nil {
 		return nil
@@ -492,6 +494,7 @@ func (r *accountRepository) updateAccount(
 		explicitProbeEnabled,
 		explicitRateSyncEnabled,
 		explicitRateMultiplier,
+		explicitCreditUsageEnabled,
 	)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
@@ -521,8 +524,9 @@ func (r *accountRepository) updateLockedAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	explicitCreditUsageEnabled *bool,
 ) (*dbent.Account, error) {
-	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitRateSyncEnabled)
+	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitRateSyncEnabled, explicitCreditUsageEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -617,6 +621,7 @@ func lockAndMergeAccountProbeExtra(
 	account *service.Account,
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
+	explicitCreditUsageEnabled *bool,
 ) (map[string]any, error) {
 	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
 	if err != nil {
@@ -670,7 +675,13 @@ func lockAndMergeAccountProbeExtra(
 				false
 			),
 			extra -> 'opencode_go_usage_auto_refresh',
-			extra -> 'opencode_go_usage_snapshot'
+			extra -> 'opencode_go_usage_snapshot',
+			jsonb_build_object(
+				'codex_allow_credit_usage', extra -> 'codex_allow_credit_usage',
+				'codex_credit_policy_state', extra -> 'codex_credit_policy_state',
+				'codex_credit_usage_resume_at', extra -> 'codex_credit_usage_resume_at',
+				'codex_credits_snapshot', extra -> 'codex_credits_snapshot'
+			)
 		FROM accounts
 		WHERE id = $1 AND deleted_at IS NULL
 		FOR NO KEY UPDATE
@@ -699,6 +710,7 @@ func lockAndMergeAccountProbeExtra(
 		currentOllamaSnapshot          []byte
 		currentOpenCodeAutoRefresh     []byte
 		currentOpenCodeSnapshot        []byte
+		currentCodexCreditExtra        []byte
 	)
 	if err := rows.Scan(
 		&identityUnchanged,
@@ -713,6 +725,7 @@ func lockAndMergeAccountProbeExtra(
 		&opencodeGroupIdentityUnchanged,
 		&currentOpenCodeAutoRefresh,
 		&currentOpenCodeSnapshot,
+		&currentCodexCreditExtra,
 	); err != nil {
 		return nil, err
 	}
@@ -720,7 +733,17 @@ func lockAndMergeAccountProbeExtra(
 		return nil, err
 	}
 
-	extra := copyJSONMap(normalizeJSONMap(account.Extra))
+	var creditExtra map[string]any
+	if len(currentCodexCreditExtra) > 0 {
+		if err := json.Unmarshal(currentCodexCreditExtra, &creditExtra); err != nil {
+			return nil, err
+		}
+	}
+	extra, err := service.MergeCodexCreditPolicyExtraForAccountUpdate(account, creditExtra, explicitCreditUsageEnabled)
+	if err != nil {
+		return nil, err
+	}
+	extra = copyJSONMap(normalizeJSONMap(extra))
 	for _, key := range []string{
 		service.UpstreamBillingProbeEnabledExtraKey,
 		service.UpstreamBillingRateSyncEnabledExtraKey,

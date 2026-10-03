@@ -215,6 +215,53 @@ func TestCodexCreditAdminValidation(t *testing.T) {
 	require.NotContains(t, extra, codexCreditResumeKey)
 }
 
+func TestCodexCreditLockedEditPreservesAuthoritativeState(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		currentEnabled          bool
+		requested               *bool
+		wantEnabled, wantResume bool
+	}{
+		{name: "name edit cannot revoke a new authorization", currentEnabled: true, wantEnabled: true},
+		{name: "name edit cannot re-enable revoked authorization"},
+		{name: "same true is not manual resume", currentEnabled: true, requested: boolPtrForCreditTest(true), wantEnabled: true},
+		{name: "explicit off", currentEnabled: true, requested: boolPtrForCreditTest(false)},
+		{name: "explicit off to on", requested: boolPtrForCreditTest(true), wantEnabled: true, wantResume: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blocked := time.Now().Add(time.Second).UnixMilli()
+			current := map[string]any{
+				CodexAllowCreditUsageKey: tc.currentEnabled, codexCreditResumeKey: int64(10),
+				codexCreditStateKey:   map[string]any{"blocked_at": blocked, "future_field": "keep"},
+				openaiQuotaCreditsKey: map[string]any{"fetched_at": int64(20), "credits": nil},
+			}
+			account := creditTestAccount()
+			account.Extra = map[string]any{CodexAllowCreditUsageKey: !tc.currentEnabled, codexCreditResumeKey: blocked + 1000,
+				codexCreditStateKey: map[string]any{"blocked_at": 0}, openaiQuotaCreditsKey: "stale", "custom": "edited"}
+			merged, err := MergeCodexCreditPolicyExtraForAccountUpdate(account, current, tc.requested)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantEnabled, merged[CodexAllowCreditUsageKey])
+			require.Equal(t, current[codexCreditStateKey], merged[codexCreditStateKey])
+			require.Equal(t, current[openaiQuotaCreditsKey], merged[openaiQuotaCreditsKey])
+			require.Equal(t, "edited", merged["custom"])
+			if tc.wantResume {
+				require.GreaterOrEqual(t, merged[codexCreditResumeKey].(int64), blocked)
+			} else {
+				require.Equal(t, int64(10), merged[codexCreditResumeKey])
+			}
+			require.Equal(t, int64(10), current[codexCreditResumeKey], "do not mutate the locked snapshot")
+			require.Equal(t, "stale", account.Extra[openaiQuotaCreditsKey], "do not mutate the caller's snapshot")
+		})
+	}
+	account := creditTestAccount()
+	account.Extra = map[string]any{codexCreditStateKey: "forged", codexCreditResumeKey: 9000, CodexAllowCreditUsageKey: true}
+	merged, err := MergeCodexCreditPolicyExtraForAccountUpdate(account, nil, nil)
+	require.NoError(t, err)
+	require.Empty(t, merged, "generic updates cannot manufacture state absent from the locked row")
+}
+
+func boolPtrForCreditTest(value bool) *bool { return &value }
+
 func TestCodexCreditOAuthNativeAbsoluteResetAndSparkQuotaShapes(t *testing.T) {
 	resetAt := time.Now().Add(time.Hour).Unix()
 	window := fmt.Sprintf(`{"primary":{"used_percent":100,"window_minutes":300,"reset_at":%d}}`, resetAt)

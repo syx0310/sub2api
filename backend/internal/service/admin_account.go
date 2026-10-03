@@ -581,6 +581,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		return nil, err
 	}
 	var normalizedExtra map[string]any
+	var requestedCreditUsageEnabled *bool
 	if input.Extra != nil {
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
 		if err != nil {
@@ -601,6 +602,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		normalizedExtra, err = normalizeCodexCreditPolicyExtra(account.Platform, effectiveType, account.IsShadow(), normalizedExtra, account)
 		if err != nil {
 			return nil, err
+		}
+		// Capture the request's validated intent, not the copied account flag.
+		// Persistence re-evaluates manual resume against the locked database row.
+		if enabled, ok := input.Extra[CodexAllowCreditUsageKey].(bool); ok {
+			requestedCreditUsageEnabled = &enabled
 		}
 		if err := ValidateUpstreamRequestIDHeaderExtra(normalizedExtra); err != nil {
 			return nil, err
@@ -878,6 +884,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			requestedProbeEnabledUpdate,
 			requestedRateSyncEnabledUpdate,
 			input.RateMultiplier,
+			requestedCreditUsageEnabled,
 		); err != nil {
 			return nil, err
 		}

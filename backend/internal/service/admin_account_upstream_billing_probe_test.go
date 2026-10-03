@@ -20,9 +20,10 @@ func (r *upstreamBillingProbeAdminRepo) ListShadowsByParent(context.Context, int
 
 type accountBillingSettingsAdminRepo struct {
 	*upstreamBillingProbeAccountRepo
-	concurrentRate   *float64
-	lastExplicitRate *float64
-	updateCalls      int
+	concurrentRate         *float64
+	lastExplicitRate       *float64
+	lastCreditUsageEnabled *bool
+	updateCalls            int
 }
 
 func (r *accountBillingSettingsAdminRepo) UpdateWithAccountBillingSettings(
@@ -31,6 +32,7 @@ func (r *accountBillingSettingsAdminRepo) UpdateWithAccountBillingSettings(
 	probeEnabled *bool,
 	rateSyncEnabled *bool,
 	rateMultiplier *float64,
+	creditUsageEnabled *bool,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -41,7 +43,12 @@ func (r *accountBillingSettingsAdminRepo) UpdateWithAccountBillingSettings(
 	}
 	updated := *account
 	updated.Credentials = mergeMap(nil, account.Credentials)
-	updated.Extra = mergeMap(nil, account.Extra)
+	var err error
+	updated.Extra, err = MergeCodexCreditPolicyExtraForAccountUpdate(account, current.Extra, creditUsageEnabled)
+	if err != nil {
+		return err
+	}
+	r.lastCreditUsageEnabled = cloneAccountValuePointer(creditUsageEnabled)
 	if updated.Extra == nil {
 		updated.Extra = make(map[string]any)
 	}
@@ -112,6 +119,30 @@ func TestUpdateAccountRoutesRateIntentThroughAtomicBillingUpdater(t *testing.T) 
 	require.Zero(t, *repo.lastExplicitRate)
 	require.Zero(t, *updated.RateMultiplier)
 }
+
+func TestUpdateAccountRoutesExplicitCreditIntentThroughAtomicUpdater(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+		want  *bool
+	}{
+		{name: "name only"},
+		{name: "other extra field", extra: map[string]any{"custom": "edited"}},
+		{name: "explicit true", extra: map[string]any{CodexAllowCreditUsageKey: true}, want: boolPtrForCreditIntentTest(true)},
+		{name: "explicit false", extra: map[string]any{CodexAllowCreditUsageKey: false}, want: boolPtrForCreditIntentTest(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &accountBillingSettingsAdminRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+				9: {ID: 9, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{CodexAllowCreditUsageKey: true}},
+			}}}
+			_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(t.Context(), 9, &UpdateAccountInput{Name: "edited", Extra: tc.extra})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, repo.lastCreditUsageEnabled)
+		})
+	}
+}
+
+func boolPtrForCreditIntentTest(value bool) *bool { return &value }
 
 func TestCreateAccountDropsManagedUpstreamBillingProbeState(t *testing.T) {
 	repo := &upstreamBillingProbeAccountRepo{}

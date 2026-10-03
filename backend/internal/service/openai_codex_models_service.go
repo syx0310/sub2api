@@ -2145,8 +2145,13 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		Body:                         body,
 		ETag:                         etag,
 		upstreamETag:                 etag,
-		upstreamSourceBody:           append([]byte(nil), upstreamBody...),
 		convertedFromOpenAIModelList: convertedFromOpenAIModelList,
+	}
+	// Only API key catalogs need a pristine source for per-account metadata
+	// completion. OAuth is already verbatim: retaining a duplicate body would
+	// halve its effective cache limit and make 512 KiB–1 MiB catalogs miss.
+	if request.useAPIKeyUpstream {
+		manifest.upstreamSourceBody = append([]byte(nil), upstreamBody...)
 	}
 	if request.useAPIKeyUpstream && !bytes.Equal(body, upstreamBody) {
 		manifest.ETag = codexModelsManifestBodyETag(body)

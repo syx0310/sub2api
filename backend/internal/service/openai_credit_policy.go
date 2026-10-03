@@ -617,3 +617,29 @@ func normalizeCodexCreditPolicyExtra(platform, accountType string, shadow bool, 
 	}
 	return extra, nil
 }
+
+// MergeCodexCreditPolicyExtraForAccountUpdate must receive the current database
+// fields while the account row is locked. Ordinary edits cannot write back
+// stale credit evidence, permission or resume markers. Only an explicit admin
+// toggle can change permission, with off->on evaluated against the locked row.
+func MergeCodexCreditPolicyExtraForAccountUpdate(account *Account, current map[string]any, requestedAllow *bool) (map[string]any, error) {
+	extra := maps.Clone(account.Extra)
+	if extra == nil {
+		extra = make(map[string]any)
+	}
+	for _, key := range []string{CodexAllowCreditUsageKey, codexCreditStateKey, codexCreditResumeKey, openaiQuotaCreditsKey} {
+		delete(extra, key)
+		if value, ok := current[key]; ok && value != nil {
+			extra[key] = value
+		}
+	}
+	if requestedAllow == nil {
+		return extra, nil
+	}
+	previous := *account
+	// The SQL projection represents absent keys as null. Use the filtered
+	// locked values so normalization does not manufacture null resume markers.
+	previous.Extra = maps.Clone(extra)
+	extra[CodexAllowCreditUsageKey] = *requestedAllow
+	return normalizeCodexCreditPolicyExtra(account.Platform, account.Type, account.IsShadow(), extra, &previous)
+}
