@@ -121,6 +121,47 @@ describe('admin DashboardView', () => {
     })
   })
 
+  it('shows cost per minute from the existing snapshot and refreshes it with RPM/TPM', async () => {
+    getSnapshotV2.mockResolvedValueOnce({
+      stats: { ...createDashboardStats(), rpm: 12, tpm: 200, actual_cost_per_minute: 0.0012 },
+      trend: [], models: []
+    })
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+    const cost = () => wrapper.get('[data-testid="performance-cost-per-minute"]')
+    expect(cost().text()).toContain('0.0012')
+    expect(cost().text()).toContain('$/min')
+    expect(cost().attributes('title')).toBe('admin.dashboard.costPerMinuteHint')
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    getSnapshotV2.mockResolvedValueOnce({
+      stats: { ...createDashboardStats(), actual_cost_per_minute: 0 }, trend: [], models: []
+    })
+    await wrapper.findAll('button').find(button => button.text().includes('common.refresh'))!.trigger('click')
+    await flushPromises()
+    expect(getSnapshotV2).toHaveBeenCalledTimes(2)
+    expect(cost().text()).toContain('0.0000')
+    wrapper.unmount()
+  })
+
+  it('shows an unavailable cost for older snapshots without the field', async () => {
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="performance-cost-per-minute"]').text()).toContain('—')
+    wrapper.unmount()
+  })
+
   it('switches metrics and ignores a stale tokens response', async () => {
     let resolveTokens!: (value: any) => void
     getUserUsageTrend.mockImplementationOnce(() => new Promise(resolve => { resolveTokens = resolve }))

@@ -10,6 +10,7 @@ export default {
     totalTokens: '累计 Token',
     cacheToday: '今日缓存',
     performance: '性能指标',
+    costPerMinuteHint: '最近 5 分钟已记录的实际计费金额，折算为 USD/分钟；与 RPM/TPM 同步刷新，不包含尚未上报的在途用量。',
     avgResponse: '平均响应',
     averageTime: '平均时间',
     timeRange: '时间范围',

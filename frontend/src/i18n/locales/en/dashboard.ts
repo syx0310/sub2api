@@ -10,6 +10,7 @@ export default {
     totalTokens: 'Total Tokens',
     cacheToday: 'Cache (Today)',
     performance: 'Performance',
+    costPerMinuteHint: 'Average recorded actual cost per minute over the last 5 minutes (USD). Refreshes with RPM/TPM; excludes unreported in-flight usage.',
     avgResponse: 'Avg Response',
     averageTime: 'Average time',
     timeRange: 'Time Range',

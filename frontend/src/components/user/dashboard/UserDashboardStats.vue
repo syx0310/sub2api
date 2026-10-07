@@ -97,7 +97,7 @@
       </div>
     </div>
 
-    <!-- Performance (RPM/TPM) -->
+    <!-- Performance (RPM/TPM/cost per minute; shared refresh) -->
     <div class="card p-4">
       <div class="flex items-center gap-3">
         <div class="rounded-lg bg-violet-100 p-2 dark:bg-violet-900/30">
@@ -112,6 +112,16 @@
           <div class="flex items-baseline gap-2">
             <p class="text-sm font-semibold text-violet-600 dark:text-violet-400">{{ formatTokens(stats?.tpm || 0) }}</p>
             <span class="text-xs text-gray-500 dark:text-gray-400">TPM</span>
+          </div>
+          <div
+            class="flex items-baseline gap-2"
+            :title="t('dashboard.costPerMinuteHint')"
+            data-testid="performance-cost-per-minute"
+          >
+            <p class="text-sm font-semibold text-green-600 dark:text-green-400">
+              {{ stats?.actual_cost_per_minute == null ? '—' : formatCost(stats.actual_cost_per_minute) }}
+            </p>
+            <span class="text-xs text-gray-500 dark:text-gray-400">$/min</span>
           </div>
         </div>
       </div>

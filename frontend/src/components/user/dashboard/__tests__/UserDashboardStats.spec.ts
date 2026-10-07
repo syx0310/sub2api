@@ -82,6 +82,19 @@ function cardPlatforms(w: VueWrapper): string[] {
 }
 
 describe('UserDashboardStats 按平台拆分', () => {
+  it('在 Performance 展示实际费用每分钟，并随传入的同一份统计更新', async () => {
+    const w = mountStats(makeStats({ rpm: 12, tpm: 200, actual_cost_per_minute: 0.1234 }))
+    const cost = () => w.get('[data-testid="performance-cost-per-minute"]')
+    expect(cost().text()).toContain('0.1234')
+    expect(cost().text()).toContain('$/min')
+    expect(cost().attributes('title')).toBe('dashboard.costPerMinuteHint')
+    await w.setProps({ stats: makeStats({ rpm: 0, tpm: 0, actual_cost_per_minute: 0 }) })
+    expect(cost().text()).toContain('0.0000')
+    await w.setProps({ stats: makeStats() })
+    expect(cost().text()).toContain('—')
+    w.unmount()
+  })
+
   it('只有用量的平台才产生卡片；三档全空的限额记录不产生卡片', () => {
     const w = mountStats(
       makeStats({ total_actual_cost: 0.03, today_actual_cost: 0.03, by_platform: [usage('grok', 0.03)] }),

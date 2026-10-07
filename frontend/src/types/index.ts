@@ -1970,6 +1970,7 @@ export interface DashboardStats {
   // 性能指标
   rpm: number // 近5分钟平均每分钟请求数
   tpm: number // 近5分钟平均每分钟Token数
+  actual_cost_per_minute?: number // 近5分钟平均实际计费金额（USD/分钟）
 }
 
 export interface ActualCostBreakdown {

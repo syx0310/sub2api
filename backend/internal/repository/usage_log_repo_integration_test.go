@@ -67,6 +67,51 @@ func (s *UsageLogRepoSuite) createUsageLog(user *service.User, apiKey *service.A
 
 // --- Create / GetByID ---
 
+func (s *UsageLogRepoSuite) TestPerformanceCostUsesRecordedActualCostAndScope() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "performance-cost@test.com"})
+	otherUser := mustCreateUser(s.T(), s.client, &service.User{Email: "performance-other@test.com"})
+	key := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-performance-cost", Name: "k"})
+	secondKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-performance-second", Name: "k2"})
+	otherKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: otherUser.ID, Key: "sk-performance-other", Name: "other"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "performance-cost"})
+	_, _, baseline, err := s.repo.getPerformanceStats(s.ctx, 0)
+	s.Require().NoError(err)
+	now := time.Now().UTC()
+	for _, row := range []struct {
+		user    *service.User
+		key     *service.APIKey
+		cost    float64
+		age     time.Duration
+		prewarm bool
+	}{
+		{user, key, 1.125, time.Minute, false},
+		{user, key, .375, 4 * time.Minute, false},
+		{user, key, 0, time.Minute, true},
+		{user, key, 600, 6 * time.Minute, false},
+		{user, secondKey, .25, time.Minute, false},
+		{otherUser, otherKey, 2, time.Minute, false},
+	} {
+		_, err := s.repo.Create(s.ctx, &service.UsageLog{
+			UserID: row.user.ID, APIKeyID: row.key.ID, AccountID: account.ID,
+			RequestID: uuid.NewString(), Model: "gpt-6-astra", InputTokens: 10,
+			TotalCost: 1000, ActualCost: row.cost, Prewarm: row.prewarm, CreatedAt: now.Add(-row.age),
+		})
+		s.Require().NoError(err)
+	}
+	_, _, globalCost, err := s.repo.getPerformanceStats(s.ctx, 0)
+	s.Require().NoError(err)
+	s.InDelta(.75, globalCost-baseline, 1e-9)
+	stats, err := s.repo.GetUserDashboardStats(s.ctx, user.ID)
+	s.Require().NoError(err)
+	s.InDelta(.35, stats.ActualCostPerMinute, 1e-12)
+	keyStats, err := s.repo.GetAPIKeyDashboardStats(s.ctx, key.ID)
+	s.Require().NoError(err)
+	s.InDelta(.3, keyStats.ActualCostPerMinute, 1e-12)
+	otherStats, err := s.repo.GetUserDashboardStats(s.ctx, otherUser.ID)
+	s.Require().NoError(err)
+	s.InDelta(.4, otherStats.ActualCostPerMinute, 1e-12)
+}
+
 func (s *UsageLogRepoSuite) TestCreate() {
 	user := mustCreateUser(s.T(), s.client, &service.User{Email: "create@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-create", Name: "k"})
@@ -936,10 +981,11 @@ func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	s.Require().GreaterOrEqual(stats.TodayCost, 0.0, "expected TodayCost >= 0")
 	s.Require().GreaterOrEqual(stats.TodayAccountCost, 0.0, "expected TodayAccountCost >= 0")
 
-	wantRpm, wantTpm, err := s.repo.getPerformanceStats(s.ctx, 0)
+	wantRpm, wantTpm, wantCostPerMinute, err := s.repo.getPerformanceStats(s.ctx, 0)
 	s.Require().NoError(err, "getPerformanceStats")
 	s.Require().Equal(wantRpm, stats.Rpm, "Rpm mismatch")
 	s.Require().Equal(wantTpm, stats.Tpm, "Tpm mismatch")
+	s.Require().InDelta(wantCostPerMinute, stats.ActualCostPerMinute, 1e-12, "ActualCostPerMinute mismatch")
 }
 
 func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {

@@ -27,6 +27,28 @@ type usageRepoStub struct {
 	onCall     chan struct{}
 }
 
+func TestDashboardService_PerformanceCostUsesExistingStatsCache(t *testing.T) {
+	repo := &usageRepoStub{stats: &usagestats.DashboardStats{Rpm: 12, Tpm: 200, ActualCostPerMinute: .1234}}
+	cache := &dashboardCacheStub{}
+	svc := NewDashboardService(repo, nil, cache, nil)
+	first, err := svc.GetDashboardStats(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, .1234, first.ActualCostPerMinute)
+	cache.get = func(context.Context) (string, error) {
+		cache.lastSetMu.Lock()
+		defer cache.lastSetMu.Unlock()
+		return cache.lastSet, nil
+	}
+	second, err := svc.GetDashboardStats(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, first.Rpm, second.Rpm)
+	require.Equal(t, first.Tpm, second.Tpm)
+	require.Equal(t, first.ActualCostPerMinute, second.ActualCostPerMinute)
+	require.Equal(t, int32(0), atomic.LoadInt32(&repo.calls))
+	require.Equal(t, int32(1), atomic.LoadInt32(&repo.rangeCalls), "without aggregation, the range fallback also shares the stats cache")
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.setCalls))
+}
+
 func (s *usageRepoStub) GetDashboardStats(ctx context.Context) (*usagestats.DashboardStats, error) {
 	atomic.AddInt32(&s.calls, 1)
 	if s.onCall != nil {

@@ -11,13 +11,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// getPerformanceStats 获取 RPM 和 TPM（近5分钟平均值，可选按用户过滤）
-func (r *usageLogRepository) getPerformanceStats(ctx context.Context, userID int64) (rpm, tpm int64, err error) {
+// getPerformanceStats 在同一查询中获取 RPM、TPM 和实际计费金额/分钟（近5分钟平均值，可选按用户过滤）。
+func (r *usageLogRepository) getPerformanceStats(ctx context.Context, userID int64) (rpm, tpm int64, actualCostPerMinute float64, err error) {
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	query := `
 		SELECT
 			COUNT(*) FILTER (WHERE NOT prewarm) as request_count,
-			COALESCE(SUM(input_tokens + output_tokens), 0) as token_count
+			COALESCE(SUM(input_tokens + output_tokens), 0) as token_count,
+			COALESCE(SUM(actual_cost), 0) as actual_cost
 		FROM usage_logs
 		WHERE created_at >= $1`
 	args := []any{fiveMinutesAgo}
@@ -28,10 +29,11 @@ func (r *usageLogRepository) getPerformanceStats(ctx context.Context, userID int
 
 	var requestCount int64
 	var tokenCount int64
-	if err := scanSingleRow(ctx, r.sql, query, args, &requestCount, &tokenCount); err != nil {
-		return 0, 0, err
+	var actualCost float64
+	if err := scanSingleRow(ctx, r.sql, query, args, &requestCount, &tokenCount, &actualCost); err != nil {
+		return 0, 0, 0, err
 	}
-	return requestCount / 5, tokenCount / 5, nil
+	return requestCount / 5, tokenCount / 5, actualCost / 5, nil
 }
 
 // UserStats 用户使用统计
@@ -90,12 +92,13 @@ func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardS
 		return nil, err
 	}
 
-	rpm, tpm, err := r.getPerformanceStats(ctx, 0)
+	rpm, tpm, actualCostPerMinute, err := r.getPerformanceStats(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 	stats.Rpm = rpm
 	stats.Tpm = tpm
+	stats.ActualCostPerMinute = actualCostPerMinute
 
 	return stats, nil
 }
@@ -118,12 +121,13 @@ func (r *usageLogRepository) GetDashboardStatsWithRange(ctx context.Context, sta
 		return nil, err
 	}
 
-	rpm, tpm, err := r.getPerformanceStats(ctx, 0)
+	rpm, tpm, actualCostPerMinute, err := r.getPerformanceStats(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 	stats.Rpm = rpm
 	stats.Tpm = tpm
+	stats.ActualCostPerMinute = actualCostPerMinute
 
 	return stats, nil
 }
@@ -465,13 +469,14 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	}
 	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
 
-	// 性能指标：RPM 和 TPM（最近1分钟，仅统计该用户的请求）
-	rpm, tpm, err := r.getPerformanceStats(ctx, userID)
+	// 性能指标：RPM、TPM 和实际计费金额/分钟（近5分钟平均值，仅统计该用户的请求）。
+	rpm, tpm, actualCostPerMinute, err := r.getPerformanceStats(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	stats.Rpm = rpm
 	stats.Tpm = tpm
+	stats.ActualCostPerMinute = actualCostPerMinute
 
 	// 按"有效平台"维度拆分（group.platform 优先，否则 account.platform）。
 	// 与 ops 路径口径一致；HAVING 过滤掉无法确定平台的行（避免出现空字符串平台）。
@@ -527,23 +532,25 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	return stats, nil
 }
 
-// getPerformanceStatsByAPIKey 获取指定 API Key 的 RPM 和 TPM（近5分钟平均值）
-func (r *usageLogRepository) getPerformanceStatsByAPIKey(ctx context.Context, apiKeyID int64) (rpm, tpm int64, err error) {
+// getPerformanceStatsByAPIKey 获取指定 API Key 的 RPM、TPM 和实际计费金额/分钟（近5分钟平均值）。
+func (r *usageLogRepository) getPerformanceStatsByAPIKey(ctx context.Context, apiKeyID int64) (rpm, tpm int64, actualCostPerMinute float64, err error) {
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	query := `
 		SELECT
 			COUNT(*) FILTER (WHERE NOT prewarm) as request_count,
-			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as token_count
+			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as token_count,
+			COALESCE(SUM(actual_cost), 0) as actual_cost
 		FROM usage_logs
 		WHERE created_at >= $1 AND api_key_id = $2`
 	args := []any{fiveMinutesAgo, apiKeyID}
 
 	var requestCount int64
 	var tokenCount int64
-	if err := scanSingleRow(ctx, r.sql, query, args, &requestCount, &tokenCount); err != nil {
-		return 0, 0, err
+	var actualCost float64
+	if err := scanSingleRow(ctx, r.sql, query, args, &requestCount, &tokenCount, &actualCost); err != nil {
+		return 0, 0, 0, err
 	}
-	return requestCount / 5, tokenCount / 5, nil
+	return requestCount / 5, tokenCount / 5, actualCost / 5, nil
 }
 
 // GetAPIKeyDashboardStats 获取指定 API Key 的仪表盘统计（按 api_key_id 过滤）
@@ -617,13 +624,14 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 	}
 	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
 
-	// 性能指标：RPM 和 TPM（最近5分钟，按 API Key 过滤）
-	rpm, tpm, err := r.getPerformanceStatsByAPIKey(ctx, apiKeyID)
+	// 性能指标：RPM、TPM 和实际计费金额/分钟（近5分钟平均值，按 API Key 过滤）。
+	rpm, tpm, actualCostPerMinute, err := r.getPerformanceStatsByAPIKey(ctx, apiKeyID)
 	if err != nil {
 		return nil, err
 	}
 	stats.Rpm = rpm
 	stats.Tpm = tpm
+	stats.ActualCostPerMinute = actualCostPerMinute
 
 	return stats, nil
 }

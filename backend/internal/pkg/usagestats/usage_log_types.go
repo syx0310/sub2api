@@ -75,8 +75,9 @@ type DashboardStats struct {
 	AverageDurationMs float64 `json:"average_duration_ms"` // 平均响应时间
 
 	// 性能指标
-	Rpm int64 `json:"rpm"` // 近5分钟平均每分钟请求数
-	Tpm int64 `json:"tpm"` // 近5分钟平均每分钟Token数
+	Rpm                 int64   `json:"rpm"`                    // 近5分钟平均每分钟请求数
+	Tpm                 int64   `json:"tpm"`                    // 近5分钟平均每分钟Token数
+	ActualCostPerMinute float64 `json:"actual_cost_per_minute"` // 近5分钟平均实际计费金额（USD/分钟）
 }
 
 // TrendDataPoint represents a single point in trend data
@@ -254,8 +255,9 @@ type UserDashboardStats struct {
 	AverageDurationMs float64 `json:"average_duration_ms"`
 
 	// 性能指标
-	Rpm int64 `json:"rpm"` // 近5分钟平均每分钟请求数
-	Tpm int64 `json:"tpm"` // 近5分钟平均每分钟Token数
+	Rpm                 int64   `json:"rpm"`                    // 近5分钟平均每分钟请求数
+	Tpm                 int64   `json:"tpm"`                    // 近5分钟平均每分钟Token数
+	ActualCostPerMinute float64 `json:"actual_cost_per_minute"` // 近5分钟平均实际计费金额（USD/分钟）
 
 	// 按"有效平台"维度拆分（与 ops 路径口径一致：group.platform 优先，否则 account.platform）
 	ByPlatform []PlatformDashboardStats `json:"by_platform,omitempty"`
