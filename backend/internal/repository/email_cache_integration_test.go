@@ -4,6 +4,8 @@ package repository
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,4 +91,66 @@ func (s *EmailCacheSuite) TestGetVerificationCode_JSONCorruption() {
 
 func TestEmailCacheSuite(t *testing.T) {
 	suite.Run(t, new(EmailCacheSuite))
+}
+
+func (s *EmailCacheSuite) TestConcurrentVerificationAttemptsAndTTL() {
+	email := "atomic-attempts@example.com"
+	require.NoError(s.T(), s.cache.SetVerificationCode(s.ctx, email, &service.VerificationCodeData{Code: "123456"}, time.Minute))
+	svc := service.NewEmailService(nil, s.cache)
+	errs := make(chan error, 32)
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- svc.VerifyCode(s.ctx, email, "000000")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	invalid := 0
+	for err := range errs {
+		if errors.Is(err, service.ErrInvalidVerifyCode) {
+			invalid++
+		} else {
+			require.ErrorIs(s.T(), err, service.ErrVerifyCodeMaxAttempts)
+		}
+	}
+	require.LessOrEqual(s.T(), invalid, 4)
+	require.ErrorIs(s.T(), svc.VerifyCode(s.ctx, email, "123456"), service.ErrVerifyCodeMaxAttempts)
+	ttl, err := s.rdb.PTTL(s.ctx, verifyCodeKey(email)+attemptsKeySuffix).Result()
+	require.NoError(s.T(), err)
+	s.AssertTTLWithin(ttl, time.Second, time.Minute)
+	require.NoError(s.T(), s.cache.SetVerificationCode(s.ctx, email, &service.VerificationCodeData{Code: "654321"}, time.Minute))
+	require.NoError(s.T(), svc.VerifyCode(s.ctx, email, "654321"))
+}
+
+func (s *EmailCacheSuite) TestResetTokenConsumedExactlyOnce() {
+	email := "atomic-reset@example.com"
+	require.NoError(s.T(), s.cache.SetPasswordResetToken(s.ctx, email, &service.PasswordResetTokenData{Token: "token-hash"}, time.Minute))
+	consumed, err := s.cache.ConsumePasswordResetToken(s.ctx, email, "wrong-hash")
+	require.NoError(s.T(), err)
+	require.False(s.T(), consumed)
+	var accepted atomic.Int32
+	errs := make(chan error, 32)
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := s.cache.ConsumePasswordResetToken(s.ctx, email, "token-hash")
+			if ok {
+				accepted.Add(1)
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(s.T(), err)
+	}
+	require.Equal(s.T(), int32(1), accepted.Load())
+	_, err = s.cache.GetPasswordResetToken(s.ctx, email)
+	require.ErrorIs(s.T(), err, redis.Nil)
 }

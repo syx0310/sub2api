@@ -64,6 +64,17 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	var applied int
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied))
 	require.GreaterOrEqual(t, applied, 7, "expected schema_migrations to contain applied migrations")
+	var samePrefixMigrations int
+	require.NoError(t, tx.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM schema_migrations WHERE filename IN (
+			'241_add_payment_order_bonus_amount.sql',
+			'241_add_typesafe_platform.sql',
+			'241_usage_log_prewarm.sql'
+		)
+	`).Scan(&samePrefixMigrations))
+	require.Equal(t, 3, samePrefixMigrations, "migration identity is the full filename, not the numeric prefix")
+	requireColumn(t, tx, "payment_orders", "bonus_amount", "numeric", 0, false)
+	requireColumnDefaultContains(t, tx, "payment_orders", "bonus_amount", "0")
 
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
@@ -109,6 +120,8 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "billing_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "request_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "openai_ws_mode", "boolean", 0, false)
+	requireColumn(t, tx, "usage_logs", "prewarm", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "usage_logs", "prewarm", "false")
 	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, false)
 	requireColumnDefaultContains(t, tx, "usage_logs", "native_compaction_v2", "false")
 	for _, column := range []string{"codex_turn_state_request_header_bytes", "codex_turn_state_request_metadata_bytes", "codex_turn_state_response_header_bytes", "codex_turn_state_response_metadata_bytes"} {

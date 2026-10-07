@@ -9,13 +9,14 @@ import {
   type DefaultPlatformQuotasMap,
 } from "@/api/admin/settings";
 
-/** 全 null 的 5 平台 map，用于断言归一化默认值 */
+/** 全 null 的平台 map，用于断言归一化默认值（包含 TypeSafe）。 */
 const allNullQuotas: DefaultPlatformQuotasMap = {
   anthropic: { daily: null, weekly: null, monthly: null },
   openai:    { daily: null, weekly: null, monthly: null },
   gemini:    { daily: null, weekly: null, monthly: null },
   antigravity: { daily: null, weekly: null, monthly: null },
   grok: { daily: null, weekly: null, monthly: null },
+  typesafe: { daily: null, weekly: null, monthly: null },
 }
 
 describe("admin settings auth source defaults helpers", () => {
@@ -246,6 +247,12 @@ describe("admin settings auth source defaults helpers", () => {
 });
 
 describe("normalizePlatformQuotasMap", () => {
+  it("保留 TypeSafe 的显式禁用与有限配额", () => {
+    const quotas = { typesafe: { daily: 0, weekly: 5, monthly: null } };
+    expect(normalizePlatformQuotasMap(quotas).typesafe).toEqual(quotas.typesafe);
+    expect(sanitizePlatformQuotasMap(quotas).typesafe).toEqual(quotas.typesafe);
+  });
+
   it("填充缺失的平台为全 null 三档", () => {
     const result = normalizePlatformQuotasMap({ anthropic: { daily: 5, weekly: null, monthly: null } });
     expect(result.anthropic).toEqual({ daily: 5, weekly: null, monthly: null });
@@ -255,9 +262,9 @@ describe("normalizePlatformQuotasMap", () => {
     expect(result.grok).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
-  it("无参数时返回全 5 平台全 null", () => {
+  it("无参数时返回所有平台的全 null 配额", () => {
     const result = normalizePlatformQuotasMap();
-    expect(Object.keys(result)).toHaveLength(5);
+    expect(Object.keys(result).sort()).toEqual(Object.keys(allNullQuotas).sort());
     for (const v of Object.values(result)) {
       expect(v).toEqual({ daily: null, weekly: null, monthly: null });
     }
@@ -305,7 +312,7 @@ describe("sanitizePlatformQuotasMap", () => {
 
   it("缺失平台填充为全 null", () => {
     const result = sanitizePlatformQuotasMap({});
-    expect(Object.keys(result)).toHaveLength(5);
+    expect(Object.keys(result).sort()).toEqual(Object.keys(allNullQuotas).sort());
     for (const v of Object.values(result)) {
       expect(v).toEqual({ daily: null, weekly: null, monthly: null });
     }
