@@ -648,7 +648,7 @@ func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDoesNotDecodeBeforeError(
 	require.Equal(t, "summary_text", gjson.GetBytes(upstream.bodies[1], "input.0.summary.0.type").String())
 }
 
-func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDropsCompaction(t *testing.T) {
+func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryPreservesCompaction(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
 		responses: []*http.Response{
@@ -686,12 +686,11 @@ func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDropsCompaction(t *testin
 
 	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":[{"id":"cmp_stale","type":"compaction","encrypted_content":"gAAA"},{"type":"message","content":[{"type":"input_text","text":"hi"}]}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 1, "the gateway does not own the history hidden in compaction")
 	require.Equal(t, "compaction", gjson.GetBytes(upstream.bodies[0], "input.0.type").String())
-	require.Equal(t, "message", gjson.GetBytes(upstream.bodies[1], "input.0.type").String())
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.1").Exists())
+	require.Equal(t, "gAAA", gjson.GetBytes(upstream.bodies[0], "input.0.encrypted_content").String())
 }
 
 func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureRecoveryAndLineage(t *testing.T) {
@@ -739,6 +738,7 @@ func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureRecoveryAndLineage(t 
 func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureDoesNotRetryUnrelatedErrors(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct{ name, code, message, input string }{
+		{"compaction is the only history", "thinking_signature_invalid", "The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.", `[{"type":"compaction_summary","encrypted_content":"only-history"},{"type":"message","role":"user","content":"continue"}]`},
 		{"no encrypted reasoning", "thinking_signature_invalid", "The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.", `[{"type":"message","role":"user","content":"hello"}]`},
 		{"ordinary 400", "invalid_request_error", "bad request", `[{"type":"reasoning","encrypted_content":"stale"},{"type":"message","content":"hello"}]`},
 		{"unrelated signature error", "thinking_signature_invalid", "Invalid signature", `[{"type":"reasoning","encrypted_content":"stale"},{"type":"message","content":"hello"}]`},

@@ -529,7 +529,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				SkipDefaultInstructions:             true,
 				PreserveToolCallIDs:                 true,
 				OmitPromotedSystemMessagesFromInput: omitPromotedSystemMessages,
-				ResponsesLite:                       responsesLite,
+				ResponsesLite:                       clientResponsesLite,
 			})
 			ensureCodexOAuthInstructionsField(decoded)
 			markDecodedModified()
@@ -539,7 +539,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				IsCompact:                           isCompactRequest,
 				ResponsesLite:                       clientResponsesLite,
 				OmitPromotedSystemMessagesFromInput: omitPromotedSystemMessages,
-				ResponsesLite:                       responsesLite,
 			})
 		}
 		if codexResult.Error != nil {
@@ -1121,7 +1120,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					strings.Contains(upstreamMsg, "The encrypted content") &&
 					strings.Contains(upstreamMsg, "could not be verified") &&
 					strings.Contains(upstreamMsg, "could not be decrypted or parsed"))
-			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && invalidEncryptedContentError {
+			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && invalidEncryptedContentError && !hasOpenAIEncryptedCompactionInput(body) {
 				decoded, decodeErr := ensureReqBody()
 				if decodeErr != nil {
 					return nil, decodeErr

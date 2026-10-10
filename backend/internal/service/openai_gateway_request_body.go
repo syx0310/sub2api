@@ -530,6 +530,19 @@ func asDeepSeekResponsesSlice(value any) ([]any, bool) {
 	}
 }
 
+// A compaction item can be the only representation of earlier history. The
+// HTTP gateway cannot reconstruct it, so let the client recover instead of
+// retrying a different conversation after discarding that context.
+func hasOpenAIEncryptedCompactionInput(body []byte) bool {
+	found := false
+	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+		typ := item.Get("type").String()
+		found = (typ == "compaction" || typ == "compaction_summary") && item.Get("encrypted_content").Exists()
+		return !found
+	})
+	return found
+}
+
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false

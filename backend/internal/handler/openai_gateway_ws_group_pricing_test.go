@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -117,6 +118,46 @@ func TestOpenAIResponsesWebSocket_GroupRateChangeAppliesToNextTurn(t *testing.T)
 			require.InDelta(t, 0.3, got.logs[1].RateMultiplier, 1e-12, "turn 2 must bill at the group rate in force when it starts")
 			require.Greater(t, got.logs[0].ActualCost, 0.0)
 			require.InDelta(t, got.logs[0].ActualCost/10, got.logs[1].ActualCost, 1e-15)
+		})
+	}
+}
+
+func TestOpenAIResponsesWebSocket_GroupRateSnapshotAlsoPricesInflightReservation(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeCtxPool} {
+		t.Run(mode, func(t *testing.T) {
+			repo := newWSGroupPricingAPIKeyRepoStub(3)
+			apiKeyService := newWSGroupPricingAPIKeyService(repo)
+			cache := newHandlerInflightCache(100)
+			var amounts []float64
+			got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				firstPayload: wsGroupPricingFirst, secondPayload: wsGroupPricingSecond,
+				ingressMode: mode, inflightCache: cache,
+				apiKeyService: apiKeyService, apiKeyCredential: wsGroupPricingKey,
+				onUpstreamFrame: func([]byte) error {
+					cache.mu.Lock()
+					defer cache.mu.Unlock()
+					if len(cache.res) != 1 {
+						return errors.New("expected exactly one executing-turn reservation")
+					}
+					for _, amount := range cache.res {
+						amounts = append(amounts, amount)
+					}
+					return nil
+				},
+				afterFirstUpstreamRequest: func(*service.ChannelService) error {
+					return repo.adminUpdate(apiKeyService, func(_ *service.APIKey, group *service.Group) { group.RateMultiplier = .3 })
+				},
+				afterTurn: func(int) {
+					require.Eventually(t, func() bool { return cache.count() == 0 }, time.Second, time.Millisecond)
+				},
+			})
+			cache.mu.Lock()
+			defer cache.mu.Unlock()
+			require.Len(t, amounts, 2)
+			require.Positive(t, amounts[0])
+			require.InDelta(t, amounts[0]/10, amounts[1], 1e-9)
+			require.Len(t, got.logs, 2)
+			require.InDelta(t, got.logs[0].ActualCost/10, got.logs[1].ActualCost, 1e-12)
 		})
 	}
 }
@@ -284,10 +325,17 @@ func TestOpenAIWSTurnBillingAPIKeysKeepPreviousTurnUntilItIsRecorded(t *testing.
 	var keys openAIWSTurnBillingAPIKeys
 	require.Same(t, conn, keys.forTurn(1, conn), "a turn without BeforeTurn bills with the connection snapshot")
 	keys.set(2, turn2)
+	ctx2 := context.WithValue(context.Background(), struct{}{}, "turn2")
+	keys.setPricingContext(2, ctx2)
 	keys.set(3, turn3) // turn 3 starts before turn 2's usage is submitted
+	ctx3 := context.WithValue(context.Background(), struct{}{}, "turn3")
+	keys.setPricingContext(3, ctx3)
+	require.Same(t, ctx2, keys.contextForTurn(2, context.Background()))
+	require.Same(t, ctx3, keys.contextForTurn(3, context.Background()))
 	require.Same(t, turn2, keys.forTurn(2, conn))
 	require.Same(t, turn3, keys.forTurn(3, conn))
 	keys.set(4, conn)
 	require.Same(t, conn, keys.forTurn(2, conn), "only the current and previous turn are kept")
 	require.Len(t, keys.keys, 2)
+	require.NotContains(t, keys.pricingContexts, 2)
 }

@@ -81,8 +81,11 @@ func TestEnsureOpenAIOAuthWebSearchToolForHistory(t *testing.T) {
 		{"tools absent", `{"input":` + history + `}`, false, true, "tools", 1, "none", nil},
 		{"tools null", `{"input":` + history + `,"tools":null,"tool_choice":null}`, false, true, "tools", 1, "none", nil},
 		{"explicit none kept", `{"input":` + history + `,"tools":[],"tool_choice":"none"}`, false, true, "tools", 1, "none", nil},
-		{"required not rewritten", `{"input":` + history + `,"tools":[],"tool_choice":"required"}`, false, true, "tools", 1, "required", nil},
-		{"caller tools keep choice", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}],"tool_choice":"auto"}`, false, true, "tools", 2, "auto", nil},
+		{"required not rewritten or expanded", `{"input":` + history + `,"tools":[],"tool_choice":"required"}`, false, false, "", 0, "", nil},
+		{"caller tools do not enable search", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}],"tool_choice":"auto"}`, false, false, "", 0, "", nil},
+		{"explicit none with caller tools", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}],"tool_choice":"none"}`, false, true, "tools", 2, "none", nil},
+		{"incremental tools cannot be inferred", `{"previous_response_id":"resp_parent","input":` + history + `}`, false, false, "", 0, "", nil},
+		{"named choice remains exact", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}],"tool_choice":{"type":"function","name":"echo"}}`, false, false, "", 0, "", nil},
 		{"web_search already declared", `{"input":` + history + `,"tools":[{"type":"web_search"}]}`, false, false, "", 0, "", nil},
 		{"web_search_preview declared", `{"input":` + history + `,"tools":[{"type":"web_search_preview"}]}`, false, false, "", 0, "", nil},
 		{"declared via additional_tools", `{"input":[{"type":"additional_tools","tools":[{"type":"web_search"}]},` + search + `]}`, false, false, "", 0, "", nil},
@@ -92,12 +95,14 @@ func TestEnsureOpenAIOAuthWebSearchToolForHistory(t *testing.T) {
 			[]string{"message", "web_search_call", "additional_tools", "compaction_trigger"}},
 		{"lite appends without trigger", `{"input":` + history + `,"tool_choice":"auto"}`, true, true, "input.2.tools", 1, "none",
 			[]string{"message", "web_search_call", "additional_tools"}},
-		{"lite extends caller additional_tools", `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"echo"}]},` + search + `,` + trigger + `],"tool_choice":"auto"}`, true, true, "input.0.tools", 2, "auto",
-			[]string{"additional_tools", "web_search_call", "compaction_trigger"}},
-		{"lite fills empty additional_tools", `{"input":[{"type":"additional_tools","role":"developer"},` + search + `]}`, true, true, "input.0.tools", 1, "none",
-			[]string{"additional_tools", "web_search_call"}},
-		{"lite keeps top-level tools untouched", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}]}`, true, true, "input.2.tools", 1, "",
-			[]string{"message", "web_search_call", "additional_tools"}},
+		{"lite does not enable search beside historical functions", `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"echo"}]},` + search + `,` + trigger + `],"tool_choice":"auto"}`, true, false, "", 0, "", nil},
+		{"lite preserves typed historical declaration", `{"input":[{"id":"at_original","type":"additional_tools","role":"developer","tools":[{"type":"function","name":"echo"}]},` + search + `,` + trigger + `],"tool_choice":"none"}`, true, true, "input.2.tools", 1, "none",
+			[]string{"additional_tools", "web_search_call", "additional_tools", "compaction_trigger"}},
+		{"lite preserves empty additional_tools", `{"input":[{"type":"additional_tools","role":"developer"},` + search + `]}`, true, true, "input.2.tools", 1, "none",
+			[]string{"additional_tools", "web_search_call", "additional_tools"}},
+		{"lite keeps top-level tools untouched", `{"input":` + history + `,"tools":[{"type":"function","name":"echo"}]}`, true, false, "", 0, "", nil},
+		{"local compaction disables historical functions", `{"input":[{"id":"at_original","type":"additional_tools","role":"developer","tools":[{"type":"function","name":"echo"}]},` + search + `],"tool_choice":"auto","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}}`, true, true, "input.2.tools", 1, "none",
+			[]string{"additional_tools", "web_search_call", "additional_tools"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,6 +114,9 @@ func TestEnsureOpenAIOAuthWebSearchToolForHistory(t *testing.T) {
 			require.Equal(t, tt.changed, ensureOpenAIOAuthWebSearchToolForHistory(req, tt.lite))
 			if !tt.changed {
 				require.JSONEq(t, tt.body, string(out))
+				mapOut, marshalErr := json.Marshal(req)
+				require.NoError(t, marshalErr)
+				require.JSONEq(t, tt.body, string(mapOut))
 				return
 			}
 			require.True(t, gjson.ValidBytes(out))
@@ -123,12 +131,19 @@ func TestEnsureOpenAIOAuthWebSearchToolForHistory(t *testing.T) {
 					types = append(types, item.Get("type").String())
 				}
 				require.Equal(t, tt.itemTypes, types)
+				if gjson.Get(tt.body, "input.0.type").String() == "additional_tools" {
+					require.JSONEq(t, gjson.Get(tt.body, "input.0").Raw, gjson.GetBytes(out, "input.0").Raw)
+				}
 			}
 
 			// The map variant used by the Codex transform must agree.
 			mapOut, err := json.Marshal(req)
 			require.NoError(t, err)
 			require.JSONEq(t, string(out), string(mapOut))
+			again, changedAgain, err := ensureOpenAIOAuthWebSearchToolForHistoryBody(out, tt.lite)
+			require.NoError(t, err)
+			require.False(t, changedAgain)
+			require.Equal(t, out, again)
 		})
 	}
 }

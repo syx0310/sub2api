@@ -75,6 +75,7 @@ FROM (
  ` + join + `
  ` + where + `
  AND ul.output_tokens > 0 AND ul.duration_ms > 0
+ AND NOT ul.prewarm
  AND ul.image_count = 0 AND ul.image_output_tokens = 0
  AND COALESCE(ul.billing_mode, '') <> 'image'
  ` + fmt.Sprintf("AND ul.request_type IN (%d, %d, %d, %d)",

@@ -1314,6 +1314,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				if hooks != nil && hooks.BeforeTurn != nil {
 					turnHooksMu.Lock()
+					if hooks.TurnStarted != nil {
+						hooks.TurnStarted(turnNo, responseCreateAt)
+					}
 					beforeTurnErr := hooks.BeforeTurn(turnNo)
 					turnHooksMu.Unlock()
 					if beforeTurnErr != nil {
@@ -1470,6 +1473,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					}
 				}
 				if hooks != nil && hooks.BeforeTurn != nil {
+					if hooks.TurnStarted != nil {
+						hooks.TurnStarted(turnNo, automatic.StartedAt)
+					}
 					if err := hooks.BeforeTurn(turnNo); err != nil {
 						return err
 					}

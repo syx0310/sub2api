@@ -398,6 +398,23 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 	if errorType != "" {
 		errorBody["type"] = errorType
 	}
+	// Codex reads retry advice from response.error.headers on failed events.
+	// Preserve only this public hint when synthesizing a terminal; never copy
+	// arbitrary upstream headers (which can contain account credentials).
+	for _, path := range []string{"error.headers", "response.error.headers", "headers"} {
+		var retryAfter string
+		gjson.GetBytes(source, path).ForEach(func(key, value gjson.Result) bool {
+			if strings.EqualFold(key.String(), "Retry-After") && value.Type == gjson.String &&
+				len(value.String()) <= 128 && !strings.ContainsAny(value.String(), "\r\n") {
+				retryAfter = value.String()
+			}
+			return true
+		})
+		if retryAfter != "" {
+			errorBody["headers"] = map[string]string{"Retry-After": retryAfter}
+			break
+		}
+	}
 	response := map[string]any{
 		"id": responseID, "object": "response", "status": "failed",
 		"output": []any{}, "error": errorBody,

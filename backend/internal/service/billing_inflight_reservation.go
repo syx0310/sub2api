@@ -448,7 +448,11 @@ func (d inflightEstimateDeps) rates(ctx context.Context, apiKey *APIKey) (text, 
 			rate = d.userGroupRate(ctx, apiKey.User.ID, *apiKey.GroupID, rate)
 		}
 	}
-	return computePeakAwareMultipliers(apiKey, rate, timezone.Now())
+	pricingAt := OpenAIPricingAtFromContext(ctx)
+	if pricingAt.IsZero() {
+		pricingAt = timezone.Now()
+	}
+	return computePeakAwareMultipliers(apiKey, rate, pricingAt)
 }
 
 func tokenCounts(cfg config.InflightReservationConfig, bodyBytes, maxTokens int) (int, int) {

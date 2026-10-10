@@ -52,6 +52,7 @@ describe('formatUsageOutputRate', () => {
   })
 
   it.each([
+    { prewarm: true },
     { image_count: 1 },
     { image_output_tokens: 100 },
     { billing_mode: 'image' },

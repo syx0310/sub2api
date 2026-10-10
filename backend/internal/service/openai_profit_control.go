@@ -187,7 +187,16 @@ func WithOpenAIProfitControlSuppressed(ctx context.Context) context.Context {
 // 不同的分组（composite 成员分组），turn 级重装以连接上已装门的调度分组为准；
 // 连接从未装门时才回退入口分组。抑制标记下只刷新 pricingAt。
 func (s *OpenAIGatewayService) WithOpenAITurnPricingContext(ctx context.Context, groupID *int64) (context.Context, time.Time) {
-	pricingAt := timezone.Now()
+	return s.WithOpenAITurnPricingContextAt(ctx, groupID, time.Time{})
+}
+
+// WithOpenAITurnPricingContextAt shares an accepted turn's timestamp across
+// the profit gate, inflight reservation and final billing. No timestamp means
+// this admission boundary is the start of the turn (e.g. ctx_pool).
+func (s *OpenAIGatewayService) WithOpenAITurnPricingContextAt(ctx context.Context, groupID *int64, pricingAt time.Time) (context.Context, time.Time) {
+	if pricingAt.IsZero() {
+		pricingAt = timezone.Now()
+	}
 	ctx = context.WithValue(ctx, openAIPricingAtCtxKey{}, pricingAt)
 	if _, suppressed := ctx.Value(openAIProfitControlSuppressCtxKey{}).(struct{}); suppressed {
 		return ctx, pricingAt

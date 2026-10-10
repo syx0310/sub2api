@@ -2209,8 +2209,9 @@ type openAIWSTurnAPIKeyLookup interface {
 // 快照。只保留当前与上一个 turn：下一 turn 的 BeforeTurn 先于上一 turn 的
 // AfterTurn 执行时，上一 turn 仍取到自己的快照。
 type openAIWSTurnBillingAPIKeys struct {
-	mu   sync.Mutex
-	keys map[int]*service.APIKey
+	mu              sync.Mutex
+	keys            map[int]*service.APIKey
+	pricingContexts map[int]context.Context
 }
 
 // begin 在 BeforeTurn 重装利润门前调用：后续 turn 重取计费分组并按 turn 记下，
@@ -2233,6 +2234,7 @@ func (k *openAIWSTurnBillingAPIKeys) set(turn int, key *service.APIKey) {
 	for t := range k.keys {
 		if t < turn-1 {
 			delete(k.keys, t)
+			delete(k.pricingContexts, t)
 		}
 	}
 	k.keys[turn] = key
@@ -2245,6 +2247,24 @@ func (k *openAIWSTurnBillingAPIKeys) forTurn(turn int, conn *service.APIKey) *se
 		return key
 	}
 	return conn
+}
+
+func (k *openAIWSTurnBillingAPIKeys) setPricingContext(turn int, ctx context.Context) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.pricingContexts == nil {
+		k.pricingContexts = make(map[int]context.Context, 2)
+	}
+	k.pricingContexts[turn] = ctx
+}
+
+func (k *openAIWSTurnBillingAPIKeys) contextForTurn(turn int, fallback context.Context) context.Context {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if ctx := k.pricingContexts[turn]; ctx != nil {
+		return ctx
+	}
+	return fallback
 }
 
 // refreshOpenAIWSTurnBillingAPIKey 返回本 turn 计费用的 API Key：分组取当前认证
@@ -3009,6 +3029,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			turnStartsMu.Unlock()
 			return startedAt
 		}
+		peekTurnStart := func(turn int) time.Time {
+			turnStartsMu.Lock()
+			defer turnStartsMu.Unlock()
+			return turnStarts[turn]
+		}
+		recordTurnStart(1, wsAttemptStartedAt)
 		// Passthrough rejects overlapping response.create frames, so one immutable
 		// turn-tagged slot preserves the exact mapping used for the in-flight request.
 		var turnChannelMapping atomic.Pointer[openAIWSTurnChannelMappingSnapshot]
@@ -3154,7 +3180,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						false,
 					)
 				}
-				turnCtx, turnAt := h.gatewayService.WithOpenAITurnPricingContext(turnPricingBaseCtx, apiKey.GroupID)
+				turnCtx, turnAt := h.gatewayService.WithOpenAITurnPricingContextAt(turnPricingBaseCtx, apiKey.GroupID, peekTurnStart(turn))
+				turnBillingAPIKeys.setPricingContext(turn, turnCtx)
 				if _, vetoed, reason := h.gatewayService.ProfitControlVetoLatest(turnCtx, account); vetoed {
 					reqLog.Info("openai.websocket_turn_profit_vetoed",
 						zap.Int("turn", turn),
@@ -3215,7 +3242,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					if request.ReasoningEffort != nil {
 						estimate.ReasoningEffort = *request.ReasoningEffort
 					}
-					turnCtx, done, reserveErr := reserveInflightBalanceCtx(ctx, h.billingCacheService, h.gatewayService, apiKey, subscription, estimate)
+					pricingCtx := turnBillingAPIKeys.contextForTurn(turn, ctx)
+					turnKey := turnBillingAPIKeys.forTurn(turn, apiKey)
+					turnCtx, done, reserveErr := reserveInflightBalanceCtx(pricingCtx, h.billingCacheService, h.gatewayService, turnKey, subscription, estimate)
 					if reserveErr != nil {
 						return ctx, inflightNoop, service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "billing check failed", reserveErr)
 					}
@@ -3223,7 +3252,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				})
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
-				turnBillingCtx, turnBillingDone := inflightTurn.take(turn, ctx)
+				pricingCtx := turnBillingAPIKeys.contextForTurn(turn, ctx)
+				turnBillingCtx, turnBillingDone := inflightTurn.take(turn, pricingCtx)
 				defer turnBillingDone()
 				turnStart := getTurnStart(turn)
 				cyberBlockBody := takeCyberTurnBody(turn)
@@ -3333,7 +3363,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 				sessionID := service.ExtractClientSessionID(c)
-				turnRecordPricingAt := turnStart
+				turnRecordPricingAt := service.OpenAIPricingAtFromContext(pricingCtx)
+				if turnRecordPricingAt.IsZero() {
+					turnRecordPricingAt = turnStart
+				}
 				if turnRecordPricingAt.IsZero() {
 					turnRecordPricingAt = turnPricing.currentOr(time.Time{})
 				}
