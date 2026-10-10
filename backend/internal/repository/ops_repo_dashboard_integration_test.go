@@ -109,6 +109,25 @@ func TestOpsOutputTPSDistribution(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, fallback.SampleCount)
 	require.Equal(t, 50.0, *fallback.P50)
+
+	// Inspect the representative raw-window aggregate on the isolated database.
+	// Do not require a specific index: a small fixture can legitimately use a
+	// sequential scan and is not a production performance benchmark.
+	planRows, err := integrationDB.QueryContext(ctx, `EXPLAIN (COSTS OFF)
+SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY output_tokens * 1000.0 / NULLIF(duration_ms, 0))
+FROM usage_logs
+WHERE created_at >= $1 AND created_at < $2 AND group_id = $3
+ AND output_tokens > 0 AND duration_ms > 0 AND NOT prewarm
+ AND image_count = 0 AND image_output_tokens = 0
+ AND COALESCE(billing_mode, '') <> 'image' AND request_type IN (1, 2, 3, 4)`, start, end, group.ID)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, planRows.Close()) }()
+	for planRows.Next() {
+		var line string
+		require.NoError(t, planRows.Scan(&line))
+		t.Logf("OutputTPS representative query plan: %s", line)
+	}
+	require.NoError(t, planRows.Err())
 }
 
 func TestOpsOutputTPSQueryDeadline(t *testing.T) {
