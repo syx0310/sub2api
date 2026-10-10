@@ -185,21 +185,26 @@
                   </p>
                   <span class="text-xs text-gray-500 dark:text-gray-400">RPM</span>
                 </div>
-                <div class="flex items-baseline gap-2">
-                  <p class="text-sm font-semibold text-violet-600 dark:text-violet-400">
-                    {{ formatTokens(stats.tpm) }}
-                  </p>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">TPM</span>
-                </div>
                 <div
-                  class="flex items-baseline gap-2"
-                  :title="t('admin.dashboard.costPerMinuteHint')"
-                  data-testid="performance-cost-per-minute"
+                  class="flex flex-nowrap items-baseline gap-3 whitespace-nowrap"
+                  data-testid="performance-throughput-cost"
                 >
-                  <p class="text-sm font-semibold text-green-600 dark:text-green-400">
-                    {{ stats.actual_cost_per_minute == null ? '—' : formatCost(stats.actual_cost_per_minute) }}
-                  </p>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">$/min</span>
+                  <div class="flex items-baseline gap-1">
+                    <p class="text-sm font-semibold text-violet-600 dark:text-violet-400">
+                      {{ formatTokens(stats.tpm) }}
+                    </p>
+                    <span class="text-xs text-gray-500 dark:text-gray-400">TPM</span>
+                  </div>
+                  <div
+                    class="flex items-baseline gap-1"
+                    :title="t('admin.dashboard.costPerMinuteHint')"
+                    data-testid="performance-cost-per-minute"
+                  >
+                    <p class="text-sm font-semibold text-green-600 dark:text-green-400">
+                      {{ stats.actual_cost_per_minute == null ? '—' : formatCost(stats.actual_cost_per_minute) }}
+                    </p>
+                    <span class="text-xs text-gray-500 dark:text-gray-400">$/min</span>
+                  </div>
                 </div>
               </div>
             </div>

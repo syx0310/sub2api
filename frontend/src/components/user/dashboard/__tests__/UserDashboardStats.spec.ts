@@ -85,6 +85,12 @@ describe('UserDashboardStats 按平台拆分', () => {
   it('在 Performance 展示实际费用每分钟，并随传入的同一份统计更新', async () => {
     const w = mountStats(makeStats({ rpm: 12, tpm: 200, actual_cost_per_minute: 0.1234 }))
     const cost = () => w.get('[data-testid="performance-cost-per-minute"]')
+    const metricsRow = w.get('[data-testid="performance-throughput-cost"]')
+    expect(metricsRow.classes()).toEqual(expect.arrayContaining(['flex', 'flex-nowrap', 'whitespace-nowrap']))
+    expect(metricsRow.element.children).toHaveLength(2)
+    expect(metricsRow.element.children[0].textContent).toContain('TPM')
+    expect(cost().element.parentElement).toBe(metricsRow.element)
+    expect(metricsRow.text()).not.toContain('RPM')
     expect(cost().text()).toContain('0.1234')
     expect(cost().text()).toContain('$/min')
     expect(cost().attributes('title')).toBe('dashboard.costPerMinuteHint')
