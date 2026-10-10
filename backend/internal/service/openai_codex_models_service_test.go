@@ -3977,15 +3977,21 @@ func TestGPT61SolOfflineCodexCatalog(t *testing.T) {
 	}
 }
 
-func TestAstraUltrafastCatalogUsesAccountCapabilities(t *testing.T) {
+func TestPublicUltrafastCatalogUsesAccountCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		accountType, base, model string
 		want                     bool
 	}{
 		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6-astra", true},
-		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6.1-sol", false},
+		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6.1-sol", true},
+		{AccountTypeAPIKey, "https://us.api.openai.com/v1", "gpt-6.1-sol", true},
+		{AccountTypeAPIKey, "https://eu.api.openai.com/v1", "gpt-6.1-sol", true},
+		{AccountTypeAPIKey, "https://eu.api.openai.com/v1", "gpt-6-astra", false},
+		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6.1-sol-preview", false},
 		{AccountTypeAPIKey, "https://proxy.example", "gpt-6-astra", false},
+		{AccountTypeAPIKey, "https://api.openai.com.proxy.example", "gpt-6.1-sol", false},
 		{AccountTypeOAuth, "https://chatgpt.com", "gpt-6-astra", false},
+		{AccountTypeOAuth, "https://chatgpt.com", "gpt-6.1-sol", false},
 	} {
 		account := &Account{Platform: PlatformOpenAI, Type: tc.accountType, Credentials: map[string]any{"base_url": tc.base, "plan_type": "promax"}}
 		caps := accountCodexToolCapabilities(account, tc.model)

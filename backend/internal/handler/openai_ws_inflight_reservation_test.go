@@ -69,7 +69,7 @@ func TestOpenAIResponsesWebSocket_InflightPerTurnNotPerConnection(t *testing.T) 
 				ingressMode: mode, inflightCache: cache,
 				firstPayload:  `{"type":"response.create","model":"gpt-6-astra","generate":false,"store":false,"input":[]}`,
 				secondPayload: `{"type":"response.create","model":"gpt-6-astra","reasoning":{"effort":"none"},"service_tier":"ultrafast","max_output_tokens":1000,"store":false,"input":[{"role":"user","content":"hi"}]}`,
-				thirdPayload:  `{"type":"response.create","model":"gpt-6.1-sol","reasoning":{"effort":"max"},"max_output_tokens":2000,"store":false,"input":[{"role":"user","content":"next"}],"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}}`,
+				thirdPayload:  `{"type":"response.create","model":"gpt-6.1-sol","reasoning":{"effort":"max"},"service_tier":"ultrafast","max_output_tokens":2000,"store":false,"input":[{"role":"user","content":"next"}],"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}}`,
 				onUpstreamFrame: func(payload []byte) error {
 					cache.mu.Lock()
 					defer cache.mu.Unlock()
@@ -82,7 +82,7 @@ func TestOpenAIResponsesWebSocket_InflightPerTurnNotPerConnection(t *testing.T) 
 					if len(cache.res) != 1 {
 						return fmt.Errorf("executing turn reservations = %d, want 1", len(cache.res))
 					}
-					inputPrice, outputPrice := 2e-6, 10e-6
+					inputPrice, outputPrice := 12e-6, 60e-6
 					if gjson.GetBytes(payload, "model").String() == "gpt-6-astra" {
 						inputPrice, outputPrice = 60e-6, 300e-6
 					}

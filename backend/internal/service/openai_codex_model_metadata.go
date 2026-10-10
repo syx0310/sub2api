@@ -105,9 +105,19 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 			capabilities["use_responses_lite"] = json.RawMessage("false")
 		}
 	}
-	// API Astra publicly supports Ultrafast. OAuth must advertise it in its
-	// account manifest; a subscription label alone does not grant the capability.
-	if account.IsOpenAIApiKey() && isOfficialOpenAIModelsBaseURL(baseURL) && isOpenAIGPT6AstraModel(modelID) && !account.IsOpenAIEUDataResidency() {
+	// Public API Ultrafast is model/region specific. OAuth must advertise it
+	// in the account manifest; a plan label alone does not grant access.
+	ultrafastEndpoint, euEndpoint := false, false
+	if err == nil {
+		switch strings.ToLower(strings.TrimSuffix(parsed.Hostname(), ".")) {
+		case "api.openai.com", "us.api.openai.com":
+			ultrafastEndpoint = true
+		case "eu.api.openai.com":
+			ultrafastEndpoint, euEndpoint = true, true
+		}
+	}
+	if account.IsOpenAIApiKey() && ultrafastEndpoint && openAIModelSupportsPublicUltrafast(modelID) &&
+		(isOpenAIGPT61SolModel(modelID) || (!euEndpoint && !account.IsOpenAIEUDataResidency())) {
 		tiers := configuredCodexServiceTiersForModel(modelID)
 		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; 6x Standard token pricing."})
 		encoded, err := json.Marshal(tiers)

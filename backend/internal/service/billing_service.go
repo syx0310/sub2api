@@ -1862,7 +1862,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		return pricing
 	}
 	cloned := *pricing
-	if isOpenAIGPT6AstraModel(normalized) {
+	if openAIModelSupportsPublicUltrafast(normalized) {
 		cloned.UltrafastMultiplier = 6
 	}
 	if needsOpus55FastMultiplier {

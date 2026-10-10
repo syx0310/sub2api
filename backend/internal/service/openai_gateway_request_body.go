@@ -2178,10 +2178,9 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	if tier == "" {
 		return BetaPolicyActionPass, ""
 	}
-	// Retain the older models' existing EU policy. GPT-6.1 Sol only
-	// excludes Fast; do not drop its caller-selected Flex tier.
-	euNoFast := isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency()
-	euStandardOnly := euNoFast && canonicalizeOpenAIModelAliasSpelling(model) != openai.GPT61SolModelID
+	// GPT-6.1 Sol supports EU Fast and Ultrafast. Keep the existing regional
+	// compatibility policy for the older models, without overriding admin rules.
+	euStandardOnly := openAIModelHasEUFastRestriction(account, model)
 	settings := openAIFastPolicySettingsFromContext(ctx)
 	if settings == nil && s != nil && s.settingService != nil {
 		settings, _ = s.settingService.GetOpenAIFastPolicySettings(ctx)
@@ -2192,16 +2191,10 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	if action == BetaPolicyActionBlock {
 		return action, errMsg
 	}
-	if euNoFast && tier == "priority" {
-		return BetaPolicyActionFilter, ""
-	}
 	if euStandardOnly && tier != "default" && tier != "auto" && tier != OpenAIFastTierMissing {
 		return BetaPolicyActionFilter, ""
 	}
-	if euNoFast && action == OpenAIFastPolicyActionForcePriority {
-		if !euStandardOnly {
-			return BetaPolicyActionPass, ""
-		}
+	if euStandardOnly && action == OpenAIFastPolicyActionForcePriority {
 		return BetaPolicyActionFilter, ""
 	}
 	return action, errMsg
@@ -2215,7 +2208,7 @@ func (s *OpenAIGatewayService) shouldForceOpenAIFastPriorityForMissingTier(ctx c
 	if account == nil || account.Platform != PlatformOpenAI {
 		return false
 	}
-	if isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency() {
+	if openAIModelHasEUFastRestriction(account, model) {
 		return false
 	}
 	action, _ := s.evaluateOpenAIFastPolicy(ctx, account, model, OpenAIFastTierMissing)
@@ -2321,11 +2314,15 @@ func openAIModelSupportsPriorityServiceTier(model string) bool {
 	return openAIModelFastPricingRatio(normalizeKnownOpenAICodexModel(model)) > 0
 }
 
+func openAIModelHasEUFastRestriction(account *Account, model string) bool {
+	return isOpenAIGPT6Model(model) && !isOpenAIGPT61SolModel(model) && account.IsOpenAIEUDataResidency()
+}
+
 func openAIGroupForcesFast(ctx context.Context, account *Account, model string) bool {
 	if ctx == nil || account == nil || account.Platform != PlatformOpenAI {
 		return false
 	}
-	if isOpenAIGPT6Model(model) && account.IsOpenAIEUDataResidency() {
+	if openAIModelHasEUFastRestriction(account, model) {
 		return false
 	}
 	group, _ := ctx.Value(ctxkey.Group).(*Group)

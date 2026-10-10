@@ -88,6 +88,14 @@ func isOpenAIGPT6AstraModel(model string) bool {
 	return canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT6AstraModelID
 }
 
+func isOpenAIGPT61SolModel(model string) bool {
+	return canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT61SolModelID
+}
+
+func openAIModelSupportsPublicUltrafast(model string) bool {
+	return isOpenAIGPT6AstraModel(model) || isOpenAIGPT61SolModel(model)
+}
+
 func isOpenAIGPT6Model(model string) bool {
 	return openai.IsGPT6Model(model)
 }

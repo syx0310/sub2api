@@ -50,4 +50,5 @@ func TestCodexServiceTiersNullIsExplicitEmptyNotPermission(t *testing.T) {
 	require.JSONEq(t, "[]", string(fields["service_tiers"]))
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{"compute_residency": "EU"}}
 	require.NotContains(t, string(accountCodexToolCapabilities(account, "gpt-6-astra")["service_tiers"]), "ultrafast")
+	require.Contains(t, string(accountCodexToolCapabilities(account, "gpt-6.1-sol")["service_tiers"]), "ultrafast")
 }

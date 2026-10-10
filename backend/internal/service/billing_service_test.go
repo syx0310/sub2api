@@ -2108,14 +2108,18 @@ func TestNewModelPricingAliasesRetainExplicitOverrides(t *testing.T) {
 	}
 }
 
-func TestAstraUltrafastPricingUsesSixTimesStandard(t *testing.T) {
+func TestPublicUltrafastPricingUsesSixTimesStandard(t *testing.T) {
 	data, err := os.ReadFile("../../resources/model-pricing/model_prices_and_context_window.json")
 	require.NoError(t, err)
 	catalog := &PricingService{}
 	catalog.pricingData, err = catalog.parsePricingData(data)
 	require.NoError(t, err)
 	for _, svc := range []*BillingService{newTestBillingService(), NewBillingService(&config.Config{}, &PricingService{}), NewBillingService(&config.Config{}, catalog)} {
-		for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra"} {
+		for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "gpt-6.1-sol", "openai/gpt-6.1-sol"} {
+			inputPrice, readPrice, writePrice, outputPrice := 60e-6, 6e-6, 75e-6, 300e-6
+			if isOpenAIGPT61SolModel(model) {
+				inputPrice, readPrice, writePrice, outputPrice = 12e-6, .6e-6, 15e-6, 60e-6
+			}
 			for _, n := range []int{271999, 272000, 272001} {
 				tokens := UsageTokens{InputTokens: n - 3000, CacheReadTokens: 2000, CacheCreationTokens: 1000, OutputTokens: 500}
 				cost, err := svc.CalculateCostWithServiceTier(model, tokens, 1, "ultrafast")
@@ -2124,22 +2128,24 @@ func TestAstraUltrafastPricingUsesSixTimesStandard(t *testing.T) {
 				if n > 272000 {
 					im, om = 2, 1.5
 				}
-				require.InDelta(t, float64(n-3000)*60e-6*im, cost.InputCost, 1e-10)
-				require.InDelta(t, 2000*6e-6*im, cost.CacheReadCost, 1e-10)
-				require.InDelta(t, 1000*75e-6*im, cost.CacheCreationCost, 1e-10)
-				require.InDelta(t, 500*300e-6*om, cost.OutputCost, 1e-10)
+				require.InDelta(t, float64(n-3000)*inputPrice*im, cost.InputCost, 1e-10)
+				require.InDelta(t, 2000*readPrice*im, cost.CacheReadCost, 1e-10)
+				require.InDelta(t, 1000*writePrice*im, cost.CacheCreationCost, 1e-10)
+				require.InDelta(t, 500*outputPrice*om, cost.OutputCost, 1e-10)
 			}
 		}
 	}
 	svc := newTestBillingService()
-	for _, custom := range []float64{0, 1e-6} {
-		fast := 3.0
-		p, err := svc.GetModelPricingWithChannel("gpt-6-astra", &ChannelModelPricing{InputPrice: &custom, OutputPrice: &custom, CacheWritePrice: &custom, CacheReadPrice: &custom, FastMultiplier: &fast})
-		require.NoError(t, err)
-		require.Equal(t, 6.0, configuredServiceTierMultiplier("ultrafast", p))
-		require.Equal(t, 3.0, configuredServiceTierMultiplier("priority", p))
-		cost := svc.computeTokenBreakdown(p, UsageTokens{InputTokens: 1000, OutputTokens: 1000, CacheReadTokens: 1000, CacheCreationTokens: 1000}, 1, "ultrafast", false)
-		require.InDelta(t, custom*24000, cost.TotalCost, 1e-10)
+	for _, model := range []string{"gpt-6-astra", "gpt-6.1-sol"} {
+		for _, custom := range []float64{0, 1e-6} {
+			fast := 3.0
+			p, err := svc.GetModelPricingWithChannel(model, &ChannelModelPricing{InputPrice: &custom, OutputPrice: &custom, CacheWritePrice: &custom, CacheReadPrice: &custom, FastMultiplier: &fast})
+			require.NoError(t, err)
+			require.Equal(t, 6.0, configuredServiceTierMultiplier("ultrafast", p))
+			require.Equal(t, 3.0, configuredServiceTierMultiplier("priority", p))
+			cost := svc.computeTokenBreakdown(p, UsageTokens{InputTokens: 1000, OutputTokens: 1000, CacheReadTokens: 1000, CacheCreationTokens: 1000}, 1, "ultrafast", false)
+			require.InDelta(t, custom*24000, cost.TotalCost, 1e-10)
+		}
 	}
 	p, err := svc.GetModelPricing("gpt-6-sol")
 	require.NoError(t, err)
@@ -2152,7 +2158,7 @@ func TestGPT61SolExplicitZeroCacheWriteAcrossTiers(t *testing.T) {
 	pricing.pricingData, err = pricing.parsePricingData([]byte(`{"gpt-6.1-sol":{"litellm_provider":"openai","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"input_cost_per_token_flex":0.000001,"cache_creation_input_token_cost":0,"cache_creation_input_token_cost_priority":0.000005}}`))
 	require.NoError(t, err)
 	svc := NewBillingService(&config.Config{}, pricing)
-	for _, tier := range []string{"", "fast", "priority", "flex"} {
+	for _, tier := range []string{"", "fast", "priority", "flex", "ultrafast"} {
 		cost, err := svc.CalculateCostWithServiceTier("openai/gpt-6.1-sol", UsageTokens{CacheCreationTokens: 300000}, 1, tier)
 		require.NoError(t, err)
 		require.Zero(t, cost.CacheCreationCost)
