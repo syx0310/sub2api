@@ -2,11 +2,13 @@ package openai_ws_v2
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // WS passthrough must account image tokens the way the HTTP Responses path
@@ -46,12 +48,15 @@ func TestRelay_ImageUsageMatchesHTTPResponsesAccounting(t *testing.T) {
 			clientConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: create}
 		}
 		require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == i+1 }, time.Second, time.Millisecond)
+		responseID := gjson.GetBytes(frame.payload, "response.id").String()
+		upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText,
+			payload: []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, responseID))}
 		upstreamConn.readCh <- frame
 		select {
 		case turn := <-completed:
 			turns = append(turns, turn)
 		case <-ctx.Done():
-			t.Fatal("image usage turn did not complete")
+			t.Fatalf("image usage turn %d did not complete", i+1)
 		}
 	}
 	require.NoError(t, upstreamConn.Close())

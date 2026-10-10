@@ -310,6 +310,53 @@ func matchesKnownZhipuNonAPIKeyDifference(tc routingMatrixCase, want, got routin
 		reflect.DeepEqual(got, routingObservation{Error: "account 801 missing api_key", Status: http.StatusOK})
 }
 
+// The fork does not classify arbitrary local errors as retriable transport
+// failures. The recorder's sentinel therefore gets an explicit 502 instead of
+// an unwritten failover response. Allow exactly that known error-envelope
+// difference, while still comparing every captured request field and panic.
+func matchesKnownCaptureTransportErrorDifference(want, got routingObservation) bool {
+	if len(want.Requests) != 1 {
+		return false
+	}
+	return reflect.DeepEqual(want, routingObservation{
+		Requests: want.Requests, Error: "upstream error: 502 (failover)", Status: http.StatusOK,
+	}) && reflect.DeepEqual(got, routingObservation{
+		Requests: want.Requests, Error: "upstream request failed: stop after capture", Status: http.StatusBadGateway,
+		ClientErrorType: "upstream_error", ClientErrorMessage: "Upstream request failed",
+	})
+}
+
+func TestRoutingGoldenCaptureErrorExceptionPreservesRouteAssertions(t *testing.T) {
+	want := routingObservation{
+		Requests: []routingUpstreamRequest{{URL: "https://example.com/v1/responses", Authorization: "Bearer sk-test", BodyKind: "input", Model: "test"}},
+		Error:    "upstream error: 502 (failover)", Status: http.StatusOK,
+	}
+	got := routingObservation{
+		Requests: want.Requests, Error: "upstream request failed: stop after capture", Status: http.StatusBadGateway,
+		ClientErrorType: "upstream_error", ClientErrorMessage: "Upstream request failed",
+	}
+	require.True(t, matchesKnownCaptureTransportErrorDifference(want, got))
+	for _, mutate := range []func(*routingObservation){
+		func(o *routingObservation) { o.Requests[0].URL = "https://wrong.example" },
+		func(o *routingObservation) { o.Requests[0].Authorization = "wrong" },
+		func(o *routingObservation) { o.Requests[0].APIKey = "unexpected" },
+		func(o *routingObservation) { o.Requests[0].BodyKind = "messages" },
+		func(o *routingObservation) { o.Requests[0].Model = "wrong" },
+		func(o *routingObservation) { o.Requests = nil },
+		func(o *routingObservation) { o.Panic = "panic" },
+		func(o *routingObservation) { o.Error = "some other error" },
+		func(o *routingObservation) { o.Status = http.StatusOK },
+		func(o *routingObservation) { o.ClientErrorType = "other" },
+		func(o *routingObservation) { o.ClientErrorCode = "unexpected" },
+		func(o *routingObservation) { o.ClientErrorMessage = "different" },
+	} {
+		changed := got
+		changed.Requests = append([]routingUpstreamRequest(nil), got.Requests...)
+		mutate(&changed)
+		require.False(t, matchesKnownCaptureTransportErrorDifference(want, changed))
+	}
+}
+
 func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	data, err := os.ReadFile(routingMatrixGoldenPath)
@@ -325,6 +372,7 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	var differences []string
 	mismatched := 0
 	knownDifferences := 0
+	knownCaptureErrors := 0
 	for i, tc := range cases {
 		index := golden.Results[i]
 		require.GreaterOrEqual(t, index, 0)
@@ -338,6 +386,10 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 			knownDifferences++
 			continue
 		}
+		if matchesKnownCaptureTransportErrorDifference(want, got) {
+			knownCaptureErrors++
+			continue
+		}
 		mismatched++
 		if len(differences) < 12 {
 			differences = append(differences, fmt.Sprintf("%s\nmain: %s\ncurrent: %s", tc.key(), want, got))
@@ -347,4 +399,5 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	// 2 account types × 4 modes × 3 probe states × 4 address configurations ×
 	// 2 model spellings. A disappeared or expanded exception requires review.
 	require.Equal(t, 192, knownDifferences, "unexpected change to the declared Zhipu non-API-Key difference")
+	require.Equal(t, 22176, knownCaptureErrors, "unexpected change to the fork's recorder-error classification")
 }

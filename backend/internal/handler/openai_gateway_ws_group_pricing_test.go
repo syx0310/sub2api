@@ -319,16 +319,17 @@ func TestRefreshOpenAIWSTurnBillingAPIKey(t *testing.T) {
 }
 
 func TestOpenAIWSTurnBillingAPIKeysKeepPreviousTurnUntilItIsRecorded(t *testing.T) {
+	type pricingContextKey struct{}
 	conn := &service.APIKey{ID: 1}
 	turn2 := &service.APIKey{ID: 2}
 	turn3 := &service.APIKey{ID: 3}
 	var keys openAIWSTurnBillingAPIKeys
 	require.Same(t, conn, keys.forTurn(1, conn), "a turn without BeforeTurn bills with the connection snapshot")
 	keys.set(2, turn2)
-	ctx2 := context.WithValue(context.Background(), struct{}{}, "turn2")
+	ctx2 := context.WithValue(context.Background(), pricingContextKey{}, "turn2")
 	keys.setPricingContext(2, ctx2)
 	keys.set(3, turn3) // turn 3 starts before turn 2's usage is submitted
-	ctx3 := context.WithValue(context.Background(), struct{}{}, "turn3")
+	ctx3 := context.WithValue(context.Background(), pricingContextKey{}, "turn3")
 	keys.setPricingContext(3, ctx3)
 	require.Same(t, ctx2, keys.contextForTurn(2, context.Background()))
 	require.Same(t, ctx3, keys.contextForTurn(3, context.Background()))
