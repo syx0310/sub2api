@@ -61,7 +61,7 @@ func TestHandleCCStreamingFromAnthropic_PingFlushesImmediately(t *testing.T) {
 	finished := make(chan outcome, 1)
 	go func() {
 		result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
-			&http.Response{Body: reader}, context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(),
+			&http.Response{Body: reader}, context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(), true,
 		)
 		finished <- outcome{result: result, err: err}
 	}()
@@ -161,7 +161,7 @@ func TestHandleCCStreamingFromAnthropic_PingDoesNotSetFirstToken(t *testing.T) {
 	context, _ := gin.CreateTestContext(writer)
 	result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
 		&http.Response{Body: io.NopCloser(strings.NewReader("event: ping\ndata: {\"type\":\"ping\"}\n\n"))},
-		context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(),
+		context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(), true,
 	)
 	require.NoError(t, err)
 	require.Nil(t, result.FirstTokenMs)
@@ -186,7 +186,7 @@ func TestHandleCCStreamingFromAnthropic_PingWriteFailureStopsDownstream(t *testi
 				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 			result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
 				&http.Response{Body: io.NopCloser(strings.NewReader(stream))},
-				context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(),
+				context, "gpt-5", "claude-sonnet-4.5", nil, time.Now(), true,
 			)
 			require.NoError(t, err)
 			require.True(t, writer.failed)
