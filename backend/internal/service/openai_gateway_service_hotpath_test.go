@@ -701,6 +701,7 @@ func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureRecoveryAndLineage(t 
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
 		response(http.StatusBadRequest, `{"error":{"code":"thinking_signature_invalid","message":"The encrypted content abc could not be verified. Reason: Encrypted content could not be decrypted or parsed."}}`),
 		response(http.StatusOK, `{"id":"resp_recovered","usage":{"input_tokens":1,"output_tokens":2}}`),
+		response(http.StatusOK, `{"id":"resp_sibling","usage":{"input_tokens":1,"output_tokens":2}}`),
 		response(http.StatusOK, `{"id":"resp_next","usage":{"input_tokens":1,"output_tokens":2}}`),
 	}}
 	cfg := &config.Config{}
@@ -712,6 +713,8 @@ func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureRecoveryAndLineage(t 
 	newContext := func() *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+		c.Request.Header.Set("session-id", "shared-root")
+		c.Request.Header.Set("thread-id", "recovered-child")
 		SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 		return c
 	}
@@ -727,12 +730,18 @@ func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureRecoveryAndLineage(t 
 	require.Equal(t, "result", gjson.GetBytes(upstream.bodies[1], "input.2.output").String())
 	require.Equal(t, "lookup", gjson.GetBytes(upstream.bodies[1], "tools.0.name").String())
 
+	siblingContext := newContext()
+	siblingContext.Request.Header.Set("thread-id", "sibling-child")
+	sibling, err := svc.Forward(context.Background(), siblingContext, account, []byte(input))
+	require.NoError(t, err)
+	require.NotNil(t, sibling)
+	require.Equal(t, "stale", gjson.GetBytes(upstream.bodies[2], "input.0.encrypted_content").String(), "siblings sharing session/cache keys must not inherit another thread's rejection")
 	second, err := svc.Forward(context.Background(), newContext(), account, []byte(input))
 	require.NoError(t, err)
 	require.NotNil(t, second)
-	require.Len(t, upstream.bodies, 3, "later turn should be stripped before its first upstream request")
-	require.False(t, gjson.GetBytes(upstream.bodies[2], "input.0.encrypted_content").Exists())
-	require.Equal(t, "result", gjson.GetBytes(upstream.bodies[2], "input.2.output").String())
+	require.Len(t, upstream.bodies, 4, "later turn should be stripped before its first upstream request")
+	require.False(t, gjson.GetBytes(upstream.bodies[3], "input.0.encrypted_content").Exists())
+	require.Equal(t, "result", gjson.GetBytes(upstream.bodies[3], "input.2.output").String())
 }
 
 func TestOpenAIGatewayService_Forward_HTTPThinkingSignatureDoesNotRetryUnrelatedErrors(t *testing.T) {

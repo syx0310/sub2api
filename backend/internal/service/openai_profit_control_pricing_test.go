@@ -252,6 +252,30 @@ func TestProfitControl_TurnPricingContext(t *testing.T) {
 	})
 }
 
+func TestProfitControl_TurnPricingSnapshotDrivesReservationPeakRate(t *testing.T) {
+	group := profitControlTestGroup(63, 0, 0)
+	group.SubscriptionType = SubscriptionTypeSubscription
+	group.PeakRateEnabled = true
+	group.PeakStart, group.PeakEnd = "08:00", "09:00"
+	group.PeakRateMultiplier = 3
+	key := &APIKey{GroupID: &group.ID, Group: group}
+	svc := &OpenAIGatewayService{}
+	for _, hour := range []int{8, 10} {
+		at := time.Date(2026, 1, 15, hour, 30, 0, 0, timezone.Location())
+		ctx, pricingAt := svc.WithOpenAITurnPricingContextAt(profitControlTestCtx(group), &group.ID, at)
+		require.Equal(t, at, pricingAt)
+		require.Equal(t, at, OpenAIPricingAtFromContext(ctx))
+		gate, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+		require.True(t, ok)
+		require.Equal(t, at, gate.pricingAt)
+		text, image := (inflightEstimateDeps{}).rates(ctx, key)
+		wantText, wantImage := computePeakAwareMultipliers(key, group.RateMultiplier, at)
+		require.Equal(t, wantText, text, "reservation must not use wall time at the peak boundary")
+		require.Equal(t, wantImage, image)
+		require.Equal(t, text, gate.threshold, "zero-margin gate and reservation share the same peak rate")
+	}
+}
+
 // 无门时准入后绑定回退官方 eager 语义：等待/抢槽路径不得因利润控制关闭而
 // 失去粘性绑定（评审 M-Bind 回归锚点）。
 func TestOpenAIProfitControlAfterAdmissionBindEagerWithoutGate(t *testing.T) {

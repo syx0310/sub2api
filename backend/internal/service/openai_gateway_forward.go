@@ -1133,7 +1133,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					}
 					if len(invalidDigests) > 0 {
 						if lineageSessionHash == "" {
-							lineageSessionHash = s.GenerateSessionHash(c, lineageEntryBody)
+							lineageSessionHash = openAIWSThreadStateHash(c, lineageEntryBody, account)
 						}
 						s.markOpenAIWSInvalidEncryptedContentLineage(lineageGroupID, lineageSessionHash, invalidDigests)
 					}
