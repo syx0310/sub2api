@@ -73,6 +73,18 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 		)
 	`).Scan(&samePrefixMigrations))
 	require.Equal(t, 3, samePrefixMigrations, "migration identity is the full filename, not the numeric prefix")
+	require.NoError(t, tx.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM schema_migrations WHERE filename IN (
+			'242_drop_platform_check_constraints.sql',
+			'242_group_i18n.sql'
+		)
+	`).Scan(&samePrefixMigrations))
+	require.Equal(t, 2, samePrefixMigrations, "both v0.2.15 and v0.2.16 migrations with prefix 242 must run")
+	requireColumn(t, tx, "groups", "i18n", "jsonb", 0, false)
+	requireColumn(t, tx, "gemini_cached_contents", "channel_usage", "jsonb", 0, false)
+	requireColumn(t, tx, "gemini_cached_contents", "mutation_token", "character varying", 64, true)
+	requireColumn(t, tx, "gemini_cached_contents", "mutation_lease_until", "timestamp with time zone", 0, true)
+	requireIndex(t, tx, "gemini_cached_contents", "idx_gemini_cached_contents_pending_mutation")
 	requireColumn(t, tx, "payment_orders", "bonus_amount", "numeric", 0, false)
 	requireColumnDefaultContains(t, tx, "payment_orders", "bonus_amount", "0")
 

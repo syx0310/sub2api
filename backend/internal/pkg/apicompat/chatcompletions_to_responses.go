@@ -16,16 +16,28 @@ type chatMessageContent struct {
 // true. store is always false and reasoning.encrypted_content is always
 // included so that the response translator has full context.
 func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest, error) {
-	return chatCompletionsToResponses(req, false)
+	return ChatCompletionsToResponsesWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
+}
+
+// ChatCompletionsToResponsesWithMinOutputTokens applies the configured floor
+// without changing the caller's role policy.
+func ChatCompletionsToResponsesWithMinOutputTokens(req *ChatCompletionsRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return chatCompletionsToResponses(req, false, minOutputTokens)
 }
 
 // ChatCompletionsToResponsesPreserveSystemRole keeps legacy system messages as
 // system input items for upstream protocols that distinguish them from developer.
 func ChatCompletionsToResponsesPreserveSystemRole(req *ChatCompletionsRequest) (*ResponsesRequest, error) {
-	return chatCompletionsToResponses(req, true)
+	return ChatCompletionsToResponsesPreserveSystemRoleWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
 }
 
-func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole bool) (*ResponsesRequest, error) {
+// ChatCompletionsToResponsesPreserveSystemRoleWithMinOutputTokens combines the
+// provider's role policy with the configured conversion floor.
+func ChatCompletionsToResponsesPreserveSystemRoleWithMinOutputTokens(req *ChatCompletionsRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return chatCompletionsToResponses(req, true, minOutputTokens)
+}
+
+func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole bool, minOutputTokens int) (*ResponsesRequest, error) {
 	input, err := convertChatMessagesToResponsesInput(req.Messages, preserveSystemRole)
 	if err != nil {
 		return nil, err
@@ -71,8 +83,8 @@ func chatCompletionsToResponses(req *ChatCompletionsRequest, preserveSystemRole 
 	}
 	if maxTokens > 0 {
 		v := maxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < minOutputTokens {
+			v = minOutputTokens
 		}
 		out.MaxOutputTokens = &v
 	}

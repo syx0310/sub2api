@@ -32,6 +32,9 @@ func configuredGPT6SolLunaModelDescriptor(modelID string) (configuredCodexModelD
 			panic(err)
 		}
 		sol.officialMetadata = openai.CodexGPT61SolMetadata
+		// Match the generated-catalog default in upstream v0.2.16. This is
+		// only a fallback; explicit account catalog metadata remains authoritative.
+		sol.ContextWindow = 500_000
 		gpt6SolLunaCodexModels[openai.GPT61SolModelID] = sol
 	})
 	descriptor, ok := gpt6SolLunaCodexModels[canonicalizeOpenAIModelAliasSpelling(modelID)]

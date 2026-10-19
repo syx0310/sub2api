@@ -22,7 +22,7 @@ func TestGPT61SolCatalogAndRouting(t *testing.T) {
 	require.Equal(t, "low", entry["default_reasoning_level"])
 	require.Equal(t, "xhigh", entry["multi_agent_reasoning_effort"])
 	require.Equal(t, "v2", entry["multi_agent_version"])
-	require.EqualValues(t, 272000, entry["context_window"])
+	require.EqualValues(t, 500000, entry["context_window"])
 	require.EqualValues(t, 872000, entry["max_context_window"])
 	require.Equal(t, true, entry["supports_reasoning_effort_updates"])
 	require.Equal(t, true, entry["use_responses_lite"])

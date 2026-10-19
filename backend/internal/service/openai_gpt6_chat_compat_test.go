@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -64,7 +65,7 @@ func TestGPT6ChatFallbackOutboundEffortAndBilling(t *testing.T) {
 						case "chat":
 							result, err = svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
 						case "responses":
-							result, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body)
+							result, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body, time.Now())
 						case "messages":
 							result, err = svc.forwardAnthropicViaRawChatCompletions(context.Background(), c, account, body, "")
 						}
@@ -108,7 +109,7 @@ func TestGPT61SolChatFallbackOfficialToolsRejected(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+route, nil)
 				var err error
 				if route == "responses" {
-					_, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, []byte(`{"model":"alias","input":"hi","reasoning":{"effort":"none"},"tools":[{"type":"function","name":"test","parameters":{"type":"object"}}]}`))
+					_, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, []byte(`{"model":"alias","input":"hi","reasoning":{"effort":"none"},"tools":[{"type":"function","name":"test","parameters":{"type":"object"}}]}`), time.Now())
 				} else {
 					_, err = svc.forwardAnthropicViaRawChatCompletions(context.Background(), c, account, []byte(`{"model":"alias","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"tools":[{"name":"test","input_schema":{"type":"object"}}]}`), "")
 				}

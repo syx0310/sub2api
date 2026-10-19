@@ -4,11 +4,83 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestInflightEstimateGPT61SubscriptionLongContextMatchesSettlement(t *testing.T) {
+	for _, withResolver := range []bool{false, true} {
+		for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken, AccountTypeAPIKey, "unknown"} {
+			for _, tier := range []string{"", "priority", "ultrafast"} {
+				for _, tokens := range []int{272000, 272001, 500000} {
+					t.Run(fmt.Sprintf("resolver=%t/%s/%s/%d", withResolver, accountType, tier, tokens), func(t *testing.T) {
+						billing := NewBillingService(&config.Config{}, nil)
+						deps := inflightEstimateDeps{billing: billing}
+						if withResolver {
+							deps.resolver = NewModelPricingResolver(nil, billing)
+						}
+						var account *Account
+						if accountType != "unknown" {
+							account = &Account{Platform: PlatformOpenAI, Type: accountType,
+								Extra: map[string]any{openAILongContextBillingEnabledKey: true}}
+						}
+						group := &Group{ID: 1, Platform: PlatformOpenAI, RateMultiplier: 1, LongContextPricingEnabled: true}
+						key := &APIKey{User: &User{ID: 1}, GroupID: &group.ID, Group: group}
+						req := InflightEstimateRequest{Model: "gpt-6.1-sol", UpstreamModel: "gpt-6.1-sol", BodyBytes: tokens * 4,
+							MaxTokens: 1000, ServiceTier: tier, Account: account}
+						estimate, priced := deps.estimate(context.Background(), key, req)
+						require.True(t, priced)
+						inputFactor, outputFactor, tierFactor := 1.0, 1.0, 1.0
+						if tokens > 272000 && (accountType == AccountTypeAPIKey || accountType == "unknown") {
+							inputFactor, outputFactor = 2, 1.5
+						}
+						if tier == "priority" {
+							tierFactor = 2
+						} else if tier == "ultrafast" {
+							tierFactor = 6
+						}
+						require.InDelta(t, (float64(tokens)*2e-6*inputFactor+1000*10e-6*outputFactor)*tierFactor, estimate, 1e-9)
+						svc := &OpenAIGatewayService{billingService: billing, resolver: deps.resolver}
+						settled, err := svc.calculateOpenAIRecordUsageTokenCost(context.Background(), key, req.Model, 1,
+							OpenAIPricingAtFromContext(context.Background()), UsageTokens{InputTokens: tokens, OutputTokens: 1000},
+							tier, "", openAILongContextBillingGate(account), false,
+							openAISubscriptionLongContextExempt(account, &OpenAIForwardResult{Model: req.Model, UpstreamModel: req.UpstreamModel}))
+						require.NoError(t, err)
+						require.InDelta(t, settled.ActualCost, estimate, 1e-9)
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestInflightEstimateGPT61ExemptionUsesForwardedModel(t *testing.T) {
+	billing := NewBillingService(&config.Config{}, nil)
+	deps := inflightEstimateDeps{billing: billing, resolver: NewModelPricingResolver(nil, billing)}
+	group := &Group{ID: 1, Platform: PlatformOpenAI, RateMultiplier: 1, LongContextPricingEnabled: true}
+	key := &APIKey{User: &User{ID: 1}, GroupID: &group.ID, Group: group}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{openAILongContextBillingEnabledKey: true}}
+	for _, tc := range []struct {
+		model, upstream string
+		want            float64
+	}{
+		{"gpt-6-sol", "gpt-6.1-sol", .61},
+		{"gpt-6.1-sol", "gpt-6-sol", 1.215},
+		{"unpriced-public-alias", "gpt-6.1-sol", .61},
+	} {
+		t.Run(tc.model+"/"+tc.upstream, func(t *testing.T) {
+			cost, priced := deps.estimate(context.Background(), key, InflightEstimateRequest{
+				Model: tc.model, UpstreamModel: tc.upstream, Account: account, BodyBytes: 300000 * 4, MaxTokens: 1000,
+			})
+			require.True(t, priced)
+			require.InDelta(t, tc.want, cost, 1e-9)
+		})
+	}
+}
 
 func TestInflightEstimateFinalTierEffortAndExplicitZero(t *testing.T) {
 	for _, zero := range []bool{false, true} {

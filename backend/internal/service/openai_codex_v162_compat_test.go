@@ -35,13 +35,14 @@ func TestSynthesizedWSFailurePreservesRetryAdviceOnly(t *testing.T) {
 		`{"response":{"error":{"code":"server_is_overloaded","message":"busy","headers":{"retry-after":"30","Set-Cookie":"secret"}}}}`,
 		`{"error":{"code":"server_is_overloaded","message":"busy"},"headers":{"RETRY-AFTER":"30","Cookie":"secret"}}`,
 	} {
-		out := buildOpenAIWSHTTPBridgeFailedEvent("resp_1", "gpt-6.1-sol", []byte(source), "")
+		out := buildOpenAIWSHTTPBridgeFailedEvent("resp_1", "gpt-6.1-sol", 1700000000, []byte(source), "")
+		require.EqualValues(t, 1700000000, gjson.GetBytes(out, "response.created_at").Int())
 		require.Equal(t, "response.failed", gjson.GetBytes(out, "type").String())
 		require.JSONEq(t, `{"Retry-After":"30"}`, gjson.GetBytes(out, "response.error.headers").Raw)
 		require.NotContains(t, string(out), "secret")
 	}
 	for _, value := range []string{`30`, `null`, `"30\r\nSet-Cookie: secret"`} {
-		out := buildOpenAIWSHTTPBridgeFailedEvent("", "", []byte(`{"error":{"headers":{"Retry-After":`+value+`}}}`), "busy")
+		out := buildOpenAIWSHTTPBridgeFailedEvent("", "", 0, []byte(`{"error":{"headers":{"Retry-After":`+value+`}}}`), "busy")
 		require.False(t, gjson.GetBytes(out, "response.error.headers").Exists())
 	}
 }

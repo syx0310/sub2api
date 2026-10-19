@@ -13,12 +13,23 @@ import (
 // Chat Completions intermediary round-trip (e.g. thinking, cache_control,
 // structured system prompts).
 func AnthropicToResponses(req *AnthropicRequest) (*ResponsesRequest, error) {
-	return AnthropicToResponsesForProvider(req, "")
+	return AnthropicToResponsesWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
+}
+
+// AnthropicToResponsesWithMinOutputTokens applies the configured conversion floor.
+func AnthropicToResponsesWithMinOutputTokens(req *AnthropicRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return AnthropicToResponsesForProviderWithMinOutputTokens(req, "", minOutputTokens)
 }
 
 // AnthropicToResponsesForProvider filters replayed reasoning signatures for the
 // target Responses provider while preserving the Anthropic conversation order.
 func AnthropicToResponsesForProvider(req *AnthropicRequest, targetProvider string) (*ResponsesRequest, error) {
+	return AnthropicToResponsesForProviderWithMinOutputTokens(req, targetProvider, DefaultMinMaxOutputTokens)
+}
+
+// AnthropicToResponsesForProviderWithMinOutputTokens retains provider-specific
+// signature filtering while applying the configured conversion floor.
+func AnthropicToResponsesForProviderWithMinOutputTokens(req *AnthropicRequest, targetProvider string, minOutputTokens int) (*ResponsesRequest, error) {
 	input, err := convertAnthropicToResponsesInput(req.System, req.Messages, targetProvider)
 	if err != nil {
 		return nil, err
@@ -55,8 +66,8 @@ func AnthropicToResponsesForProvider(req *AnthropicRequest, targetProvider strin
 
 	if req.MaxTokens > 0 {
 		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < minOutputTokens {
+			v = minOutputTokens
 		}
 		out.MaxOutputTokens = &v
 	}
