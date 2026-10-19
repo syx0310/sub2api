@@ -407,7 +407,8 @@ const (
 	OpenAIUpstreamAccessStateReason = GatewayFailureReason("openai_upstream_access_state")
 	// OpenAIHTTPContinuationUnsupportedReason identifies accounts that cannot
 	// preserve an official Responses HTTP continuation without dropping state.
-	OpenAIHTTPContinuationUnsupportedReason = GatewayFailureReason("openai_http_continuation_unsupported")
+	OpenAIHTTPContinuationUnsupportedReason  = GatewayFailureReason("openai_http_continuation_unsupported")
+	OpenAIHTTPContinuationUnsupportedMessage = "previous_response_id requires an OpenAI API-key account for HTTP requests; for Codex OAuth, resend the complete required context in input without previous_response_id, or continue on the original authenticated WebSocket connection"
 )
 
 // isOpenAIUpstreamAccessStateError recognizes provider-side credential state

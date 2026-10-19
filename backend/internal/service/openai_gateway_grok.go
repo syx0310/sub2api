@@ -121,10 +121,10 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 		}
 
-		// xAI can reject encrypted reasoning or a compaction blob copied from a
-		// different decoder/cache context. Retry once on the same account after
-		// preserving visible summaries and removing only opaque replay state.
-		if attempt > 0 || (resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusUnprocessableEntity) {
+		// Retry invalid reasoning once, but never discard compacted history. Check
+		// the original body: the Grok compatibility pass can recast compaction as
+		// reasoning, which must not make the only retained history disposable.
+		if attempt > 0 || (resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusUnprocessableEntity) || hasOpenAIEncryptedCompactionInput(body) {
 			break
 		}
 		respBody := s.readUpstreamErrorBody(resp)
@@ -333,6 +333,9 @@ func isGrokCompactionReplayDecodeError(statusCode int, body []byte) bool {
 }
 
 func sanitizeGrokCompactionReplayBody(body []byte) ([]byte, bool, error) {
+	if hasOpenAIEncryptedCompactionInput(body) {
+		return body, false, nil
+	}
 	converted, err := convertOpenAICompactInputsForGrok(body)
 	if err != nil {
 		return nil, false, fmt.Errorf("convert Grok compaction replay: %w", err)
@@ -480,6 +483,9 @@ func stripAnthropicThinkingSignatures(body []byte) ([]byte, bool) {
 }
 
 func trimGrokInvalidEncryptedContentRetryBody(body []byte) ([]byte, bool, error) {
+	if hasOpenAIEncryptedCompactionInput(body) {
+		return body, false, nil
+	}
 	input := gjson.GetBytes(body, "input")
 	items := input.Array()
 	if input.IsObject() {
@@ -488,8 +494,7 @@ func trimGrokInvalidEncryptedContentRetryBody(body []byte) ([]byte, bool, error)
 
 	hasEncryptedReasoning := false
 	for _, item := range items {
-		if (strings.TrimSpace(item.Get("type").String()) == "reasoning" && item.Get("encrypted_content").Exists()) ||
-			(isOpenAICompactionType(strings.TrimSpace(item.Get("type").String())) && item.Get("encrypted_content").Exists()) {
+		if strings.TrimSpace(item.Get("type").String()) == "reasoning" && item.Get("encrypted_content").Exists() {
 			hasEncryptedReasoning = true
 			break
 		}

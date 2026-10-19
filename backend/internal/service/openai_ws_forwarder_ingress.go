@@ -273,6 +273,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return openAIWSClientPayload{}, err
 			}
 		}
+		// Compatibility must see this create's intent, including header-only
+		// local compaction on the first frame. Never inherit it on later turns.
+		if next, metadataErr := normalizeOpenAIWSInitialTurnMetadata(normalized, c.GetHeader(openAIWSTurnMetadataHeader), turn); metadataErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", metadataErr)
+		} else {
+			normalized = next
+		}
 		requestedReasoningEffort := CanonicalRequestedReasoningEffort(normalized, originalModel)
 		if modelMissing {
 			// Model-scoped effort mappings must see the inherited client-facing model.
@@ -338,11 +345,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				"previous_response_id must be a response.id (resp_*), not a message id",
 				nil,
 			)
-		}
-		if next, metadataErr := normalizeOpenAIWSInitialTurnMetadata(normalized, c.GetHeader(openAIWSTurnMetadataHeader), turn); metadataErr != nil {
-			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", metadataErr)
-		} else {
-			normalized = next
 		}
 		accountIdentitySourceRaw := append([]byte(nil), normalized...)
 		accountScopedPayload, accountScoped, scopeErr := applyCodexAccountIdentityClientMetadataRaw(normalized, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))

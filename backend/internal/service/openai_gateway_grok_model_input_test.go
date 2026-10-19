@@ -193,18 +193,15 @@ func TestPatchGrokResponsesBodyCombinesAdditionalToolsAndDropsOrphanControls(t *
 	}
 }
 
-func TestSanitizeGrokCompactionReplayBodyPreservesVisibleSummary(t *testing.T) {
+func TestSanitizeGrokCompactionReplayBodyPreservesOpaqueAndVisibleHistory(t *testing.T) {
 	body := []byte(`{
 		"previous_response_id":"resp_stale",
 		"input":[{"type":"compaction","encrypted_content":"opaque","summary":[{"type":"summary_text","text":"visible history"}]},{"type":"message","role":"user","content":"continue"}]
 	}`)
 	patched, changed, err := sanitizeGrokCompactionReplayBody(body)
 	require.NoError(t, err)
-	require.True(t, changed)
-	require.False(t, gjson.GetBytes(patched, "previous_response_id").Exists())
-	require.False(t, gjson.GetBytes(patched, `input.#(type=="reasoning")`).Exists())
-	require.Contains(t, gjson.GetBytes(patched, "input.0.content.0.text").String(), "visible history")
-	require.Equal(t, "continue", gjson.GetBytes(patched, "input.1.content").String())
+	require.False(t, changed)
+	require.Equal(t, body, patched, "visible summary alone does not prove opaque history can be discarded")
 	require.True(t, isGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"message":"failed to deserialize compaction summary history"}}`)))
 	require.True(t, isGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error"},"detail":"could not decode compaction blob"}`)))
 }

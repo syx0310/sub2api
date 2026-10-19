@@ -17,25 +17,37 @@ type OpenAIResponsesRequestSemantics struct {
 }
 
 func ClassifyOpenAIResponsesRequest(body []byte) OpenAIResponsesRequestSemantics {
+	var turnMetadata string
+	if metadata := gjson.GetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader); metadata.Type == gjson.String {
+		turnMetadata = metadata.String()
+	}
+	return classifyOpenAIResponsesRequestSignals(
+		gjson.GetBytes(body, "type").String(),
+		gjson.GetBytes(body, "generate").Type == gjson.False,
+		HasCompactionTriggerInInput(body),
+		turnMetadata,
+	)
+}
+
+// Share precedence with map-based OAuth transforms without serializing the
+// full history again: control > prewarm > native trigger > metadata intent.
+func classifyOpenAIResponsesRequestSignals(event string, prewarm, nativeCompaction bool, turnMetadata string) OpenAIResponsesRequestSemantics {
 	semantic := OpenAIResponsesRequestSemantics{Kind: "turn"}
-	if event := gjson.GetBytes(body, "type").String(); event != "" && event != "response.create" {
+	if event != "" && event != "response.create" {
 		return OpenAIResponsesRequestSemantics{Kind: "control"}
 	}
-	if generate := gjson.GetBytes(body, "generate"); generate.Type == gjson.False {
+	if prewarm {
 		return OpenAIResponsesRequestSemantics{Kind: "prewarm", Prewarm: true}
 	}
-	if HasCompactionTriggerInInput(body) {
+	if nativeCompaction {
 		return OpenAIResponsesRequestSemantics{Kind: "compaction", NativeCompactionV2: true}
 	}
 	// The embedded JSON is the canonical per-request snapshot, not a child
 	// object and not an overlay to merge with the handshake or preceding turn.
-	metadata := gjson.GetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader)
-	if metadata.Type == gjson.String {
-		switch kind := gjson.Get(metadata.String(), "request_kind").String(); kind {
-		case "turn", "compaction", "memory":
-			semantic.Kind = strings.Clone(kind)
-			// A metadata-only prewarm claim must not suppress inference accounting.
-		}
+	switch kind := gjson.Get(turnMetadata, "request_kind").String(); kind {
+	case "turn", "compaction", "memory":
+		semantic.Kind = strings.Clone(kind)
+		// A metadata-only prewarm claim must not suppress inference accounting.
 	}
 	return semantic
 }
@@ -44,7 +56,16 @@ func ClassifyOpenAIResponsesRequest(body []byte) OpenAIResponsesRequestSemantics
 // the first create. Presence (including null/empty) wins over the header; later
 // creates must never resurrect a removed field from the initial handshake.
 func normalizeOpenAIWSInitialTurnMetadata(body []byte, handshake string, turn int) ([]byte, error) {
-	if turn != 1 || strings.TrimSpace(handshake) == "" {
+	if turn != 1 {
+		return body, nil
+	}
+	return normalizeOpenAIRequestTurnMetadata(body, handshake)
+}
+
+// HTTP headers belong to the current request; WS callers must use the guarded
+// first-create wrapper above. Explicit body presence always takes precedence.
+func normalizeOpenAIRequestTurnMetadata(body []byte, header string) ([]byte, error) {
+	if strings.TrimSpace(header) == "" {
 		return body, nil
 	}
 	cm := gjson.GetBytes(body, "client_metadata")
@@ -54,7 +75,7 @@ func normalizeOpenAIWSInitialTurnMetadata(body []byte, handshake string, turn in
 	if cm.Get(openAIWSTurnMetadataHeader).Exists() {
 		return body, nil
 	}
-	return sjson.SetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader, strings.TrimSpace(handshake))
+	return sjson.SetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader, strings.TrimSpace(header))
 }
 
 // Responses stream_options are not Chat Completions stream_options. Preserve

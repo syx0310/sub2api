@@ -532,6 +532,25 @@ func TestNormalizeCodexToolChoice_InvalidAllowedToolsNeverBecomesAuto(t *testing
 	}
 }
 
+func TestNormalizeCodexToolChoice_InvalidNamedChoicesNeverBecomeAuto(t *testing.T) {
+	for _, choice := range []map[string]any{
+		{"type": "function"},
+		{"type": "function", "name": ""},
+		{"type": "function", "name": nil, "function": map[string]any{"name": "echo"}},
+		{"type": "function", "function": map[string]any{"name": ""}},
+		{"type": "function", "function": map[string]any{"name": 42}},
+		{"type": "unknown_hosted_tool"},
+	} {
+		before, err := json.Marshal(choice)
+		require.NoError(t, err)
+		reqBody := map[string]any{"tool_choice": choice}
+		require.False(t, normalizeCodexToolChoice(reqBody))
+		after, err := json.Marshal(reqBody["tool_choice"])
+		require.NoError(t, err)
+		require.JSONEq(t, string(before), string(after))
+	}
+}
+
 func TestApplyCodexOAuthTransform_AllowedToolsKeepsReservedNameReferences(t *testing.T) {
 	declaration := map[string]any{"type": "function", "name": "python"}
 	reference := map[string]any{"type": "function", "name": "python"}
@@ -547,7 +566,7 @@ func TestApplyCodexOAuthTransform_AllowedToolsKeepsReservedNameReferences(t *tes
 	require.Equal(t, "python", result.ToolNameReverse[codexPythonToolAlias])
 }
 
-func TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice(t *testing.T) {
+func TestApplyCodexOAuthTransform_PreservesUnknownToolChoiceForUpstreamValidation(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"tools": []any{
@@ -558,7 +577,7 @@ func TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice(t *testing.T) {
 
 	applyCodexOAuthTransform(reqBody, true, false)
 
-	require.Equal(t, "auto", reqBody["tool_choice"])
+	require.Equal(t, map[string]any{"type": "custom"}, reqBody["tool_choice"])
 }
 
 func TestApplyCodexOAuthTransform_PreservesKnownToolChoice(t *testing.T) {
@@ -598,7 +617,7 @@ func TestApplyCodexOAuthTransform_NormalizesLegacyFunctionToolChoice(t *testing.
 	require.NotContains(t, choice, "function")
 }
 
-func TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice(t *testing.T) {
+func TestApplyCodexOAuthTransform_PreservesMissingFunctionToolChoiceForUpstreamValidation(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"tools": []any{
@@ -612,7 +631,7 @@ func TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice(t *testing
 
 	applyCodexOAuthTransform(reqBody, true, false)
 
-	require.Equal(t, "auto", reqBody["tool_choice"])
+	require.Equal(t, map[string]any{"type": "function", "name": "missing"}, reqBody["tool_choice"])
 }
 
 func TestApplyCodexOAuthTransform_AddsFallbackNameForFunctionCallInput(t *testing.T) {

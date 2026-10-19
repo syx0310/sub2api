@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/stretchr/testify/require"
 )
 
@@ -110,6 +111,28 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	require.InDelta(t, expected.ActualCost, usageRepo.lastLog.ActualCost, 1e-12)
 	require.Equal(t, 1, userRepo.deductCalls, "按真实 token 扣费，与 WS/正常请求一致")
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
+}
+
+func TestRecordCyberPolicyUsageLog_UsesFrozenPricingAt(t *testing.T) {
+	for _, hour := range []int{8, 10} {
+		usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+		userRepo := &openAIRecordUsageUserRepoStub{}
+		svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+		at := time.Date(2026, 10, 10, hour, 30, 0, 0, timezone.Location())
+		group := &Group{ID: 14, RateMultiplier: .3, SubscriptionType: "subscription", PeakRateEnabled: true,
+			PeakStart: "08:00", PeakEnd: "09:00", PeakRateMultiplier: 3}
+		key := &APIKey{ID: 2, User: &User{ID: 1}, GroupID: &group.ID, Group: group}
+		svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+			APIKey: key, Account: &Account{ID: 3}, RequestID: "cyber-frozen-time", Model: "gpt-5.1",
+			InputTokens: 1200, OutputTokens: 300, PricingAt: at,
+		})
+		rate := .3 * group.PeakMultiplierAt(at)
+		expected := expectedOpenAICost(t, svc, "gpt-5.1", OpenAIUsage{InputTokens: 1200, OutputTokens: 300}, rate)
+		require.Equal(t, 1, usageRepo.calls)
+		require.InDelta(t, rate, usageRepo.lastLog.RateMultiplier, 1e-12)
+		require.Equal(t, 1, userRepo.deductCalls)
+		require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
+	}
 }
 
 func TestRecordCyberPolicyUsageLog_NonStreamZeroTokensZeroCost(t *testing.T) {

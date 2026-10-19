@@ -531,13 +531,23 @@ func asDeepSeekResponsesSlice(value any) ([]any, bool) {
 }
 
 // A compaction item can be the only representation of earlier history. The
-// HTTP gateway cannot reconstruct it, so let the client recover instead of
+// gateway cannot reconstruct it, so let the client recover instead of
 // retrying a different conversation after discarding that context.
 func hasOpenAIEncryptedCompactionInput(body []byte) bool {
+	input := gjson.Get(openAIWSPayloadStringView(body), "input")
+	isEncryptedCompaction := func(item gjson.Result) bool {
+		typ := strings.TrimSpace(item.Get("type").String())
+		return (typ == "compaction" || typ == "compaction_summary") && item.Get("encrypted_content").Exists()
+	}
+	if input.IsObject() {
+		return isEncryptedCompaction(input)
+	}
+	if !input.IsArray() {
+		return false
+	}
 	found := false
-	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
-		typ := item.Get("type").String()
-		found = (typ == "compaction" || typ == "compaction_summary") && item.Get("encrypted_content").Exists()
+	input.ForEach(func(_, item gjson.Result) bool {
+		found = isEncryptedCompaction(item)
 		return !found
 	})
 	return found
@@ -632,9 +642,8 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
-		if _, encrypted := inputItem["encrypted_content"]; encrypted {
-			return nil, true, false
-		}
+		// Unlike reasoning, this may be the only remaining conversation history.
+		// Preserve even known-invalid summaries; only the client can recover them.
 		return item, false, true
 	case "reasoning":
 	default:

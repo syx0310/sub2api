@@ -12,11 +12,12 @@ import (
 
 // invalid_encrypted_content 失效密文 lineage。
 //
-// 上游判定某轮请求中的加密 reasoning/compaction 项不可解后，同一失效密文会随
+// 上游判定某轮请求中的加密 reasoning 项不可解后，同一失效密文会随
 // 客户端维护的会话历史在后续每一轮重新出现，重复触发"整包被拒→剥离→重试/
 // 重连"。这里按会话记录已被上游拒绝过的 encrypted_content 摘要
 // （OpenAIWSStateStore，带 TTL 与容量自保护）；后续请求进场时仅剥离摘要命中
-// 的项，新生成的密文摘要不同，不会被误删。
+// 的 reasoning，新生成的密文摘要不同，不会被误删。compaction 可能是唯一历史，
+// 不记录、不剥离；请求含加密摘要时也不把含糊的拒绝归因给同包 reasoning。
 
 const openAIWSFallbackReasonInvalidEncryptedContent = "invalid_encrypted_content"
 
@@ -30,7 +31,7 @@ func openAIEncryptedContentDigest(encrypted string) string {
 // encrypted_content 也不收摘要，避免记入永远剥不掉的摘要后每轮空转解码。
 func openAIEncryptedLineageItemType(itemType string) bool {
 	switch strings.TrimSpace(itemType) {
-	case "reasoning", "compaction", "compaction_summary":
+	case "reasoning":
 		return true
 	default:
 		return false
@@ -40,7 +41,7 @@ func openAIEncryptedLineageItemType(itemType string) bool {
 // collectOpenAIEncryptedContentDigestsRaw 收集 input 中 lineage 覆盖类型所携
 // 密文的摘要。payload 须遵守 replay 所有权不变式（零拷贝视图解析）。
 func collectOpenAIEncryptedContentDigestsRaw(payload []byte) []string {
-	if len(payload) == 0 {
+	if len(payload) == 0 || hasOpenAIEncryptedCompactionInput(payload) {
 		return nil
 	}
 	input := gjson.Get(openAIWSPayloadStringView(payload), "input")
@@ -72,8 +73,8 @@ func collectOpenAIEncryptedContentDigestsRaw(payload []byte) []string {
 
 // stripOpenAIInvalidEncryptedContentItems 剥离 input 中摘要命中 invalid 的密文
 // 项，剥离语义与 trimOpenAIEncryptedReasoningItems 对齐：reasoning 仅剥
-// encrypted_content（连带 content:null 清理与空骨架删除），compaction/
-// compaction_summary 整项删除。返回被改写的项数。
+// encrypted_content（连带 content:null 清理与空骨架删除）。compaction 和
+// compaction_summary 即使命中旧版本记录的摘要也原样保留。返回被改写的项数。
 func stripOpenAIInvalidEncryptedContentItems(reqBody map[string]any, invalid map[string]struct{}) int {
 	if len(reqBody) == 0 || len(invalid) == 0 {
 		return 0
@@ -152,6 +153,9 @@ func openAIRawPayloadHasInvalidEncryptedContent(payload []byte, invalid map[stri
 	}
 	hit := false
 	checkItem := func(item gjson.Result) bool {
+		if !openAIEncryptedLineageItemType(item.Get("type").String()) {
+			return false
+		}
 		encrypted := item.Get("encrypted_content")
 		if encrypted.Type != gjson.String || encrypted.String() == "" {
 			return false
@@ -184,6 +188,9 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 	}
 	hit := false
 	for _, item := range items {
+		if !openAIEncryptedLineageItemType(gjson.Get(openAIWSPayloadStringView(item), "type").String()) {
+			continue
+		}
 		encrypted := gjson.Get(openAIWSPayloadStringView(item), "encrypted_content")
 		if encrypted.Type != gjson.String || encrypted.String() == "" {
 			continue

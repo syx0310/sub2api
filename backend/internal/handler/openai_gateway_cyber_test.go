@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -17,6 +21,40 @@ func newTestGinContext() *gin.Context {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	return c
+}
+
+func TestRecordCyberPolicyForRequest_PreservesFrozenPricingAcrossAsyncBilling(t *testing.T) {
+	for _, hour := range []int{8, 10} {
+		cfg := &config.Config{RunMode: config.RunModeSimple}
+		cfg.Default.RateMultiplier = 1
+		usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 2)}
+		gateway := service.NewOpenAIGatewayService(nil, usageRepo, nil, nil, nil, nil, nil, cfg, nil, nil,
+			service.NewBillingService(cfg, nil), nil, &service.BillingCacheService{}, nil, &service.DeferredService{},
+			nil, nil, nil, nil, nil, nil, nil)
+		h := &OpenAIGatewayHandler{gatewayService: gateway}
+		at := time.Date(2026, 10, 10, hour, 30, 0, 0, timezone.Location())
+		pricingCtx, _ := gateway.WithOpenAITurnPricingContextAt(context.Background(), nil, at)
+		group := &service.Group{ID: 14, RateMultiplier: .3, SubscriptionType: "subscription", PeakRateEnabled: true,
+			PeakStart: "08:00", PeakEnd: "09:00", PeakRateMultiplier: 3}
+		key := &service.APIKey{ID: 2, User: &service.User{ID: 1}, GroupID: &group.ID, Group: group}
+		account := &service.Account{ID: 3, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+		c := newTestGinContext()
+		c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+		service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "blocked", UpstreamInTok: 1200, UpstreamOutTok: 300})
+		h.recordCyberPolicyForRequest(pricingCtx, c, key, account, nil, "gpt-5.1", true, nil, service.ChannelUsageFields{}, "", nil, nil, false)
+		// A second attempt to record the same turn must remain a no-op.
+		h.recordCyberPolicyForRequest(pricingCtx, c, key, account, nil, "gpt-5.1", true, nil, service.ChannelUsageFields{}, "", nil, nil, false)
+		select {
+		case log := <-usageRepo.created:
+			require.Equal(t, service.RequestTypeCyberBlocked, log.RequestType)
+			require.InDelta(t, .3*group.PeakMultiplierAt(at), log.RateMultiplier, 1e-12)
+			require.Positive(t, log.ActualCost)
+		case <-time.After(3 * time.Second):
+			t.Fatal("cyber fallback usage was not recorded")
+		}
+		require.True(t, c.GetBool(cyberPolicyRecordedKey))
+		require.Empty(t, usageRepo.created)
+	}
 }
 
 // TestRecordCyberPolicyIfMarked_NoMark verifies that when no cyber mark is set,

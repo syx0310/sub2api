@@ -18,22 +18,31 @@ import { nextTick } from 'vue'
 
 import en from '@/i18n/locales/en/admin/resources'
 import zh from '@/i18n/locales/zh/admin/resources'
+import enDashboard from '@/i18n/locales/en/dashboard'
+import zhDashboard from '@/i18n/locales/zh/dashboard'
 import UsageTable from '../UsageTable.vue'
 
 let locale: 'en' | 'zh' = 'en'
 const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
   en: {
+    'usage.latencyFirstToken': enDashboard.usage.latencyFirstToken,
+    'usage.latencyDuration': enDashboard.usage.latencyDuration,
+    'usage.outputTps': enDashboard.usage.outputTps,
+    'usage.outputTpsHint': enDashboard.usage.outputTpsHint,
     'admin.usage.longContext': en.usage.longContext,
     'admin.usage.longContextPricingTooltip': en.usage.longContextPricingTooltip,
   },
   zh: {
+    'usage.latencyFirstToken': zhDashboard.usage.latencyFirstToken,
+    'usage.latencyDuration': zhDashboard.usage.latencyDuration,
+    'usage.outputTps': zhDashboard.usage.outputTps,
+    'usage.outputTpsHint': zhDashboard.usage.outputTpsHint,
     'admin.usage.longContext': zh.usage.longContext,
     'admin.usage.longContextPricingTooltip': zh.usage.longContextPricingTooltip,
   },
 }
 
 const messages: Record<string, string> = {
-  'usage.outputTps': 'Output TPS',
   'admin.usage.userDeletedBadge': 'Deleted',
   'usage.costDetails': 'Cost Breakdown',
   'admin.usage.inputCost': 'Input Cost',
@@ -160,18 +169,33 @@ describe('admin UsageTable tooltip', () => {
     expect(wrapper.get('[data-testid="prewarm-badge"]').text()).toBe('Prewarm')
     wrapper.unmount()
   })
-  it('shows output TPS in the latency cell using total duration', () => {
+  it.each(['en', 'zh'] as const)('shows Token/s after First and Total in three rows in %s', (language) => {
+    locale = language
     const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', output_tokens: 1000, duration_ms: 20_000, first_token_ms: 10_000 }
     const wrapper = mount(UsageTable, {
       props: {
-        data: [row, { ...row, request_id: 'no-duration', duration_ms: null }, { ...row, request_id: 'image', image_count: 1 }],
+        data: [
+          row,
+          { ...row, request_id: 'rounded', output_tokens: 101, duration_ms: 3000 },
+          { ...row, request_id: 'no-duration', duration_ms: null },
+          { ...row, request_id: 'image', image_count: 1 },
+          { ...row, request_id: 'prewarm', prewarm: true },
+        ],
         loading: false,
         columns: [{ key: 'latency', label: 'Latency' }],
       },
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
     })
-    expect(wrapper.findAll('[data-testid="output-tps"]').map(cell => cell.text())).toEqual(['50.0 tok/s', '—', '—'])
-    expect(wrapper.text()).toContain('Output TPS')
+    expect(wrapper.findAll('[data-testid="output-tps"]').map(cell => cell.text())).toEqual(['50.0', '33.7', '—', '—', '—'])
+    const latencyGrid = wrapper.get('[data-testid="output-tps"]').element.parentElement!
+    expect(latencyGrid.classList.contains('grid')).toBe(true)
+    expect(latencyGrid.classList.contains('grid-cols-[max-content_max-content]')).toBe(true)
+    expect(latencyGrid.children).toHaveLength(6)
+    expect([0, 2, 4].map(index => latencyGrid.children[index].textContent)).toEqual(
+      language === 'en' ? ['First', 'Total', 'Token/s'] : ['首字', '总耗时', 'Token/s']
+    )
+    expect(latencyGrid.children[4].getAttribute('title')).toBe(localizedMessages[language]['usage.outputTpsHint'])
+    wrapper.unmount()
   })
 
   beforeEach(() => {

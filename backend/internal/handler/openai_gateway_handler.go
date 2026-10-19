@@ -788,7 +788,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				Scope:            service.GatewayFailureScopeRequest,
 				Reason:           service.OpenAIHTTPContinuationUnsupportedReason,
 				ClientStatusCode: http.StatusBadRequest,
-				ClientMessage:    "previous_response_id requires an OpenAI API-key account for HTTP requests",
+				ClientMessage:    service.OpenAIHTTPContinuationUnsupportedMessage,
 			}
 			reqLog.Debug("openai.account_skipped_http_continuation_unsupported",
 				zap.Int64("account_id", account.ID),
@@ -3253,6 +3253,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 				pricingCtx := turnBillingAPIKeys.contextForTurn(turn, ctx)
+				turnBillingAPIKey := turnBillingAPIKeys.forTurn(turn, apiKey)
 				turnBillingCtx, turnBillingDone := inflightTurn.take(turn, pricingCtx)
 				defer turnBillingDone()
 				turnStart := getTurnStart(turn)
@@ -3308,7 +3309,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnResponseBodyBytes = result.ResponseBodyBytes
 				}
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
-				h.recordCyberPolicyForRequest(turnBillingCtx, c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes, turnSemantics.NativeCompactionV2, turnSemantics.Prewarm)
+				h.recordCyberPolicyForRequest(turnBillingCtx, c, turnBillingAPIKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestBodyBytes, turnResponseBodyBytes, turnSemantics.NativeCompactionV2, turnSemantics.Prewarm)
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
 					cyberBlockPendingAfterFailover,
@@ -3370,7 +3371,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if turnRecordPricingAt.IsZero() {
 					turnRecordPricingAt = turnPricing.currentOr(time.Time{})
 				}
-				turnBillingAPIKey := turnBillingAPIKeys.forTurn(turn, apiKey)
 				cyberBlocked := service.GetOpsCyberPolicy(c) != nil
 				h.submitOpenAIUsageRecordTask(turnBillingCtx, result, func(taskCtx context.Context) {
 					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
@@ -3804,9 +3804,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	if failoverErr.Reason == service.OpenAIHTTPContinuationUnsupportedReason {
 		message := strings.TrimSpace(failoverErr.ClientMessage)
 		if message == "" {
-			message = "previous_response_id requires an OpenAI API-key account for HTTP requests"
+			message = service.OpenAIHTTPContinuationUnsupportedMessage
 		}
-		h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", message, streamStarted)
+		h.handleStreamingAwareErrorWithCode(c, http.StatusBadRequest, "invalid_request_error", string(service.OpenAIHTTPContinuationUnsupportedReason), message, streamStarted, false)
 		return
 	}
 	if failoverErr.Reason == service.OpenAIImagesInsufficientBalanceReason {
@@ -4586,7 +4586,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 }
 
 // recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，异步写风控日志/邮件，
-// 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
+// 并在 forward 返回错误时按上游报告的真实 token 补记用量。标记由 gateway 服务层在透传 cyber 后设置；
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, requestBodyBytes, responseBodyBytes *int64) {
@@ -4690,6 +4690,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 		}
 	}
 	codexTurnStateLengths := service.ObservedCodexTurnStateLengths(c)
+	pricingAt := service.OpenAIPricingAtFromContext(requestCtx)
 	reservationDone := inflightNoop
 	if forwardErrored && gwSvc != nil {
 		reservationDone = service.InflightReservationFromContext(requestCtx).Acquire()
@@ -4739,6 +4740,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      apiKeySvc,
 				NativeCompactionV2: nativeCompactionV2,
+				PricingAt:          pricingAt,
 				ChannelUsageFields: channelFields,
 			})
 		}

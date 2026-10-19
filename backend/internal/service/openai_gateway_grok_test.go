@@ -2247,6 +2247,16 @@ func TestForwardGrokResponsesInvalidEncryptedContentRecoveryDoesNotOvermatch(t *
 			requestBody:  `{"model":"grok","input":[{"type":"message","role":"user","content":"hi"}],"stream":false}`,
 			responseBody: matchingError,
 		},
+		{
+			name:         "compaction recast as reasoning is still protected",
+			requestBody:  `{"model":"grok","previous_response_id":"resp_keep","input":[{"type":"compaction","encrypted_content":"only-history"},{"type":"message","role":"user","content":"hi"}],"stream":false}`,
+			responseBody: matchingError,
+		},
+		{
+			name:         "compaction summary plus reasoning cannot trigger decode recovery",
+			requestBody:  `{"model":"grok","previous_response_id":"resp_keep","input":[{"type":"compaction_summary","encrypted_content":"only-history","summary":[{"text":"partial visible history"}]},{"type":"reasoning","encrypted_content":"reasoning"}],"stream":false}`,
+			responseBody: `{"error":{"message":"failed to deserialize compaction summary history"}}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2280,14 +2290,13 @@ func TestForwardGrokResponsesInvalidEncryptedContentRecoveryDoesNotOvermatch(t *
 	}
 }
 
-func TestGrokCompactionBlobRecoveryStripsCompactionItem(t *testing.T) {
-	body := []byte(`{"model":"grok","input":[{"type":"compaction","id":"cmp_1","encrypted_content":"blob"},{"type":"message","role":"user","content":"hi"}]}`)
+func TestGrokCompactionBlobRecoveryPreservesCompactionItem(t *testing.T) {
+	body := []byte(`{"model":"grok","previous_response_id":"resp_keep","input":[{"type":"compaction","id":"cmp_1","encrypted_content":"blob"},{"type":"reasoning","encrypted_content":"reasoning"},{"type":"message","role":"user","content":"hi"}]}`)
 	require.True(t, isGrokInvalidEncryptedContentResponse(http.StatusUnprocessableEntity, []byte(`{"code":"invalid_compaction","error":"could not decode the compaction blob"}`)))
 	retry, changed, err := trimGrokInvalidEncryptedContentRetryBody(body)
 	require.NoError(t, err)
-	require.True(t, changed)
-	require.Equal(t, "message", gjson.GetBytes(retry, "input.0.type").String())
-	require.False(t, gjson.GetBytes(retry, "input.#(type==\"compaction\")").Exists())
+	require.False(t, changed)
+	require.Equal(t, body, retry)
 }
 
 func TestForwardGrokResponsesInvalidEncryptedContentRecoveryNestedErrorShape(t *testing.T) {

@@ -81,5 +81,5 @@ export const formatUsageOutputRate = (row: Pick<UsageLog,
     || durationMs == null || !Number.isFinite(durationMs) || durationMs <= 0) {
     return '—'
   }
-  return `${(outputTokens * 1000 / durationMs).toFixed(1)} tok/s`
+  return (outputTokens * 1000 / durationMs).toFixed(1)
 }

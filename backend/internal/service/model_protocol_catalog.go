@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,8 +25,8 @@ import (
 // 按模型分流时据此判断模型是否支持入站协议：支持就同协议直通，省去一次协议转换
 // （见 modelProtocolSet）。
 //
-// 缓存范围：所有目录均按账号和地址隔离，包括官方默认地址。目录可能随 Key、租户
-// 或请求头不同，鉴权失败的刷新退避也不能影响其他账号（见 modelProtocolCatalogKey）。
+// 缓存范围：按账号、地址及实际请求头/代理配置隔离，包括官方默认地址。换 Key 或
+// 租户后不复用旧目录/退避；旧配置的晚到刷新也只能写回旧配置的缓存键。
 //
 // 刷新在后台进行：过期时继续使用旧目录。目录从未加载成功时，首批请求最多等待
 // modelProtocolCatalogFirstLoadWait，各请求共用本轮刷新开始时的截止时间，并响应请求
@@ -189,12 +191,12 @@ func (s *OpenAIGatewayService) modelCatalogProtocols(ctx context.Context, accoun
 		return nil
 	}
 	url := buildOpenAIModelsURL(base)
-	key := modelProtocolCatalogKey(account, url)
 	headers := modelProtocolCatalogHeaders(account, url)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	key := modelProtocolCatalogKey(account.ID, url, headers, proxyURL)
 	accountID, concurrency := account.ID, account.Concurrency
 	return upstreamModelProtocols.lookup(ctx, key, model, time.Now(), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), modelProtocolCatalogTimeout)
@@ -209,10 +211,18 @@ func (s *OpenAIGatewayService) modelCatalogProtocols(ctx context.Context, accoun
 	})
 }
 
-// modelProtocolCatalogKey 按账号和地址隔离目录及刷新退避，避免一个账号的目录或
-// 鉴权失败影响同地址的其他账号。
-func modelProtocolCatalogKey(account *Account, url string) string {
-	return fmt.Sprintf("%s#account=%d", url, account.ID)
+// modelProtocolCatalogKey hashes the exact immutable request configuration used
+// by the refresh. Do not use UpdatedAt: passive runtime updates would churn the
+// cache. Credential/header values are never retained in plaintext cache keys.
+func modelProtocolCatalogKey(accountID int64, url string, headers http.Header, proxyURL string) string {
+	hash := sha256.New()
+	// Encoding a map sorts its keys, so map iteration order cannot change identity.
+	// Both fields have JSON-safe concrete types and hash.Write never returns errors.
+	_ = json.NewEncoder(hash).Encode(struct {
+		Headers http.Header
+		Proxy   string
+	}{headers, proxyURL})
+	return fmt.Sprintf("%s#account=%d#config=%x", url, accountID, hash.Sum(nil))
 }
 
 // modelProtocolCatalogHeaders 构造目录请求头，UA 收敛与账号请求头覆写与转发一致

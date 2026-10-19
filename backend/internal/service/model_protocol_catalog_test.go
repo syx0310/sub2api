@@ -29,6 +29,36 @@ const commandCodeModelsSample = `{"object":"list","data":[
 	{"id":"no-endpoints"}
 ]}`
 
+func testModelProtocolCatalogKey(account *Account, url string) string {
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	return modelProtocolCatalogKey(account.ID, url, modelProtocolCatalogHeaders(account, url), proxyURL)
+}
+
+func TestModelProtocolCatalogKeyTracksEffectiveRequestIdentity(t *testing.T) {
+	account := commandCodeTestAccount(21)
+	url := buildOpenAIModelsURL(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+	headers := modelProtocolCatalogHeaders(account, url)
+	key := modelProtocolCatalogKey(account.ID, url, headers, "")
+	require.NotContains(t, key, "user_test_key")
+	copyHeaders := http.Header{}
+	for name, values := range headers {
+		copyHeaders[name] = append([]string(nil), values...)
+	}
+	require.Equal(t, key, modelProtocolCatalogKey(account.ID, url, copyHeaders, ""))
+	copyHeaders.Set("Authorization", "Bearer rotated-key")
+	require.NotEqual(t, key, modelProtocolCatalogKey(account.ID, url, copyHeaders, ""))
+	copyHeaders = headers.Clone()
+	copyHeaders.Set("X-Tenant", "different-tenant")
+	require.NotEqual(t, key, modelProtocolCatalogKey(account.ID, url, copyHeaders, ""))
+	require.NotEqual(t, key, modelProtocolCatalogKey(account.ID, url, headers, "http://new-proxy:8080"))
+	account.Name = "display-only edit"
+	account.UpdatedAt = time.Now().Add(time.Minute)
+	require.Equal(t, key, testModelProtocolCatalogKey(account, url), "runtime/name changes must not cause directory fetches")
+}
+
 func TestParseModelProtocolCatalog(t *testing.T) {
 	models, err := parseModelProtocolCatalog([]byte(commandCodeModelsSample))
 	require.NoError(t, err)
@@ -192,8 +222,8 @@ func TestModelProtocolCatalogKeyAndHeaders(t *testing.T) {
 	base := official.GetCNProtocolBaseURL(APIProtocolChatCompletions)
 	url := buildOpenAIModelsURL(base)
 	require.Equal(t, "https://api.commandcode.ai/provider/v1/models", url)
-	require.Equal(t, url+"#account=21", modelProtocolCatalogKey(official, url))
-	require.Equal(t, url+"#account=22", modelProtocolCatalogKey(commandCodeTestAccount(22), url))
+	require.True(t, strings.HasPrefix(testModelProtocolCatalogKey(official, url), url+"#account=21#config="))
+	require.NotEqual(t, testModelProtocolCatalogKey(official, url), testModelProtocolCatalogKey(commandCodeTestAccount(22), url))
 
 	headers := modelProtocolCatalogHeaders(official, url)
 	require.Equal(t, "Bearer user_test_key", headers.Get("Authorization"))
@@ -205,7 +235,7 @@ func TestModelProtocolCatalogKeyAndHeaders(t *testing.T) {
 	custom.Credentials["header_overrides"] = map[string]any{"X-Tenant": "t-1"}
 	customBase := custom.GetCNProtocolBaseURL(APIProtocolChatCompletions)
 	customURL := buildOpenAIModelsURL(customBase)
-	require.Equal(t, customURL+"#account=23", modelProtocolCatalogKey(custom, customURL))
+	require.True(t, strings.HasPrefix(testModelProtocolCatalogKey(custom, customURL), customURL+"#account=23#config="))
 	headers = modelProtocolCatalogHeaders(custom, customURL)
 	require.Equal(t, "t-1", getHeaderRaw(headers, "x-tenant"))
 	require.Empty(t, headers.Get("User-Agent"))
@@ -230,10 +260,81 @@ func (u *modelCatalogAccountUpstream) Do(req *http.Request, _ string, _ int64, _
 		return newJSONResponse(u.failureStatus, `{"error":"invalid credentials"}`), nil
 	}
 	endpoint := "/chat/completions"
-	if getHeaderRaw(req.Header, "x-tenant") == "responses-tenant" {
+	if getHeaderRaw(req.Header, "x-tenant") == "responses-tenant" || req.Header.Get("Authorization") == "Bearer responses-key" {
 		endpoint = "/responses"
 	}
 	return newJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"id":"vendor/model","supported_endpoints":[%q]}]}`, endpoint)), nil
+}
+
+func TestModelProtocolCatalogRotatedIdentityDoesNotUseOldCatalogOrBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Account)
+		want   []string
+	}{
+		{"api_key", func(a *Account) { a.Credentials["api_key"] = "responses-key" }, []string{APIProtocolResponses}},
+		{"tenant_header", func(a *Account) {
+			a.Credentials["header_override_enabled"] = true
+			a.Credentials["header_overrides"] = map[string]any{"X-Tenant": "responses-tenant"}
+		}, []string{APIProtocolResponses}},
+		{"failed_new_key", func(a *Account) { a.Credentials["api_key"] = "invalid-key" }, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := &modelCatalogAccountUpstream{failureStatus: http.StatusUnauthorized}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			account := commandCodeTestAccount(time.Now().UnixNano())
+			url := buildOpenAIModelsURL(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+			keys := []string{testModelProtocolCatalogKey(account, url)}
+			t.Cleanup(func() {
+				upstreamModelProtocols.mu.Lock()
+				defer upstreamModelProtocols.mu.Unlock()
+				for _, key := range keys {
+					delete(upstreamModelProtocols.entries, key)
+				}
+			})
+			require.Equal(t, []string{APIProtocolChatCompletions}, svc.modelCatalogProtocols(t.Context(), account, "vendor/model"))
+			tc.change(account)
+			keys = append(keys, testModelProtocolCatalogKey(account, url))
+			require.NotEqual(t, keys[0], keys[1])
+			require.Equal(t, tc.want, svc.modelCatalogProtocols(t.Context(), account, "vendor/model"))
+			require.Equal(t, tc.want, svc.modelCatalogProtocols(t.Context(), account, "vendor/model"))
+			upstream.mu.Lock()
+			require.Len(t, upstream.requests, 2, "new identity fetches once, then shares its own cache/backoff")
+			upstream.mu.Unlock()
+			if tc.want == nil {
+				account.Credentials["api_key"] = "responses-key"
+				keys = append(keys, testModelProtocolCatalogKey(account, url))
+				require.Equal(t, []string{APIProtocolResponses}, svc.modelCatalogProtocols(t.Context(), account, "vendor/model"), "the failed credential's backoff cannot delay its replacement")
+			}
+		})
+	}
+}
+
+func TestModelProtocolCatalogLateOldRefreshCannotReplaceNewIdentity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var catalog modelProtocolCatalog
+		account := commandCodeTestAccount(21)
+		url := buildOpenAIModelsURL(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+		oldKey := testModelProtocolCatalogKey(account, url)
+		oldModels := map[string][]string{"vendor/model": {APIProtocolChatCompletions}}
+		catalog.store(oldKey, oldModels, nil, time.Now())
+		time.Sleep(modelProtocolCatalogTTL)
+		release := make(chan struct{})
+		require.Equal(t, oldModels["vendor/model"], catalog.lookup(t.Context(), oldKey, "vendor/model", time.Now(), func() {
+			<-release
+			catalog.store(oldKey, oldModels, nil, time.Now())
+		}))
+		synctest.Wait()
+		account.Credentials["api_key"] = "new-key"
+		newKey := testModelProtocolCatalogKey(account, url)
+		newModels := map[string][]string{"vendor/model": {APIProtocolResponses}}
+		require.Equal(t, newModels["vendor/model"], catalog.lookup(t.Context(), newKey, "vendor/model", time.Now(), func() {
+			catalog.store(newKey, newModels, nil, time.Now())
+		}))
+		close(release)
+		synctest.Wait()
+		require.Equal(t, newModels["vendor/model"], catalog.lookup(t.Context(), newKey, "vendor/model", time.Now(), nil))
+	})
 }
 
 func TestModelProtocolCatalogOfficialAccountsAreIsolated(t *testing.T) {
@@ -259,7 +360,7 @@ func TestModelProtocolCatalogOfficialAccountsAreIsolated(t *testing.T) {
 				upstreamModelProtocols.mu.Lock()
 				defer upstreamModelProtocols.mu.Unlock()
 				for _, account := range []*Account{bad, chat, responses} {
-					delete(upstreamModelProtocols.entries, modelProtocolCatalogKey(account, url))
+					delete(upstreamModelProtocols.entries, testModelProtocolCatalogKey(account, url))
 				}
 			})
 
@@ -342,7 +443,7 @@ func TestCommandCodeGatewayPassesThroughCatalogProtocols(t *testing.T) {
 			APIProtocolAnthropic:       base + "/provider",
 		}
 		url := buildOpenAIModelsURL(base + "/provider/v1")
-		key := modelProtocolCatalogKey(account, url)
+		key := testModelProtocolCatalogKey(account, url)
 		if catalog != nil {
 			upstreamModelProtocols.store(key, catalog, nil, time.Now())
 		} else {

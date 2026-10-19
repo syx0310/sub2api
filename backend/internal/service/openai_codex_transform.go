@@ -366,89 +366,28 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 }
 
 func normalizeCodexToolChoice(reqBody map[string]any) bool {
-	choice, ok := reqBody["tool_choice"]
-	if !ok || choice == nil {
+	// Selection is a caller constraint, not an opportunity to infer auto from
+	// a partial tool list. Declarations may live in namespaces, additional_tools
+	// or connection state. Leave canonical and even invalid choices to upstream
+	// validation; only translate the legacy Chat Completions function envelope.
+	choiceMap, ok := reqBody["tool_choice"].(map[string]any)
+	if !ok || choiceMap["type"] != "function" {
 		return false
 	}
-	choiceMap, ok := choice.(map[string]any)
+	if _, exists := choiceMap["name"]; exists {
+		return false
+	}
+	function, ok := choiceMap["function"].(map[string]any)
 	if !ok {
 		return false
 	}
-	choiceType := strings.TrimSpace(firstNonEmptyString(choiceMap["type"]))
-	if choiceType == "" {
+	name, ok := function["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
 		return false
 	}
-	if choiceType == "allowed_tools" {
-		// This is a selection policy, not a declared tool type. Preserve it for
-		// upstream validation (including references to input.additional_tools);
-		// falling back to auto would silently discard the caller's restriction.
-		return false
-	}
-	modified := false
-	if choiceType == "function" {
-		name := strings.TrimSpace(firstNonEmptyString(choiceMap["name"]))
-		if name == "" {
-			if function, ok := choiceMap["function"].(map[string]any); ok {
-				name = strings.TrimSpace(firstNonEmptyString(function["name"]))
-			}
-		}
-		if name == "" {
-			reqBody["tool_choice"] = "auto"
-			return true
-		}
-		if strings.TrimSpace(firstNonEmptyString(choiceMap["name"])) != name {
-			choiceMap["name"] = name
-			modified = true
-		}
-		if _, ok := choiceMap["function"]; ok {
-			delete(choiceMap, "function")
-			modified = true
-		}
-		if !codexToolsContainFunctionName(reqBody["tools"], name) {
-			reqBody["tool_choice"] = "auto"
-			return true
-		}
-		return modified
-	}
-	if codexToolsContainType(reqBody["tools"], choiceType) || codexInputAdditionalToolsContainType(reqBody["input"], choiceType) {
-		return modified
-	}
-	reqBody["tool_choice"] = "auto"
+	choiceMap["name"] = name
+	delete(choiceMap, "function")
 	return true
-}
-
-func codexInputAdditionalToolsContainType(rawInput any, toolType string) bool {
-	input, ok := rawInput.([]any)
-	if !ok || strings.TrimSpace(toolType) == "" {
-		return false
-	}
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
-			continue
-		}
-		if codexToolsContainType(item["tools"], toolType) {
-			return true
-		}
-	}
-	return false
-}
-
-func codexToolsContainType(rawTools any, toolType string) bool {
-	tools, ok := rawTools.([]any)
-	if !ok || strings.TrimSpace(toolType) == "" {
-		return false
-	}
-	for _, rawTool := range tools {
-		tool, ok := rawTool.(map[string]any)
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(firstNonEmptyString(tool["type"])) == toolType {
-			return true
-		}
-	}
-	return false
 }
 
 func codexToolsContainFunctionName(rawTools any, name string) bool {

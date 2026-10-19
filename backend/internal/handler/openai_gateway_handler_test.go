@@ -1936,9 +1936,12 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
-	inflightCache          service.BillingCache
-	afterTurn              func(turn int)
-	onUpstreamFrame        func(payload []byte) error
+	inflightCache   service.BillingCache
+	afterTurn       func(turn int)
+	onUpstreamFrame func(payload []byte) error
+	// lastTurnBareCyberError exercises forward-error fallback billing, not the
+	// normally settled response.failed path.
+	lastTurnBareCyberError bool
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
 	accountPlatform        string
@@ -3171,7 +3174,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 
 			responseID := fmt.Sprintf("resp_usage_e2e_%d", turn)
 			upstreamModel := gjson.GetBytes(payload, "model").String()
-			for _, response := range []string{
+			responses := []string{
 				fmt.Sprintf(
 					`{"type":"response.created","response":{"id":%q,"model":%q}}`,
 					responseID,
@@ -3182,7 +3185,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 					responseID,
 					upstreamModel,
 				),
-			} {
+			}
+			if tc.lastTurnBareCyberError && turn == turnCount {
+				responses[1] = `{"type":"error","error":{"code":"cyber_policy","type":"invalid_request_error","message":"blocked by upstream"},"usage":{"input_tokens":2,"output_tokens":1}}`
+			}
+			for _, response := range responses {
 				writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
 				writeErr := conn.Write(writeCtx, coderws.MessageText, []byte(response))
 				cancelWrite()
@@ -3390,13 +3397,17 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 
 	clientEvents := make([][]byte, 0, turnCount)
 	readCompleted := func() {
-		for _, wantType := range []string{"response.created", "response.completed"} {
+		terminalType := "response.completed"
+		if tc.lastTurnBareCyberError && len(clientEvents)+1 == turnCount {
+			terminalType = "error"
+		}
+		for _, wantType := range []string{"response.created", terminalType} {
 			readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 			_, event, readErr := clientConn.Read(readCtx)
 			cancelRead()
 			require.NoError(t, readErr)
 			require.Equal(t, wantType, gjson.GetBytes(event, "type").String())
-			if wantType == "response.completed" {
+			if wantType == terminalType {
 				clientEvents = append(clientEvents, append([]byte(nil), event...))
 			}
 		}
@@ -3582,6 +3593,28 @@ func (r *simpleModeWSRateLimitRepo) GetRateLimitData(context.Context, int64) (*s
 	}
 	return &service.APIKeyRateLimitData{Usage5h: usage, Window5hStart: &now}, nil
 }
+func TestOpenAIHTTPContinuationUnsupportedRequestsCompleteReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, streamStarted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream_started=%v", streamStarted), func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			h := &OpenAIGatewayHandler{}
+			h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
+				StatusCode: http.StatusBadRequest,
+				Reason:     service.OpenAIHTTPContinuationUnsupportedReason,
+			}, streamStarted)
+			if !streamStarted {
+				require.Equal(t, http.StatusBadRequest, w.Code)
+			}
+			require.Contains(t, w.Body.String(), string(service.OpenAIHTTPContinuationUnsupportedReason))
+			require.Contains(t, w.Body.String(), "complete required context in input without previous_response_id")
+			require.Contains(t, w.Body.String(), "original authenticated WebSocket connection")
+		})
+	}
+}
+
 func TestOpenAIResponsesWebSocketSimpleModeRechecksKeyWindows(t *testing.T) {
 	for _, mode := range []string{service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeCtxPool} {
 		t.Run(mode+"/after-account-selection", func(t *testing.T) {

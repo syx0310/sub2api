@@ -162,6 +162,50 @@ func TestOpenAIResponsesWebSocket_GroupRateSnapshotAlsoPricesInflightReservation
 	}
 }
 
+func TestOpenAIResponsesWebSocket_CyberFallbackUsesTurnGroupRate(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeCtxPool} {
+		t.Run(mode, func(t *testing.T) {
+			repo := newWSGroupPricingAPIKeyRepoStub(3)
+			apiKeyService := newWSGroupPricingAPIKeyService(repo)
+			cache := newHandlerInflightCache(100)
+			var amounts []float64
+			got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				firstPayload: wsGroupPricingFirst, secondPayload: wsGroupPricingSecond,
+				ingressMode: mode, inflightCache: cache, lastTurnBareCyberError: true,
+				apiKeyService: apiKeyService, apiKeyCredential: wsGroupPricingKey,
+				onUpstreamFrame: func([]byte) error {
+					cache.mu.Lock()
+					defer cache.mu.Unlock()
+					if len(cache.res) != 1 {
+						return errors.New("expected one executing-turn reservation")
+					}
+					for _, amount := range cache.res {
+						amounts = append(amounts, amount)
+					}
+					return nil
+				},
+				afterFirstUpstreamRequest: func(*service.ChannelService) error {
+					return repo.adminUpdate(apiKeyService, func(_ *service.APIKey, group *service.Group) { group.RateMultiplier = .3 })
+				},
+				afterTurn: func(int) {
+					require.Eventually(t, func() bool { return cache.count() == 0 }, time.Second, time.Millisecond)
+				},
+			})
+			require.Len(t, got.logs, 2)
+			require.Equal(t, service.RequestTypeCyberBlocked, got.logs[1].RequestType)
+			require.Equal(t, 2, got.logs[1].InputTokens)
+			require.Equal(t, 1, got.logs[1].OutputTokens)
+			require.InDelta(t, .3, got.logs[1].RateMultiplier, 1e-12)
+			require.Positive(t, got.logs[1].ActualCost)
+			require.InDelta(t, got.logs[0].ActualCost/10, got.logs[1].ActualCost, 1e-12)
+			cache.mu.Lock()
+			defer cache.mu.Unlock()
+			require.Len(t, amounts, 2)
+			require.InDelta(t, amounts[0]/10, amounts[1], 1e-9)
+		})
+	}
+}
+
 func TestOpenAIResponsesWebSocket_GroupRateChangeReachesProfitGateOnNextTurn(t *testing.T) {
 	repo := newWSGroupPricingAPIKeyRepoStub(3.0)
 	repo.group.ProfitControlEnabled = true

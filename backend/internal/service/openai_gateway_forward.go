@@ -59,6 +59,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		})
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
+	// HTTP turn metadata describes this request, unlike a persistent WS
+	// handshake. Fill missing body metadata before either OAuth transform or
+	// passthrough compatibility; the legacy compact endpoint has its own wire.
+	if account.IsOpenAIOAuthLike() && c != nil && c.Request != nil && c.Request.Method == http.MethodPost && !isOpenAIResponsesCompactPath(c) {
+		next, metadataErr := normalizeOpenAIRequestTurnMetadata(body, c.GetHeader(openAIWSTurnMetadataHeader))
+		if metadataErr != nil {
+			return nil, fmt.Errorf("normalize OpenAI request turn metadata: %w", metadataErr)
+		}
+		body = next
+	}
 
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
@@ -126,6 +136,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
+	if !compactPath && account.IsOpenAIOAuthLike() &&
+		(GetOpenAIClientTransport(c) != OpenAIClientTransportWS || wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2) &&
+		strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "" {
+		// Match the public HTTP handler's account restriction even when Forward
+		// is called internally. We cannot prove this input is a complete replay,
+		// and a WS response ID is not portable to OAuth HTTP or a new connection.
+		if c != nil && c.Writer != nil {
+			setOpsUpstreamError(c, http.StatusBadRequest, OpenAIHTTPContinuationUnsupportedMessage, "")
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"type": "invalid_request_error", "code": string(OpenAIHTTPContinuationUnsupportedReason),
+				"param": "previous_response_id", "message": OpenAIHTTPContinuationUnsupportedMessage,
+			}})
+		}
+		return nil, errors.New(OpenAIHTTPContinuationUnsupportedMessage)
+	}
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
 		if err != nil {
@@ -834,7 +859,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		agentTaskRecoveryTried := false
 		wsInvalidEncryptedContentRecoveryTried := false
 		recoverInvalidEncryptedContent := func(attempt int) bool {
-			if wsInvalidEncryptedContentRecoveryTried {
+			if wsInvalidEncryptedContentRecoveryTried || hasOpenAIEncryptedCompactionInput(lineageEntryBody) {
 				return false
 			}
 			// 写入 lineage 后，同一失效密文在后续 turn 进场时被预剥离，不再重复

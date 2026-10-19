@@ -37,6 +37,8 @@ OpenAI Docs 用于确认 append-only 工具历史及模型/地域/价格边界�
 
 ### 1. 历史 web_search 声明：兼容历史，但不扩大本轮工具权限
 
+本节为合并时的初始实现；其原生 v2 压缩覆盖缺口及后续修复见文末「2026-10-15 搜索历史压缩兼容补修」。
+
 上游为包含 `web_search_call` 的 OAuth 历史补 cached-only 搜索声明，修复本地 compact 的历史校验错误。直接照搬会在仍有其他工具可用时额外开放搜索，因为 `external_web_access: false` 不代表禁止调用。
 
 本地适配后的规则：
@@ -128,3 +130,100 @@ OpenAI Docs 用于确认 append-only 工具历史及模型/地域/价格边界�
 测试适配不改变生产语义：上游 SSE 心跳用例补显式 include_usage 参数；图片用量用例改为四个真实 create/terminal 轮次，不放宽本地重复终端计费保护；上游路由 golden 保持原始基线，只严格识别本地对测试桩 stop-after-capture 错误的既有 502 包装差异，仍比较全部端点、认证、模型、正文协议和异常字段，并固定允许差异数量。
 
 普通 Go 测试使用 GOMAXPROCS=2、-p=2/-parallel=4，GOMEMLIMIT 为 1200–1800MiB；race 使用 -p=1/-parallel=2，独立 cgroup 上限 3900MiB；前端两个 worker。重型编译、race、lint 和构建按内存余量错峰，测试均不使用真实 OAuth 推理或充值。
+
+## 2026-10-10 审阅补修：摘要保护、协议目录身份与 cyber 兜底
+
+本节记录在 `993c1f8c8` 之后的工作区修复，尚未 commit / push，不改变 main。
+
+### 加密 compaction 保护补齐
+
+- 公共清理函数不再删除 `compaction` / `compaction_summary`；旧版本留下的失效摘要记录也不能触发删除。raw 请求、对象形式 input 和 replay 历史都保持这一规则。
+- 带加密 compaction 的 HTTP/SSE → 上游 WS 请求遇到 `invalid_encrypted_content` 时，不做剥离重试，也不因此删除 `previous_response_id`，错误交由客户端处理。
+- `ctx_pool` / HTTP 桥接的公共失效记录不再登记 compaction；同包有加密 compaction 时，也不把无法确定来源的拒绝归因到同包 reasoning。仅 reasoning 的既有一次恢复、线程/账号隔离保持不变。
+- 全量回归发现 Grok 的同类恢复也使用公共函数：除公共层保留摘要外，Grok 在兼容转换前的原始请求上检查 compaction，防止其被改写为 reasoning 后在错误重试中删除。Grok 两个恢复 helper 同样保留摘要及锚点，正常兼容转换流程不改。
+- 语义依据：客户端 `compact_remote_v2.rs` 的历史替换测试，以及 [OpenAI compaction 文档](https://developers.openai.com/api/docs/guides/compaction) 中由摘要承接后续上下文的约束。这里保护的是 opaque 历史，不尝试在代理侧重建摘要内容。
+
+### Command Code 协议目录缓存隔离
+
+- 缓存键改为 URL + account ID + 实际目录请求头/代理配置的 SHA-256。后台刷新使用参与计算的同一份请求配置快照；换 Key、租户头、认证覆写或代理后，不会使用旧身份的目录或失败退避。
+- 旧配置的晚到刷新只能写旧键，不能覆盖新身份结果。缓存键不包含明文 API Key；名称、余额等运行态更新不因 UpdatedAt 变化而额外拉目录。
+- 原有 30 分钟 freshness、失败退避和同身份 stale-on-error 保留。因此同一配置下旧目录仍可能使用超过 30 分钟；本次解决的是跨配置误复用，不新增最大陈旧期限。Codex OAuth 的 60/300 秒目录缓存不变。
+- 额外正常请求成本为小型请求头快照编码及摘要计算，不增加数据库查询或独立轮询；身份改变后的首次请求按已有冷启动等待/回退规则重新拉取。
+
+### cyber 错误补记价格同源
+
+- `AfterTurn` 的异常补记与正常结算共用本轮 API Key / 分组快照，不再传建连快照。
+- 将冻结的 `PricingAt` 从本轮上下文捕获并显式传过异步 cyber 输入，再传给 `RecordUsage`，不因异步执行时刻变化而切换高峰倍率。
+- 正常 `response.failed` 终态结算不改；原有防重复记录、真实 token 计费、预热免计费及预占引用交接保留。
+- 动态回归使用本地模拟上游：两种原生 WS 模式下，第二轮裸 cyber error 携带非零用量，分组由 3 改为 0.3 后，预占和第二轮实际费用均按新倍率变化；另覆盖固定高峰/非高峰时刻的异步补记。
+
+### 补修验证
+
+日志：`/tmp/sub2api-forwarding-fixes.q0WYCb`。
+
+- 完整后端用例分两部分执行：58 个包共 22,950 条通过、17 条既有跳过；进程级分配断言独立运行 5 次全部通过。无数据库 schema / 前端改动，未重跑部署、生产数据库集成或 Docker 构建。
+- 首轮完整运行暴露 Grok 旧测试要求删除摘要，已按上述安全语义修正；另一个未改动的 `AllocsPerRun` 断言在整包运行时失败，疑似进程级后台分配噪声，同一代码隔离后通过 5 次，未提高阈值或删除测试。最终完整运行排除这一项，由独立运行补齐。
+- 重点 race：service / handler 共 100 条通过，零失败、无数据竞争报告（`race.jsonl`）。
+- lint 首次执行触发任务 OOM 保护；重跑保持 3500MiB 硬上限，改为单并发编译/分析及 GOMEMLIMIT=1000MiB，不提高内存上限。
+- lint 重跑通过：golangci-lint 2.14.0，0 issues（`golangci-final.log`）。`git diff --check` 通过。
+
+## 2026-10-15 搜索历史压缩兼容补修
+
+本次仍保留在 `merge/upstream-v0.2.15` 工作区，不提交、不合 main、不 push；已有摘要保护、协议目录、cyber 和 Usage Token/s 改动均保留。
+
+### 原因与对照依据
+
+- 上游 [#7939](https://github.com/Wei-Shaw/sub2api/pull/7939) 对历史 `web_search_call` 缺少 hosted 搜索声明的兼容已合入，并非漏合并。fork 后续 `dfd26bd1a`（2026-10-10）收紧工具权限时排除了 native v2，导致「trigger＋历史函数/namespace＋auto」未获修复。
+- 对照本地 Codex `2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4` 的 `compact_remote_v2_attempt.rs`：原生压缩保留历史并追加 trigger，工具可位于历史 `additional_tools`；本地摘要式压缩则使用 `Prompt` 的空工具默认值。客户端仓库本轮仅阅读，未修改或拉取。
+- 使用 OpenAI Docs 核对工具权限约束：[官方说明](https://developers.openai.com/api/docs/guides/prompt-caching)将声明工具与允许调用区分开，`tool_choice=none` 用于保留定义但禁止调用。OAuth 的具体历史兼容仍结合客户端源码和上游 PR，不将公开 API 的全部行为直接等同于 OAuth。
+- 二次审阅继续对照[官方工具选择定义](https://developers.openai.com/api/docs/guides/function-calling)及 [ChatGPT 授权接入限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。后者明确限制的是 SIWC / api.openai.com 接入；本 fork 的 ChatGPT backend 路径还结合本地客户端 `codex-api/src/common.rs`（HTTP 结构无锚点、WS 结构有锚点）及现有 HTTP handler 的 OAuth 账号排除规则判断，不声称仅凭公共文档完成了 backend endpoint 实测。
+
+### 行为改变
+
+1. 明确的原生 v2 压缩，即使带其他工具或 `previous_response_id`，在默认、null、auto、none 选择下也补齐缺失的 hosted 搜索声明，并将本次工具选择限制为 none。标准 Responses 追加顶层工具；Lite 追加独立 developer-role `additional_tools`，置于尾部 trigger 前。已有有效搜索声明时不重复注入、不重写原选择。
+2. 兼容注入不改原 `additional_tools` 的 ID/内容，不删除搜索历史、加密摘要或有效 WS 锚点，不把搜索结果转成文本。二次审阅修正了先前「HTTP 保留锚点交上游」的方案：OAuth HTTP 不能借用 WS 锚点，service 层在普通 `/responses` 发现此种请求时直接返回 400 / `openai_http_continuation_unsupported`，要求客户端携带完整上下文且不带锚点重发，或者在原认证 WS 连接续接；不调用上游、不静默删锚点。无法可靠判断当前 input 是否完整，因此带非空锚点即拒绝，而不猜测。API Key HTTP、有效原生 WS 续接和旧 compact wire 保持原规则。
+3. map/raw 共用逐请求语义优先级：control > generate=false 的 prewarm > 原生 trigger > 内嵌 JSON 的 request_kind。control/prewarm 不被误识别为原生或本地压缩；仅仅存在历史 compaction 摘要也不视为一次新的压缩。原来安全的无工具／显式 none 历史兼容继续保留，包括预热，不因新增压缩分支再次缩小原有覆盖。
+4. HTTP 的当前请求头先补入缺失的 body metadata，再进入 transform/passthrough；旧 compact 端点和 API Key 不采用这一新补缺。`ctx_pool` 将首帧握手补缺提前到兼容处理之前，与 WS passthrough 一致。body 显式值（含 null/空值）优先，后续 WS create 不继承握手的 compaction 标记。
+5. 普通轮次含其他可调用工具／可能继承工具时不扩大权限。required、named、allowed_tools 等显式选择不强行改为 none；无法安全兼容时保留请求及上游错误。HTTP transform 的旧 `normalizeCodexToolChoice` 同时取消「在顶层找不到声明就降级 auto」的行为，不再误伤 namespace / additional_tools 或缺失声明；只保留 legacy function envelope → Responses name 的等价转换，未知或无效选择交上游校验。新增 debug 事件 `openai_web_search_history_compatibility_skipped`，仅包含固定原因、请求类型及工具/锚点存在标志，不记录正文、工具名、ID、密文或凭据。
+6. 公共 HTTP handler 原本已排除不支持 HTTP 续接的 OAuth 候选、继续寻找 API Key 账号；这一调度规则不变。耗尽后的错误补齐与 service 一致的完整重放指引和可识别 code，不再只有「需要 API Key」一句提示。
+
+没有新增目录拉取、数据库/Redis 查询、探测请求或自动重试。复用既有 gjson/sjson 路径及 map 变换；新增字段写入仍可能复制请求体，成本随正文长度增长。压缩修复不改配置、计费、模型目录或前端逻辑。
+
+### 随附：默认 Codex 版本 0.162.1
+
+- 按追加要求，将内置 `codexCLIVersion` 从 0.160.0 更新为 0.162.1。默认 UA 的首段/尾段与 `Version` 头继续来自同一常量，OS/架构/终端形态不变；目录请求未提供版本时，也复用该客户端版本兜底，目录缓存与过滤规则不改。
+- 中英文设置页的 UA 占位文案同步；管理员「系统设置 → 网关转发」中原有的 Codex「当前生效版本」通过后端字段显示，无需新增组件。
+- 保留管理员显式版本 → 自动同步稳定版本 → 内置默认值的优先级，不清空或覆盖已有数据库设置，不触发手动同步或更新客户端仓库。显式传入 0.160.0 的目录缓存测试仍作为旧客户端兼容输入保留，不全仓替换版本字面量。
+- 同步默认 UA 一致性、设置接口和 API contract 的断言，并另行复验相关用例。
+
+### 回归与边界
+
+- helper 对照覆盖 standard/Lite、默认/null/auto/none、required/named/allowed_tools、已有声明、幂等性、typed ID、加密摘要、显式锚点、大整数、prewarm/control 和 body metadata 类型。
+- 完整 Forward 回归覆盖 transform SSE、HTTP passthrough SSE、保留的旧 HTTP→WS 分支；生产 HTTP 入站仍遵循既有 SSE 路由规则，不为测试开启线上混用。
+- 二次审阅新增穿过完整 Forward 的 required / named / namespaced / allowed_tools / custom 选择矩阵，覆盖历史函数、历史 namespace、顶层 namespace、缺失声明；模拟上游返回验证错误，断言原选择送达且仅请求一次。先前 HTTP 携带锚点的「模拟成功」预期已删除，改为上游零调用的明确拒绝及客户端完整重放；测试不作为 HTTP 真实续接支持的证据。
+- 原生 WS 在 ctx_pool / passthrough 两种执行器中分别验证首轮压缩和后续普通轮次，覆盖 native、header-only local、body turn/null/empty 覆盖握手；下一轮不注入新搜索权限，不继承旧 compaction metadata。
+- 测试使用本地 WS 客户端与模拟上游，不调用真实 OpenAI 推理或业务数据库。只能确认代码覆盖和出站结构，不能确认用户此前那次同名报错必然属于本缺口；上游已具备声明而仍失败的情况仍需另行诊断。
+- 本轮验证日志目录：`/tmp/sub2api-web-search-compaction.E7aUuL`。
+
+### 验证结果
+
+最终代码包含原生压缩兼容、二次审阅补修及默认版本 0.162.1。unit 按「全量运行＋旧预期更新后的定向复验」完成，没有删除或跳过此次发现的不匹配用例；不能将下面记录表述为一次全量零失败。
+
+- 最后一轮全量覆盖 58 个包，23,124 条测试/子用例通过、17 条既有跳过（`backend-unit-reviewed.jsonl`）。唯一不匹配是旧 `OAuthDropsOrphanAfterDroppingPreviousResponse` 用例仍要求删锚点、清空工具输出并继续请求；这是本次明确禁止的行为。将其改为更严格的「返回 400、正文不变、上游零调用」后，最终 service / handler 定向复验 292 条全部通过（`review-fixes-final.jsonl`），该用例另连续 5 次通过（`legacy-assertion-recheck.jsonl`）。这一步仅改测试预期，生产代码未再改变。
+- 重点 race：service / handler 两个包共 343 条通过，零失败、无数据竞争报告（`race-reviewed.jsonl`）。覆盖本次新增完整 Forward 矩阵、两种原生 WS 连续轮次、显式锚点、HTTP 重放错误及 handler 的 JSON/SSE 错误返回。二次审阅到来时取消的旧 race 不计为通过。
+- 后端静态检查：golangci-lint 2.14.0，0 issues（`golangci-reviewed.log`）；`git diff --check` 通过。
+- 0.162.1 版本更新专项：service / admin handler / server 共 323 条通过，包含 UA/Version 同源、版本优先级、目录默认版本、设置接口与 API contract（`compaction-and-version-final.jsonl`）；版本更新也包含在上述最终全量代码中。
+- 与此前相同，进程级分配断言 `TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits` 不与全量后台任务混跑，单独重复 5 次全部通过（`allocation-guard-reviewed.jsonl`）；未提高阈值或删除用例。
+- 前端中英文键完整性 3 条通过，修改的两份设置文案 ESLint 通过，无自动修复（`frontend-i18n.log`、`frontend-eslint.log`）。本次未重跑前端生产构建、数据库集成、Docker 或发布流程。
+- 普通 Go 使用 GOMAXPROCS=2、-p=1/-parallel=4；race 使用 -p=1/-parallel=2、3900MiB 上限；lint 使用单并发、GOMEMLIMIT=1000MiB、3500MiB 上限。重型编译与分析错峰，测试运行阶段可在内存余量内重叠。
+
+截至 2026-10-15，以上代码和报告尚未 commit；当时 HEAD 为 `993c1f8c8`，main / origin/main 均保持 `28ae263c3`，未推送远程。
+
+## 2026-10-19 main 交接复验
+
+按本次授权，将 v0.2.15 合并分支及上述后续修复一并提交、快进合回 main，并仅向自有仓库 `syx0310/sub2api` 推送。前文的“不提交 / 不合 main / 不 push”均为对应实施阶段的历史状态，不再是本次交接限制。下一轮上游 release 仅检查和制定计划，不在本次交接中合入。
+
+- 提交前确认 main 与 origin/main 没有分叉，main 是当前合并分支的祖先；没有修改客户端源码、生产数据库或运行发布部署。
+- 重新执行 service / handler 的压缩兼容、工具选择、HTTP 续接拒绝、WS 语义和版本一致性定向测试：292 条通过，零失败（复用 Go 测试缓存）。
+- 重新执行 UsageTable、latencyHealth 与中英文键完整性测试：3 个文件、63 条通过，零失败。Browserslist 数据过期提示仍保留，未为此更新依赖。
+- 日志：`/tmp/sub2api-main-release-review.CsYQ3f/backend-smoke.jsonl`、`frontend-smoke.log`。本轮不是新的全量测试或构建；完整验证及其边界仍以上文记录为准。

@@ -37,7 +37,7 @@ type OpenAIRecordUsageInput struct {
 	QuotaPlatform      string // user×platform quota platform resolved by the handler before async billing.
 	// PricingAt 是请求级定价时刻（请求开始捕获，与利润门的 D 同源）：高峰因子
 	// 按该时刻计算，保证同一请求从准入到扣费不中途变价。零值回退记录时刻
-	//（既有行为），供未装配的路径（图片/异步/cyber 等）沿用。
+	//（既有行为），供未装配的路径沿用。
 	PricingAt time.Time
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
 	CyberBlocked bool
@@ -52,6 +52,8 @@ type OpenAIRecordUsageInput struct {
 // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
 // 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
 type CyberPolicyUsageInput struct {
+	// Same immutable pricing time as this request/turn's admission and reservation.
+	PricingAt      time.Time
 	Prewarm        bool
 	CodexTurnState CodexTurnStateLengths
 	APIKey         *APIKey
@@ -116,6 +118,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		ChannelUsageFields: in.ChannelUsageFields,
 		CyberBlocked:       true,
 		NativeCompactionV2: in.NativeCompactionV2,
+		PricingAt:          in.PricingAt,
 	}); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", in.RequestID, err)
 	}

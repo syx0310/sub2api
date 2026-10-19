@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -18,7 +19,8 @@ import (
 // Declare a cached-only web_search tool for such requests. Responses Lite
 // rejects hosted tools at the top level, so Lite requests carry it in an
 // input additional_tools item instead. Only add a declaration when tool use
-// is already disabled or the request has an unambiguous no-tools intent.
+// is already disabled or this request has a no-tools/compaction intent. Native
+// v2 compaction may retain function/namespace declarations in its history.
 // Cached search is still a callable tool, not just a history marker.
 
 const (
@@ -52,8 +54,8 @@ func openAIToolsContainWebSearch(rawTools any) bool {
 }
 
 // shouldPinOpenAIWebSearchHistoryToolChoice reports whether tool_choice may be
-// forced to "none": only when the caller offered no tools, so the choice
-// cannot meaningfully be anything else.
+// forced to "none" for compaction or no-tools requests. Explicit required,
+// named and allowed_tools choices must not be silently overridden.
 func shouldPinOpenAIWebSearchHistoryToolChoice(choice any) bool {
 	switch typed := choice.(type) {
 	case nil:
@@ -66,17 +68,35 @@ func shouldPinOpenAIWebSearchHistoryToolChoice(choice any) bool {
 	}
 }
 
-func openAIWebSearchHistoryDeclarationPolicy(choice any, hasTools, hasAnchor, localCompaction bool) (allow, pinNone bool) {
+func openAIWebSearchHistoryDeclarationPolicy(choice any, hasTools, hasAnchor, localCompaction bool, semantic OpenAIResponsesRequestSemantics) (allow, pinNone bool) {
 	if value, ok := choice.(string); ok && value == "none" {
 		return true, false
+	}
+	if !shouldPinOpenAIWebSearchHistoryToolChoice(choice) {
+		logOpenAIWebSearchHistoryCompatibilitySkipped("explicit_tool_choice", semantic, hasTools, hasAnchor)
+		return false, false
+	}
+	// A trigger proves native compaction even with inherited tools or an
+	// explicit continuation anchor. Add history support, never a callable tool;
+	// do not discard the anchor, existing declarations or encrypted history.
+	if semantic.NativeCompactionV2 {
+		return true, true
 	}
 	// An incremental request can inherit tools from its connection. Local
 	// compaction sends no fresh tools, even when old declarations remain in
 	// history; restrict it to a summary without enabling a new search.
-	if !hasAnchor && (!hasTools || localCompaction) && shouldPinOpenAIWebSearchHistoryToolChoice(choice) {
+	if !hasAnchor && (!hasTools || localCompaction) {
 		return true, true
 	}
+	logOpenAIWebSearchHistoryCompatibilitySkipped("preserve_tool_permissions", semantic, hasTools, hasAnchor)
 	return false, false
+}
+
+func logOpenAIWebSearchHistoryCompatibilitySkipped(reason string, semantic OpenAIResponsesRequestSemantics, hasTools, hasAnchor bool) {
+	// Structural diagnosis only: no history, tool names, IDs or ciphertext.
+	slog.Debug("openai_web_search_history_compatibility_skipped",
+		"reason", reason, "request_kind", semantic.Kind, "native_compaction_v2", semantic.NativeCompactionV2,
+		"has_tools", hasTools, "has_previous_response_id", hasAnchor)
 }
 
 // openAIAdditionalToolsInsertIndex keeps a trailing compaction trigger last,
@@ -129,9 +149,12 @@ func ensureOpenAIOAuthWebSearchToolForHistory(reqBody map[string]any, responsesL
 	callerDeclaredTools = callerDeclaredTools || len(tools) > 0
 	metadata, _ := reqBody["client_metadata"].(map[string]any)
 	turnMetadata, _ := metadata[openAIWSTurnMetadataHeader].(string)
-	localCompaction := !hasCompactionTrigger && len(tools) == 0 && gjson.Get(turnMetadata, "request_kind").String() == "compaction"
+	event, _ := reqBody["type"].(string)
+	generate, hasGenerate := reqBody["generate"].(bool)
+	semantic := classifyOpenAIResponsesRequestSignals(event, hasGenerate && !generate, hasCompactionTrigger, turnMetadata)
+	localCompaction := semantic.Kind == "compaction" && !semantic.NativeCompactionV2 && len(tools) == 0
 	hasAnchor := firstNonEmptyString(reqBody["previous_response_id"]) != ""
-	allow, pinNone := openAIWebSearchHistoryDeclarationPolicy(reqBody["tool_choice"], callerDeclaredTools, hasAnchor, localCompaction)
+	allow, pinNone := openAIWebSearchHistoryDeclarationPolicy(reqBody["tool_choice"], callerDeclaredTools, hasAnchor, localCompaction, semantic)
 	if !allow {
 		return false
 	}
@@ -201,11 +224,13 @@ func ensureOpenAIOAuthWebSearchToolForHistoryBody(body []byte, responsesLite boo
 	if choice.Type == gjson.String {
 		choiceValue = choice.String()
 	} else if choice.Type != gjson.Null {
-		return body, false, nil
+		// A non-string choice is not eligible. Avoid decoding arbitrary caller
+		// data just to select the shared diagnostic/permission-preserving branch.
+		choiceValue = struct{}{}
 	}
 	semantic := ClassifyOpenAIResponsesRequest(body)
 	localCompaction := semantic.Kind == "compaction" && !semantic.NativeCompactionV2 && !topLevelTools
-	allow, pinNone := openAIWebSearchHistoryDeclarationPolicy(choiceValue, callerDeclaredTools, gjson.GetBytes(body, "previous_response_id").String() != "", localCompaction)
+	allow, pinNone := openAIWebSearchHistoryDeclarationPolicy(choiceValue, callerDeclaredTools, gjson.GetBytes(body, "previous_response_id").String() != "", localCompaction, semantic)
 	if !allow {
 		return body, false, nil
 	}

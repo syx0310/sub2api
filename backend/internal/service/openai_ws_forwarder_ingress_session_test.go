@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -4851,6 +4852,19 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ClientDisconnect
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncryptedContentLineageStripsNextTurn(t *testing.T) {
+	testOpenAIWSInvalidEncryptedContentLineageNextTurn(t, "reasoning")
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidCompactionSurvivesNextTurn(t *testing.T) {
+	for _, itemType := range []string{"compaction", "compaction_summary"} {
+		t.Run(itemType, func(t *testing.T) {
+			testOpenAIWSInvalidEncryptedContentLineageNextTurn(t, itemType)
+		})
+	}
+}
+
+func testOpenAIWSInvalidEncryptedContentLineageNextTurn(t *testing.T, itemType string) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{}
@@ -4884,6 +4898,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	}
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(dialer)
+	t.Cleanup(pool.Close)
 
 	svc := &OpenAIGatewayService{
 		cfg:              cfg,
@@ -4970,7 +4985,12 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	}
 
 	// turn1：携带失效密文，上游以 invalid_encrypted_content 拒绝（error + response.failed 透传给客户端）。
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[{"type":"reasoning","id":"rs_1","encrypted_content":"stale-cipher","summary":[]},{"type":"input_text","text":"hi"}]}`)
+	itemID := "rs_1"
+	if itemType != "reasoning" {
+		itemID = "cmp_keep"
+	}
+	item := fmt.Sprintf(`{"type":%q,"id":%q,"encrypted_content":"stale-cipher","summary":[]}`, itemType, itemID)
+	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[` + item + `,{"type":"input_text","text":"hi"}]}`)
 	firstEvent := readMessage()
 	require.Equal(t, "error", gjson.GetBytes(firstEvent, "type").String())
 	require.Equal(t, "invalid_encrypted_content", gjson.GetBytes(firstEvent, "error.code").String())
@@ -4983,6 +5003,9 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 		t.Fatal("failed connection was not retired")
 	}
 	_ = clientConn.CloseNow()
+	if itemType != "reasoning" {
+		require.False(t, svc.getOpenAIWSStateStore().HasAnySessionInvalidEncryptedContent(), "compaction rejection must not create a cleanup mark")
+	}
 	dialCtx, cancelDial = context.WithTimeout(context.Background(), 3*time.Second)
 	clientConn, _, err = coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), dialOptions)
 	cancelDial()
@@ -4990,7 +5013,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 
 	// The next create must use a fresh socket, while the same raw thread retains
 	// its invalid-cipher lineage and does not replay the failed request itself.
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[{"type":"reasoning","id":"rs_1","encrypted_content":"stale-cipher","summary":[]},{"type":"input_text","text":"hi"},{"type":"input_text","text":"again"}]}`)
+	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[` + item + `,{"type":"input_text","text":"hi"},{"type":"input_text","text":"again"}]}`)
 	thirdEvent := readMessage()
 	require.Equal(t, "response.completed", gjson.GetBytes(thirdEvent, "type").String())
 	require.Equal(t, "resp_enc_lineage_2", gjson.GetBytes(thirdEvent, "response.id").String())
@@ -5017,9 +5040,13 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_InvalidEncrypted
 	secondUpstream := requestToJSONString(writes[1])
 	secondInput := gjson.Get(secondUpstream, "input").Array()
 	require.Len(t, secondInput, 3, "剥离仅移除 encrypted_content 字段，reasoning 骨架保留")
-	for _, item := range secondInput {
-		require.False(t, item.Get("encrypted_content").Exists(), "第二轮请求不得再携带已失效密文: %s", item.Raw)
+	if itemType == "reasoning" {
+		for _, item := range secondInput {
+			require.False(t, item.Get("encrypted_content").Exists(), "第二轮请求不得再携带已失效 reasoning 密文: %s", item.Raw)
+		}
+	} else {
+		require.JSONEq(t, item, secondInput[0].Raw, "compaction must remain intact on client resubmission")
 	}
-	require.Equal(t, "rs_1", gjson.Get(secondUpstream, "input.0.id").String())
+	require.Equal(t, itemID, gjson.Get(secondUpstream, "input.0.id").String())
 	require.Equal(t, "again", gjson.Get(secondUpstream, "input.2.text").String())
 }
