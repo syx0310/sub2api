@@ -14,8 +14,9 @@ import (
 
 // responsesFailedError 对齐 OpenAI Responses 协议 error 子对象。
 type responsesFailedError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string            `json:"code"`
+	Message string            `json:"message"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // responsesFailedBody 对齐 apicompat.makeResponsesCompletedEvent 输出的 response 子对象字段集。
@@ -76,6 +77,7 @@ func writeResponsesFailedSSE(c *gin.Context, errType, code, message string) bool
 			Error: responsesFailedError{
 				Code:    mapResponsesErrorCode(errType, code),
 				Message: message,
+				Headers: responsesFailureRetryHeaders(c),
 			},
 		},
 	})
@@ -90,6 +92,20 @@ func writeResponsesFailedSSE(c *gin.Context, errType, code, message string) bool
 	}
 	flusher.Flush()
 	return true
+}
+
+// A heartbeat may already have committed the HTTP headers. Codex also reads
+// retry advice from response.failed.error.headers; forward only this validated
+// header, never credentials or the rest of an upstream response's headers.
+func responsesFailureRetryHeaders(c *gin.Context) map[string]string {
+	if c == nil || c.Writer == nil {
+		return nil
+	}
+	value := strings.TrimSpace(c.Writer.Header().Get("Retry-After"))
+	if value == "" || len(value) > 128 || strings.ContainsAny(value, "\r\n") || !isSafeRetryAfter(value) {
+		return nil
+	}
+	return map[string]string{"retry-after": value}
 }
 
 // inboundIsResponses 判断当前请求是否落在任意 Responses 路由上

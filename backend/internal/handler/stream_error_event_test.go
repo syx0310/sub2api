@@ -9,11 +9,41 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestResponsesCapacityRetryAdviceSurvivesCommittedHeartbeat(t *testing.T) {
+	c, rec := newGinContextForEndpoint(t, "/v1/responses")
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Flush()
+	h := &OpenAIGatewayHandler{}
+	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode: http.StatusServiceUnavailable, ClientStatusCode: http.StatusServiceUnavailable,
+		RequestScopedTransient: true, NextAccountAction: service.NextAccountStop,
+		ClientMessage:   "Our servers are currently overloaded. Please try again later.",
+		ResponseBody:    []byte(`{"error":{"code":"server_is_overloaded"}}`),
+		ResponseHeaders: http.Header{"Retry-After": {"60"}, "Authorization": {"must-not-leak"}},
+	}, true)
+	_, failure := parseResponsesFailedSSE(t, rec.Body.String())
+	require.Equal(t, map[string]any{"retry-after": "60"}, failure["headers"])
+	require.Equal(t, http.StatusOK, rec.Code, "already committed HTTP status cannot change")
+	require.Empty(t, rec.Result().Header.Get("Retry-After"), "the hint must reach Codex through the terminal event")
+	require.NotContains(t, rec.Body.String(), "must-not-leak")
+}
+
+func TestResponsesFailureOnlyIncludesSafeRetryAdvice(t *testing.T) {
+	for _, invalid := range []string{"", "secret-token", "60\r\nInjected: bad", "999999999"} {
+		c, rec := newGinContextForEndpoint(t, "/v1/responses")
+		c.Header("Retry-After", invalid)
+		require.True(t, writeResponsesFailedSSE(c, "server_error", "", "try later"))
+		_, failure := parseResponsesFailedSSE(t, rec.Body.String())
+		require.NotContains(t, failure, "headers")
+	}
+}
 
 // Regression for the production incident on 2026-05-24 around 9:13 CST:
 // user 16 sent /v1/responses with stream:true via Codex CLI; the user-concurrency
