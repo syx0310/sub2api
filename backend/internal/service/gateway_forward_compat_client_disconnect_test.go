@@ -106,7 +106,7 @@ type compatStreamHandler func(*GatewayService, *http.Response, *gin.Context) (*F
 func compatStreamHandlers() map[string]compatStreamHandler {
 	return map[string]compatStreamHandler{
 		"chat_completions": func(svc *GatewayService, resp *http.Response, c *gin.Context) (*ForwardResult, error) {
-			return svc.handleCCStreamingFromAnthropic(resp, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now())
+			return svc.handleCCStreamingFromAnthropic(resp, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), true)
 		},
 		"responses": func(svc *GatewayService, resp *http.Response, c *gin.Context) (*ForwardResult, error) {
 			return svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
@@ -781,7 +781,7 @@ func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainsUpstreamUsage(t *t
 
 	result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
 		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))},
-		c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(),
+		c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), true,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)

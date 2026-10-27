@@ -108,10 +108,13 @@ func TestNormalizeDeepSeekResponsesRequestBodyAliasesInputImageURL(t *testing.T)
 
 	t.Run("dual_field_input_drops_duplicate_url", func(t *testing.T) {
 		body := deepSeekUserImageBody(`{"type":"input_image","image_url":"` + deepSeekInputImageDataURI + `","url":"` + deepSeekInputImageDataURI + `"}`)
-		got := normalizeDeepSeekResponsesRequestBody(native, body)
+		got, err := normalizeDeepSeekResponsesRequestBody(native, body)
+		require.NoError(t, err)
 		require.Equal(t, deepSeekInputImageDataURI, gjson.GetBytes(got, "input.0.content.1.image_url").String())
 		require.False(t, gjson.GetBytes(got, "input.0.content.1.url").Exists())
-		require.Equal(t, string(got), string(normalizeDeepSeekResponsesRequestBody(native, got)))
+		again, err := normalizeDeepSeekResponsesRequestBody(native, got)
+		require.NoError(t, err)
+		require.Equal(t, string(got), string(again))
 	})
 
 	t.Run("file_id_only_does_not_gain_empty_url", func(t *testing.T) {
