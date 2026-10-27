@@ -134,6 +134,7 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 }
 
 type openAIWSPassthroughUsageMeta struct {
+	cacheWriteTTL            atomic.Pointer[string]
 	serviceTier              atomic.Pointer[string]
 	reasoningEffort          atomic.Pointer[string]
 	requestedReasoningEffort atomic.Pointer[string]
@@ -158,6 +159,7 @@ func (m *openAIWSPassthroughUsageMeta) initFromFirstFrame(policyOutput []byte, m
 	if m == nil {
 		return
 	}
+	m.cacheWriteTTL.Store(openAIWSTrimmedStringPtr(gjson.GetBytes(policyOutput, "prompt_cache_options.ttl").String()))
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, m.sessionRequestModel))
 	m.storeTurnModels(m.sessionRequestModel, policyOutput)
@@ -194,6 +196,7 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 	if m == nil {
 		return
 	}
+	m.cacheWriteTTL.Store(openAIWSTrimmedStringPtr(gjson.GetBytes(policyOutput, "prompt_cache_options.ttl").String()))
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, requestModelForFrame))
 	m.storeTurnModels(requestModelForFrame, policyOutput)
@@ -1508,7 +1511,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
 				turnResult := &OpenAIForwardResult{
-					RequestID: turn.RequestID,
+					OpenAICacheWrite12h: openAIUses12hCacheWrite(account, turnUpstreamModel, optionalStringValue(usageMeta.cacheWriteTTL.Load())),
+					RequestID:           turn.RequestID,
 					Usage: OpenAIUsage{
 						InputTokens:              turn.Usage.InputTokens,
 						ImageInputTokens:         turn.Usage.ImageInputTokens,
@@ -1676,7 +1680,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 
 	resultRequestModel, resultUpstreamModel := usageMeta.turnModels(relayResult.RequestModel)
 	result := &OpenAIForwardResult{
-		RequestID: relayResult.RequestID,
+		OpenAICacheWrite12h: openAIUses12hCacheWrite(account, resultUpstreamModel, optionalStringValue(usageMeta.cacheWriteTTL.Load())),
+		RequestID:           relayResult.RequestID,
 		Usage: OpenAIUsage{
 			InputTokens:              relayResult.Usage.InputTokens,
 			ImageInputTokens:         relayResult.Usage.ImageInputTokens,

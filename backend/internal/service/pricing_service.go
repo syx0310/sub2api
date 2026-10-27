@@ -111,6 +111,17 @@ var (
 		Mode:                                "responses",
 		SupportsPromptCaching:               true,
 	}
+	// Official Terra price card, verified 2026-10-27. Never alias Sol pricing.
+	openAIGPT61TerraFallbackPricing = &LiteLLMModelPricing{
+		CacheCreationInputTokenCostExplicit: true,
+		InputCostPerToken:                   1e-6, InputCostPerTokenPriority: 2e-6,
+		OutputCostPerToken: 5e-6, OutputCostPerTokenPriority: 10e-6,
+		CacheCreationInputTokenCost: 1.25e-6, CacheCreationInputTokenCostPriority: 2.5e-6,
+		CacheReadInputTokenCost: 0.05e-6, CacheReadInputTokenCostPriority: 0.1e-6,
+		LongContextInputTokenThreshold: 272_000,
+		LongContextInputCostMultiplier: 2, LongContextOutputCostMultiplier: 1.5,
+		SupportsServiceTier: true, LiteLLMProvider: "openai", Mode: "responses", SupportsPromptCaching: true,
+	}
 	openAIGPT6LunaFallbackPricing = &LiteLLMModelPricing{
 		CacheCreationInputTokenCostExplicit: true,
 		InputCostPerToken:                   0.1e-6,
@@ -1583,7 +1594,7 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 	// These published models have distinct official rates. Do not reach the
 	// generic gpt-6 base-name fallback when a remote catalog is still incomplete.
-	if pricing := openAIGPT6SolLunaFallbackPricing[canonicalizeOpenAIModelAliasSpelling(model)]; pricing != nil {
+	if pricing := openAIGPT6StandardFallbackPricing[canonicalizeOpenAIModelAliasSpelling(model)]; pricing != nil {
 		return pricing
 	}
 	if strings.HasPrefix(model, "gpt-5.3-codex-spark") {

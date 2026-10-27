@@ -513,6 +513,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	forwardResult := &OpenAIForwardResult{
+		OpenAICacheWrite12h:           openAIUses12hCacheWriteBody(account, upstreamPassthroughModel, body),
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		CodexTurnState:                observedCodexTurnStateLengths(c),

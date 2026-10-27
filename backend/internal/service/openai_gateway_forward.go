@@ -1340,6 +1340,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		forwardResult := &OpenAIForwardResult{
+			OpenAICacheWrite12h:           openAIUses12hCacheWriteBody(account, upstreamModel, body),
 			RequestID:                     resp.Header.Get("x-request-id"),
 			UpstreamHeaders:               resp.Header,
 			CodexTurnState:                observedCodexTurnStateLengths(c),

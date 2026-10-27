@@ -243,6 +243,8 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
+	// OpenAICacheWrite12h is captured after provider-specific request filtering.
+	OpenAICacheWrite12h bool
 	// Prewarm is derived from the actual generate=false execution, never metadata.
 	Prewarm    bool
 	RequestID  string

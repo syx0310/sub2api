@@ -20,7 +20,7 @@ import (
 // Both executors speak the real WS codec to a local upstream. Compare actual
 // dispatched frames, not just helper output or a synthetic relay state machine.
 func TestOpenAIWSClientSemanticsCtxPoolPassthroughParity(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra", "gpt-5.5"} {
+	for _, model := range []string{"gpt-6-astra", "gpt-6.1-terra", "gpt-5.5"} {
 		for _, lite := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/lite=%v", model, lite), func(t *testing.T) { testOpenAIWSClientSemanticsParity(t, lite, model) })
 		}
@@ -206,7 +206,7 @@ func testOpenAIWSClientSemanticsParity(t *testing.T, lite bool, upstreamModel st
 					captured = append(captured, frame)
 					require.Equal(t, upstreamModel, gjson.GetBytes(frame, "model").String())
 					require.Equal(t, lite && upstreamModel != "gpt-5.5", isOpenAIResponsesLiteWebSocketPayload(frame))
-					if upstreamModel == "gpt-6-astra" {
+					if isOpenAIGPT6Model(upstreamModel) {
 						require.Equal(t, "auto", gjson.GetBytes(frame, "reasoning.mode").String())
 					} else {
 						require.False(t, gjson.GetBytes(frame, "reasoning.mode").Exists(), "GPT-5.5 does not implement GPT-6's reasoning.mode")

@@ -19,7 +19,7 @@ import (
 )
 
 func TestGPT6ChatFallbackOutboundEffortAndBilling(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"} {
 		for _, route := range []string{"chat", "responses", "messages"} {
 			for _, effort := range []string{"none", "minimal", "ultra", "max"} {
 				for _, stream := range []bool{false, true} {
@@ -29,7 +29,7 @@ func TestGPT6ChatFallbackOutboundEffortAndBilling(t *testing.T) {
 							want = "low"
 						} else if effort == "ultra" {
 							want = "max"
-							if model == "gpt-6-astra" || model == "gpt-6.1-sol" {
+							if model == "gpt-6-astra" || model == "gpt-6.1-sol" || model == "gpt-6.1-terra" {
 								want = "xhigh"
 							}
 						}

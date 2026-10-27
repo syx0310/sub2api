@@ -1047,7 +1047,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		resultWithUsage := func(terminalEvent string) *OpenAIForwardResult {
 			result := &OpenAIForwardResult{
-				RequestID: responseID, Usage: usage, Model: originalModel, UpstreamModel: mappedModel,
+				OpenAICacheWrite12h: openAIUses12hCacheWriteBody(account, mappedModel, payload),
+				RequestID:           responseID, Usage: usage, Model: originalModel, UpstreamModel: mappedModel,
 				UpstreamResponseModel:         responseModelObserver.Model(),
 				UpstreamResponseModelConflict: responseModelObserver.Conflict(),
 				UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),

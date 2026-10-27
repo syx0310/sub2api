@@ -22,7 +22,7 @@ var (
 	gpt6SolLunaCodexModels     map[string]configuredCodexModelDescriptor
 )
 
-func configuredGPT6SolLunaModelDescriptor(modelID string) (configuredCodexModelDescriptor, bool) {
+func configuredGPT6StandardModelDescriptor(modelID string) (configuredCodexModelDescriptor, bool) {
 	gpt6SolLunaCodexModelsOnce.Do(func() {
 		if err := json.Unmarshal(gpt6SolLunaCodexModelsJSON, &gpt6SolLunaCodexModels); err != nil {
 			panic(err)
@@ -36,6 +36,12 @@ func configuredGPT6SolLunaModelDescriptor(modelID string) (configuredCodexModelD
 		// only a fallback; explicit account catalog metadata remains authoritative.
 		sol.ContextWindow = 500_000
 		gpt6SolLunaCodexModels[openai.GPT61SolModelID] = sol
+		var terra configuredCodexModelDescriptor
+		if err := json.Unmarshal(openai.CodexGPT61TerraMetadata, &terra); err != nil {
+			panic(err)
+		}
+		terra.officialMetadata = openai.CodexGPT61TerraMetadata
+		gpt6SolLunaCodexModels[openai.GPT61TerraModelID] = terra
 	})
 	descriptor, ok := gpt6SolLunaCodexModels[canonicalizeOpenAIModelAliasSpelling(modelID)]
 	return descriptor, ok

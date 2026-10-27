@@ -7,16 +7,17 @@ import (
 )
 
 const (
-	GPT6AstraModelID = "gpt-6-astra"
-	GPT6SolModelID   = "gpt-6-sol"
-	GPT61SolModelID  = "gpt-6.1-sol"
-	GPT6LunaModelID  = "gpt-6-luna"
+	GPT6AstraModelID  = "gpt-6-astra"
+	GPT6SolModelID    = "gpt-6-sol"
+	GPT61SolModelID   = "gpt-6.1-sol"
+	GPT61TerraModelID = "gpt-6.1-terra"
+	GPT6LunaModelID   = "gpt-6-luna"
 )
 
 // IsGPT6Model recognizes published IDs only, not speculative aliases or snapshots.
 func IsGPT6Model(model string) bool {
 	switch CanonicalizeOpenAIModelAliasSpelling(model) {
-	case GPT6AstraModelID, GPT6SolModelID, GPT61SolModelID, GPT6LunaModelID:
+	case GPT6AstraModelID, GPT6SolModelID, GPT61SolModelID, GPT61TerraModelID, GPT6LunaModelID:
 		return true
 	default:
 		return false
@@ -41,6 +42,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: GPT61SolModelID, Object: "model", Created: 1790726400, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
+	{ID: GPT61TerraModelID, Object: "model", Created: 1792972800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
 	{ID: GPT6SolModelID, Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: GPT6LunaModelID, Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
@@ -100,6 +102,13 @@ var instructionsGPT6Astra string
 //
 //go:embed codex_gpt61_sol.json
 var CodexGPT61SolMetadata []byte
+
+// CodexGPT61TerraMetadata is model-list metadata only, never a request prompt.
+// Source: openai/codex c587d6e54cb1e4013bf0cf9ea769edde48a23a1e,
+// codex-rs/models-manager/models.json (2026-10-27).
+//
+//go:embed codex_gpt61_terra.json
+var CodexGPT61TerraMetadata []byte
 
 // latestCodexInstructions 返回当前已知最新版本的 Codex base instructions，
 // 当前为 GPT-5.5；若 5.5 prompt 意外为空则回退到 DefaultInstructions 保证非空。
@@ -187,6 +196,12 @@ func CodexBaseInstructionsForModel(model string) string {
 func IsGPT6SolOrLunaModelSpelling(model string) bool {
 	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
 	return canonical == GPT6SolModelID || canonical == GPT61SolModelID || canonical == GPT6LunaModelID
+}
+
+// IsGPT6StandardModelSpelling groups published lower-cost GPT-6 price cards.
+// It does not imply identical reasoning, endpoint or subscription capabilities.
+func IsGPT6StandardModelSpelling(model string) bool {
+	return IsGPT6SolOrLunaModelSpelling(model) || CanonicalizeOpenAIModelAliasSpelling(model) == GPT61TerraModelID
 }
 
 // IsGPT61SolModelSpelling recognizes the published ID, not speculative suffixes.

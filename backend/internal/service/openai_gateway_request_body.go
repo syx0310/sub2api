@@ -200,7 +200,7 @@ func normalizeGPT6ReasoningEffort(raw, model string) (string, bool) {
 	case "ultra":
 		// Codex resolves Ultra using multi_agent_reasoning_effort, or max when
 		// it is null. Delegation is a separate client behavior, never injected here.
-		if isOpenAIGPT6AstraModel(model) || canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT61SolModelID {
+		if isOpenAIGPT6AstraModel(model) || canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT61SolModelID || canonicalizeOpenAIModelAliasSpelling(model) == openai.GPT61TerraModelID {
 			return "xhigh", true
 		}
 		return "max", true
@@ -1541,7 +1541,7 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool, 
 }
 
 func normalizeGPT6ResponsesSampling(body []byte, model string) ([]byte, bool, error) {
-	if !openai.IsGPT6SolOrLunaModelSpelling(model) {
+	if !openai.IsGPT6StandardModelSpelling(model) {
 		return body, false, nil
 	}
 	out := body
@@ -2328,7 +2328,9 @@ func openAIModelSupportsPriorityServiceTier(model string) bool {
 }
 
 func openAIModelHasEUFastRestriction(account *Account, model string) bool {
-	return isOpenAIGPT6Model(model) && !isOpenAIGPT61SolModel(model) && account.IsOpenAIEUDataResidency()
+	// EU Fast is unavailable for Astra / original Sol, not the entire family.
+	canonical := canonicalizeOpenAIModelAliasSpelling(model)
+	return (canonical == openai.GPT6AstraModelID || canonical == openai.GPT6SolModelID) && account.IsOpenAIEUDataResidency()
 }
 
 func openAIGroupForcesFast(ctx context.Context, account *Account, model string) bool {

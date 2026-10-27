@@ -455,6 +455,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
+			OpenAICacheWrite12h:           openAIUses12hCacheWriteMap(account, mappedModel, payload),
 			RequestID:                     responseID,
 			ResponseID:                    responseID,
 			Usage:                         *usage,

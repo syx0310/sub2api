@@ -20,7 +20,7 @@ import (
 )
 
 func TestGPT6SolLunaHTTPForwardKeepsClientInstructions(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"} {
 		for _, route := range []string{"oauth", "passthrough", "apikey", "compatible_apikey"} {
 			t.Run(model+"/"+route, func(t *testing.T) {
 				s := newAstraOAuthSetup(t, route == "passthrough")
@@ -56,7 +56,7 @@ func TestGPT6SolLunaHTTPForwardKeepsClientInstructions(t *testing.T) {
 }
 
 func TestGPT6SolLunaChatToolsUseResponsesAndRawRejects(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"} {
 		t.Run(model, func(t *testing.T) {
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(codexCompletedSSE(fmt.Sprintf(`{"id":"resp_cc","model":%q,"output":[],"usage":{"input_tokens":1,"output_tokens":1}}`, model))))}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
@@ -82,7 +82,7 @@ func TestGPT6SolLunaChatToolsUseResponsesAndRawRejects(t *testing.T) {
 }
 
 func TestGPT6SolLunaAnthropicMappedModelAndInstructions(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"} {
 		for _, effort := range []string{"none", "max"} {
 			t.Run(model+"/"+effort, func(t *testing.T) {
 				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(codexCompletedSSE(fmt.Sprintf(`{"id":"resp_messages","model":%q,"output":[],"usage":{"input_tokens":1,"output_tokens":1}}`, model))))}}
@@ -108,7 +108,7 @@ func TestGPT6SolLunaAnthropicMappedModelAndInstructions(t *testing.T) {
 }
 
 func TestGPT6SolLunaWSConfigurationAndCompact(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"} {
 		for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
 			t.Run(model+"/"+mode, func(t *testing.T) {
 				ctx, cancel := context.WithCancelCause(context.Background())
@@ -133,11 +133,11 @@ func TestGPT6SolLunaWSConfigurationAndCompact(t *testing.T) {
 					},
 				})
 				defer server.Close()
-				first := fmt.Sprintf(`{"type":"response.create","model":%q,"store":false,"instructions":"client-owned","reasoning":{"effort":"none"},"input":[{"role":"user","content":"hello"}]}`, model)
+				first := fmt.Sprintf(`{"type":"response.create","model":%q,"store":false,"instructions":"client-owned","reasoning":{"effort":"none"},"prompt_cache_options":{"ttl":"12h"},"input":[{"role":"user","content":"hello"}]}`, model)
 				client := dialPassthroughLifecycleClientWithPayload(t, server, first)
 				defer func() { _ = client.CloseNow() }()
 				ultraEffort := "max"
-				if model == "gpt-6.1-sol" {
+				if model == "gpt-6.1-sol" || model == "gpt-6.1-terra" {
 					ultraEffort = "xhigh"
 				}
 				for turn, want := range []string{"low", ultraEffort, ultraEffort, "medium"} {
@@ -190,6 +190,7 @@ func TestGPT6SolLunaWSConfigurationAndCompact(t *testing.T) {
 					select {
 					case result := <-results:
 						require.NotNil(t, result.ReasoningEffort)
+						require.Equal(t, model == "gpt-6.1-terra" && turn == 0, result.OpenAICacheWrite12h, "TTL belongs to the current outbound create")
 						require.Equal(t, want, *result.ReasoningEffort, "turn %d", turn+1)
 					case <-time.After(3 * time.Second):
 						t.Fatal("missing usage result")
