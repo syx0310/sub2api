@@ -340,7 +340,7 @@ func (s *SettingService) GetOpenAICodexUserAgent(ctx context.Context) string {
 
 // GetOpenAICodexClientVersion 返回出站声明的 Codex 客户端版本号。
 // 优先级：管理员在面板覆写的版本 → 自动同步到的官方最新稳定版 → 内置常量。
-// 上游在容量紧张时按客户端身份分优先级降载，陈旧版本会被优先丢弃，故该值需保持跟随官方发布；
+// 上游会按客户端身份进行风控分层，陈旧版本可能被优先丢弃，故该值需保持跟随官方发布；
 // 自动同步让运维不必为了跟版本而发新版本。
 func (s *SettingService) GetOpenAICodexClientVersion(ctx context.Context) string {
 	fallback := codexCLIVersion
@@ -505,7 +505,7 @@ func (s *SettingService) InvalidateClaudeCodeClientVersionCache() {
 //
 // 面板 UA 只贡献客户端名与 OS / 架构 / 终端指纹，版本段一律用生效版本重建：该输入框是
 // 唯一能改 UA 后缀的地方，但它填写于某个历史版本，逐字沿用会把出站身份永久钉死在陈旧
-// 版本上并绕过自动同步——而陈旧身份正是上游优先降载的那一侧。
+// 版本上并绕过自动同步——而陈旧身份正是上游风控更严格的那一侧。
 // 需要固定版本请填「Codex 客户端版本号」并关闭自动同步。
 func (s *SettingService) GetOpenAICodexCanonicalUserAgent(ctx context.Context) string {
 	if s == nil {

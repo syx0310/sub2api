@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -193,6 +196,85 @@ func isOpenAIRequestScopedCapacityShed(upstreamMsg string, upstreamBody []byte) 
 		(!gjson.ValidBytes(upstreamBody) && isOpenAICapacityShedMessage(string(upstreamBody)))
 }
 
+const openAIRequestScopedRetryMaxDelay = 8 * time.Second
+
+func openAIRequestScopedRetryDelay(responseHeaders http.Header, responseBody []byte) time.Duration {
+	type retryAfterValue struct {
+		raw          string
+		milliseconds bool
+	}
+	for _, value := range []retryAfterValue{
+		{raw: responseHeaders.Get("Retry-After")},
+		{raw: responseHeaders.Get("Retry-After-Ms"), milliseconds: true},
+		{raw: openAIErrorRetryHeader(responseBody, "error.headers", "Retry-After")},
+		{raw: openAIErrorRetryHeader(responseBody, "response.error.headers", "Retry-After")},
+		{raw: openAIErrorRetryHeader(responseBody, "error.headers", "Retry-After-Ms"), milliseconds: true},
+		{raw: openAIErrorRetryHeader(responseBody, "response.error.headers", "Retry-After-Ms"), milliseconds: true},
+	} {
+		raw := strings.TrimSpace(value.raw)
+		if raw == "" {
+			continue
+		}
+		var delay time.Duration
+		var ok bool
+		if value.milliseconds {
+			delay, ok = parseOpenAIRequestScopedRetryDelayMilliseconds(raw)
+		} else {
+			delay, ok = parseOpenAIRequestScopedRetryDelay(raw)
+		}
+		if !ok || delay <= 0 {
+			continue
+		}
+		return delay
+	}
+	return 0
+}
+
+func openAIErrorRetryHeader(body []byte, path, name string) string {
+	var value string
+	gjson.GetBytes(body, path).ForEach(func(key, val gjson.Result) bool {
+		if strings.EqualFold(key.String(), name) {
+			if val.IsArray() {
+				val = val.Get("0")
+			}
+			value = val.String()
+			return false
+		}
+		return true
+	})
+	return value
+}
+
+func openAIRetryDuration(value float64, unit time.Duration) (time.Duration, bool) {
+	if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	if value >= float64(math.MaxInt64)/float64(unit) {
+		return time.Duration(math.MaxInt64), true
+	}
+	return time.Duration(value * float64(unit)), true
+}
+
+func parseOpenAIRequestScopedRetryDelay(raw string) (time.Duration, bool) {
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil && seconds > 0 {
+		return openAIRetryDuration(seconds, time.Second)
+	}
+	if resetAt, err := http.ParseTime(raw); err == nil {
+		delay := time.Until(resetAt)
+		if delay > 0 {
+			return delay, true
+		}
+	}
+	return 0, false
+}
+
+func parseOpenAIRequestScopedRetryDelayMilliseconds(raw string) (time.Duration, bool) {
+	if millis, err := strconv.ParseFloat(raw, 64); err == nil && millis > 0 {
+		return openAIRetryDuration(millis, time.Millisecond)
+	}
+	return 0, false
+}
+
 func isOpenAIContextWindowError(upstreamMsg string, upstreamBody []byte) bool {
 	match := func(text string) bool {
 		lower := strings.ToLower(strings.TrimSpace(text))
@@ -335,6 +417,25 @@ func newOpenAIUpstreamFailoverError(
 		ResponseHeaders:        responseHeaders.Clone(),
 		RetryableOnSameAccount: retryableOnSameAccount || requestScopedCapacity,
 		RequestScopedTransient: requestScopedCapacity,
+	}
+	if requestScopedCapacity {
+		failoverErr.SameAccountRetryDelay = openAIRequestScopedRetryDelay(responseHeaders, responseBody)
+		if delay := failoverErr.SameAccountRetryDelay; delay > openAIRequestScopedRetryMaxDelay {
+			// The gateway's wait budget is not permission to shorten the server's
+			// minimum delay. Return the advice instead of retrying another account.
+			failoverErr.RetryableOnSameAccount = false
+			failoverErr.NextAccountAction = NextAccountStop
+		}
+		if delay := failoverErr.SameAccountRetryDelay; delay > 0 && failoverErr.ResponseHeaders.Get("Retry-After") == "" {
+			if failoverErr.ResponseHeaders == nil {
+				failoverErr.ResponseHeaders = make(http.Header)
+			}
+			seconds := delay / time.Second
+			if delay%time.Second != 0 {
+				seconds++
+			}
+			failoverErr.ResponseHeaders.Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
+		}
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameAccount = false
