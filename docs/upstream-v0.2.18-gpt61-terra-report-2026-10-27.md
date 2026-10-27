@@ -29,7 +29,7 @@
 
 ### 身份不被静默替换
 
-保留 `codex-tui` 默认、内置版本 `0.162.1`、Ubuntu/终端后缀和 TUI 尾部标识。面板版本、自动同步版本、内置版本的优先级以及 UI 生效版本展示不变。
+初次合并保留 `codex-tui` 默认和内置版本 `0.162.1`；随后按用户要求将默认版本更新为 `0.164.0`，详见末尾补充。Ubuntu/终端后缀和 TUI 尾部标识保留。面板版本、自动同步版本、内置版本的优先级以及 UI 生效版本展示不变。
 
 上游会把显式配置的 TUI 身份也强制改成 CLI。本 fork 不调用这一改写，继续保留管理员选择的客户端家族；版本仍按既有策略更新。上游空输出过载恢复修复与身份改写分离采用。
 
@@ -130,3 +130,11 @@ Go 测试计数包含子用例。全量 unit 使用 Go 1.27.3、GOMAXPROCS=2、-
 - 本地生产构建位于 `/tmp/sub2api-v0218-terra.Pjh9rM/sub2api`，只执行过 `-version`，未启动业务服务。
 - 所有测试临时数据库/Redis 容器已清理；编译缓存和上述日志保留，便于复查。
 - 未做真实账号可用性或真实模型推理验证；模型访问仍由上游账号授权决定。
+
+## 后续补充：默认身份跟随最新客户端（2026-10-27）
+
+- 客户端仓库再次 fetch 后快进至 `b7f7e7f7e85a1c63e520f27cac42b836f242d9f7`，无本地修改。GitHub latest release API 确认为稳定版 `rust-v0.164.0`（2026-10-23 发布），并读取对应 tag 的 Cargo.toml 验证版本；不使用 main 的开发占位版本 0.0.0 或 alpha。
+- 对照 stable tag 及最新 main：`tui/src/lib.rs` 以 client_name=codex-tui 初始化 app-server；`request_processors/initialize_processor.rs` 和 `startup_config.rs` 将其作为 originator，并设置 `name; version` UA 后缀。login 的 DEFAULT_ORIGINATOR=codex_cli_rs 是基础回退，不应据此把实际 TUI 改成 CLI。
+- 内置 UA 更新为 `codex-tui/0.164.0 (Ubuntu 24.4.0; x86_64) xterm-256color (codex-tui; 0.164.0)`。中英文设置占位文本及一致性测试同步更新；User-Agent 和 version 头继续同源。
+- 不修改管理员手填身份或版本，不清空已同步版本；运行时仍是面板版本 > 自动同步版本 > 内置版本。实际版本可在管理设置的 Codex 客户端版本号区域查看。
+- 本补充未重新运行前一节全量验证；仅变更默认常量、UI 示例和对应测试。后端身份/版本/HTTP/WS 回归 213 项通过（含子用例），前端设置/文案 46 项通过，修改文件 ESLint 和 git diff --check 通过。日志：`/tmp/sub2api-codex-identity-0164.eJUKid`。
