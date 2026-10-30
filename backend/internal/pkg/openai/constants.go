@@ -201,7 +201,12 @@ func IsGPT6SolOrLunaModelSpelling(model string) bool {
 // IsGPT6StandardModelSpelling groups published lower-cost GPT-6 price cards.
 // It does not imply identical reasoning, endpoint or subscription capabilities.
 func IsGPT6StandardModelSpelling(model string) bool {
-	return IsGPT6SolOrLunaModelSpelling(model) || CanonicalizeOpenAIModelAliasSpelling(model) == GPT61TerraModelID
+	return IsGPT6SolOrLunaModelSpelling(model) || IsGPT61TerraModelSpelling(model)
+}
+
+// IsGPT61TerraModelSpelling recognizes the published ID, not speculative suffixes.
+func IsGPT61TerraModelSpelling(model string) bool {
+	return CanonicalizeOpenAIModelAliasSpelling(model) == GPT61TerraModelID
 }
 
 // IsGPT61SolModelSpelling recognizes the published ID, not speculative suffixes.
