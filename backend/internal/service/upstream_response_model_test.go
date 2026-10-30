@@ -148,7 +148,7 @@ func TestUpstreamModelMismatchDoesNotCollapseDifferentModels(t *testing.T) {
 
 func TestObserveOpenAISSEBodyIgnoresMalformedPayload(t *testing.T) {
 	observer := &upstreamResponseModelObserver{}
-	observeOpenAISSEBody(observer, "data: not-json\n\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.4\"}}\n\n")
+	observeOpenAISSEBody(observer, "data: not-json\n\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.4\"}}\n\n", nil)
 
 	require.Equal(t, "gpt-5.4", observer.Model())
 	require.False(t, observer.Conflict())

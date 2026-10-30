@@ -1617,7 +1617,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	if bodyHasSSEFraming(body) {
-		observeOpenAISSEBody(observer, string(body))
+		observeOpenAISSEBody(observer, string(body), codexTurnStateObserverFromContext(c))
 	} else {
 		observer.ObserveOpenAI(body, strings.TrimSpace(gjson.GetBytes(body, "type").String()))
 		codexTurnStateObserverFromContext(c).event(body, strings.TrimSpace(gjson.GetBytes(body, "type").String()))

@@ -160,3 +160,23 @@ func TestOpenAIGatewayService_OAuthStreamFalseWithoutUpstreamContentTypeReturnsJ
 		requireSingleJSONResponsesObject(t, rec)
 	}
 }
+
+func TestOpenAIOAuthBufferedMetadataLengthsSurviveJSONAggregation(t *testing.T) {
+	metadata := "event: response.metadata\ndata: {\"type\":\"response.metadata\",\"headers\":{\"x-codex-turn-state\":[\"opaque-state\"]}}\n\n"
+	for _, passthrough := range []bool{false, true} {
+		for _, contentType := range []string{"text/event-stream", ""} {
+			header := http.Header{"X-Codex-Turn-State": {"header-state"}}
+			if contentType != "" {
+				header.Set("Content-Type", contentType)
+			}
+			rec, _, result := runOpenAIOAuthNonStreamRegressionWithHeader(t, passthrough,
+				`{"model":"gpt-6.1-terra","input":"hi","stream":false}`, header, metadata+openAINonStreamRegressionSSE)
+			requireSingleJSONResponsesObject(t, rec)
+			require.NotNil(t, result.CodexTurnState.ResponseMetadataBytes)
+			require.Equal(t, len("opaque-state"), *result.CodexTurnState.ResponseMetadataBytes)
+			require.NotNil(t, result.CodexTurnState.ResponseHeaderBytes)
+			require.Equal(t, len("header-state"), *result.CodexTurnState.ResponseHeaderBytes)
+			require.NotContains(t, rec.Body.String(), "opaque-state", "metadata is observed, not injected into the terminal response")
+		}
+	}
+}

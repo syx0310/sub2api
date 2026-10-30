@@ -402,7 +402,11 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
 	hasCompleteMetadata := len(completeMetadata) > 0
 	persistedCapabilities := false
-	if (liveListAvailable || hasCompleteMetadata) && account != nil && account.ID > 0 && s.accountRepo != nil {
+	// Grok live IDs already live in the identity-scoped, CAS-protected observed
+	// catalog above. Do not duplicate an ID-only result through unlocked Extra
+	// writes; generic/Codex accounts still need their independent live-ID snapshot.
+	persistLiveModelIDs := liveListAvailable && account != nil && !account.IsGrok()
+	if (persistLiveModelIDs || hasCompleteMetadata) && account != nil && account.ID > 0 && s.accountRepo != nil {
 		if completeMetadata == nil {
 			completeMetadata = make(map[string]UpstreamModelMetadata)
 		}
@@ -437,7 +441,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			SyncedAt: time.Now().UTC().Format(time.RFC3339),
 			Models:   completeMetadata,
 		}
-		if liveListAvailable {
+		if persistLiveModelIDs {
 			snapshot.ModelIDs = append([]string(nil), models...)
 			snapshot.ModelIDsSyncedAt = snapshot.SyncedAt
 		} else if previous != nil {
