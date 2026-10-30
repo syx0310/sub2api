@@ -788,7 +788,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		UpstreamModel:        upstreamModel,
 		ResponseHeaders:      resp.Header.Clone(),
 		Duration:             time.Since(startTime),
-		ImageEndpoint:        usage.ImageCount > 0,
+		ImageEndpoint:        endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits,
 		ImageCount:           usage.ImageCount,
 		ImageSize:            usage.ImageSize,
 		ImageInputSize:       usage.ImageInputSize,

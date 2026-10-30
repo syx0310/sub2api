@@ -1077,7 +1077,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		FirstTokenMs:                  firstTokenMs,
 		ReasoningEffort:               extractGeminiReasoningEffortFromBody(geminiReq),
 		ClientDisconnect:              clientDisconnect,
-		ImageEndpoint:                 imageCount > 0,
+		ImageEndpoint:                 false, // Messages is a mixed-content endpoint, even when images are returned.
 		ImageCount:                    imageCount,
 		ImageSize:                     imageSize,
 		ImageInputSize:                imageInputSize,
@@ -1614,7 +1614,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  firstTokenMs,
 		ClientDisconnect:              clientDisconnect,
-		ImageEndpoint:                 imageCount > 0,
+		ImageEndpoint:                 false, // generateContent is not a dedicated images endpoint.
 		ImageCount:                    imageCount,
 		ImageSize:                     imageSize,
 		ImageInputSize:                imageInputSize,

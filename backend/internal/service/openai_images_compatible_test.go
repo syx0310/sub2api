@@ -104,6 +104,7 @@ func TestCompatibleImagesForwardGemini(t *testing.T) {
 			result, err := svc.ForwardImages(c.Request.Context(), c, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: credentials}, body, parsed, channelModel)
 			require.NoError(t, err)
 			require.Equal(t, 1, result.ImageCount)
+			require.True(t, result.ImageEndpoint, "dedicated images endpoints stay per-image eligible for compatible models")
 			require.Equal(t, model, result.UpstreamModel)
 			require.Equal(t, firstNonEmptyString(channelModel, parsed.Model), result.Model)
 			require.Equal(t, "https://compatible.example"+endpoint, upstream.lastReq.URL.String())

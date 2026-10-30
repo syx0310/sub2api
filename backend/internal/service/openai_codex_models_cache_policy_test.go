@@ -16,6 +16,39 @@ import (
 
 func catalogCacheSeconds(value int) *int { return &value }
 
+func TestCodexModelsRefreshRechecksFreshCacheInsideSingleflight(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
+			policy := &openAIModelsCachePolicy{freshTTL: time.Minute, staleTTL: 5 * time.Minute}
+			if disabled {
+				policy = &openAIModelsCachePolicy{}
+			}
+			svc := &OpenAIGatewayService{}
+			request := openAIModelsRequest{cachePolicy: policy}
+			var calls atomic.Int32
+			fetch := func(context.Context, string) (*OpenAIModelsResponse, error) {
+				calls.Add(1)
+				return &OpenAIModelsResponse{Body: []byte(`{"models":[]}`)}, nil
+			}
+			// The second caller already observed a miss, but reaches DoChan after
+			// the first refresh has completed. Singleflight alone does not dedupe it.
+			for range 2 {
+				select {
+				case result := <-svc.refreshCachedOpenAIModels("recheck", request, fetch):
+					require.NoError(t, result.Err)
+				case <-time.After(5 * time.Second):
+					t.Fatal("catalog refresh did not finish")
+				}
+			}
+			want := int32(1)
+			if disabled {
+				want = 2
+			}
+			require.Equal(t, want, calls.Load())
+		})
+	}
+}
+
 func catalogCacheGroup(fresh, stale int) *Group {
 	return &Group{ID: 7, Platform: PlatformOpenAI, CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
 		OAuthCacheTTLSeconds: catalogCacheSeconds(fresh), OAuthCacheStaleTTLSeconds: catalogCacheSeconds(stale),

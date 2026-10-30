@@ -310,7 +310,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 		ReasoningEffort:  reasoningEffort,
-		ImageEndpoint:    imageCount > 0,
+		ImageEndpoint:    false, // Chat Completions can mix text and images; keep its token pricing.
 		ImageCount:       imageCount,
 		ImageSize:        imageSize,
 		ImageInputSize:   imageInputSize,

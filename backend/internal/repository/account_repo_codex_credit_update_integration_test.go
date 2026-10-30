@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -128,4 +129,75 @@ func TestAccountUpdatePreservesLockedCodexCreditFields(t *testing.T) {
 	require.EqualValues(t, 1000, got.Extra["codex_credit_usage_resume_at"])
 	require.EqualValues(t, 2000, got.Extra["codex_credit_policy_state"].(map[string]any)["blocked_at"])
 	require.Equal(t, "keep", got.Extra["codex_credit_policy_state"].(map[string]any)["future_field"])
+}
+
+func TestAccountBillingEditInCallerTransactionPreservesCreditAndCatalogState(t *testing.T) {
+	for _, commit := range []bool{false, true} {
+		name := "rollback"
+		if commit {
+			name = "commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			client := testEntClient(t)
+			cache := &schedulerCacheRecorder{}
+			repo := newAccountRepositoryWithSQL(client, integrationDB, cache)
+			account := mustCreateAccount(t, client, &service.Account{
+				Name: "before edit", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+				Credentials: map[string]any{"access_token": "test-only"},
+				Extra:       map[string]any{service.CodexAllowCreditUsageKey: true},
+			})
+			t.Cleanup(func() {
+				_, err := integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+				require.NoError(t, err)
+				_, err = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+				require.NoError(t, err)
+			})
+			stale, err := repo.GetByID(ctx, account.ID)
+			require.NoError(t, err)
+			state := map[string]any{
+				service.CodexAllowCreditUsageKey:      true,
+				"codex_credit_policy_state":           map[string]any{"blocked_at": 2000, "credits_at": 2000},
+				"codex_credit_usage_resume_at":        1000,
+				service.UpstreamModelMetadataExtraKey: map[string]any{"models": map[string]any{"gpt-6.1-terra": map[string]any{"id": "gpt-6.1-terra"}}},
+			}
+			require.NoError(t, repo.UpdateExtra(ctx, account.ID, state))
+			cache.setAccounts = nil
+			stale.Name = "edited inside transaction"
+			stale.Extra["codex_credit_usage_resume_at"] = 9000
+			stale.Extra[service.UpstreamModelMetadataExtraKey] = map[string]any{"models": map[string]any{}}
+			tx, err := client.Tx(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback() })
+			txCtx := dbent.NewTxContext(ctx, tx)
+			// Invoke the original repository, not a manually transaction-bound one.
+			require.NoError(t, repo.UpdateWithAccountBillingSettings(txCtx, stale, nil, nil, nil, nil))
+			require.Empty(t, cache.setAccounts, "never publish an uncommitted snapshot")
+			inside, err := repo.GetByID(txCtx, account.ID)
+			require.NoError(t, err)
+			require.Equal(t, stale.Name, inside.Name)
+			require.EqualValues(t, 1000, inside.Extra["codex_credit_usage_resume_at"])
+			policy, ok := inside.Extra["codex_credit_policy_state"].(map[string]any)
+			require.True(t, ok)
+			require.EqualValues(t, 2000, policy["blocked_at"])
+			require.Equal(t, state[service.UpstreamModelMetadataExtraKey], inside.Extra[service.UpstreamModelMetadataExtraKey])
+			committed := false
+			service.AfterAccountCommit(txCtx, func(context.Context) { committed = true })
+			if commit {
+				require.NoError(t, tx.Commit())
+			} else {
+				require.NoError(t, tx.Rollback())
+			}
+			require.Equal(t, commit, committed)
+			stored, err := repo.GetByID(ctx, account.ID)
+			require.NoError(t, err)
+			if commit {
+				require.Equal(t, stale.Name, stored.Name)
+			} else {
+				require.Equal(t, "before edit", stored.Name)
+			}
+			require.Equal(t, inside.Extra["codex_credit_policy_state"], stored.Extra["codex_credit_policy_state"])
+			require.Equal(t, inside.Extra[service.UpstreamModelMetadataExtraKey], stored.Extra[service.UpstreamModelMetadataExtraKey])
+		})
+	}
 }

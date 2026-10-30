@@ -17,7 +17,7 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 	flat := *record
 	flat.User, flat.APIKey, flat.Group, flat.Subscription, flat.Account = nil, nil, nil, nil, nil
 	usage := dto.UsageLogFromServiceAdmin(&flat)
-	return gin.H{
+	result := gin.H{
 		"id":                           usage.ID,
 		"user_id":                      usage.UserID,
 		"api_key_id":                   usage.APIKeyID,
@@ -79,6 +79,18 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 		"account_rate_multiplier":      usage.AccountRateMultiplier,
 		"account_stats_cost":           usage.AccountStatsCost,
 	}
+	// Preserve the fork's numeric observability fields without exposing request
+	// bodies, turn-state values, credentials or related resource DTOs.
+	if usage.RequestBodyBytes != nil {
+		result["request_body_bytes"] = usage.RequestBodyBytes
+	}
+	if usage.ResponseBodyBytes != nil {
+		result["response_body_bytes"] = usage.ResponseBodyBytes
+	}
+	if usage.CodexTurnState != nil {
+		result["codex_turn_state"] = usage.CodexTurnState
+	}
+	return result
 }
 
 func adminUsageLogResponses(c *gin.Context, records []service.UsageLog) any {
