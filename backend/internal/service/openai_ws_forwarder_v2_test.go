@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -22,13 +23,18 @@ func TestForwardOpenAIWSV2_CreditAdmissionAfterHandshake(t *testing.T) {
 		used, hasCredits, balance string
 		wantBlocked               bool
 		prewarmQuota              bool
+		historicalBalance         bool
 	}{
 		{name: "exhausted permission off", used: "100", hasCredits: "true", balance: "42", wantBlocked: true},
 		{name: "denied before prewarm too", prewarm: true, used: "100", hasCredits: "true", balance: "42", wantBlocked: true},
 		{name: "prewarm reveals exhaustion", prewarm: true, prewarmQuota: true, wantBlocked: true},
 		{name: "enabled but empty", allow: true, used: "100", hasCredits: "false", balance: "0", wantBlocked: true},
 		{name: "enabled fresh credits", allow: true, used: "100", hasCredits: "true", balance: "42"},
+		{name: "historical credits without handshake update", allow: true, historicalBalance: true},
+		{name: "historical credits refreshed positive", allow: true, historicalBalance: true, used: "100", hasCredits: "true", balance: "42"},
+		{name: "historical credits overridden by empty handshake", allow: true, historicalBalance: true, used: "100", hasCredits: "false", balance: "0", wantBlocked: true},
 		{name: "subscription still available", used: "20", hasCredits: "false", balance: "0"},
+		{name: "credits observed while subscription available", used: "20", hasCredits: "true", balance: "42"},
 		{name: "quota unknown"},
 		{name: "API key is outside OAuth policy", apiKey: true, used: "100", hasCredits: "false", balance: "0"},
 	} {
@@ -64,7 +70,12 @@ func TestForwardOpenAIWSV2_CreditAdmissionAfterHandshake(t *testing.T) {
 				account.Type = AccountTypeAPIKey
 				account.Credentials = map[string]any{"api_key": "test-only"}
 			}
-			require.NoError(t, svc.CheckOpenAICreditPolicy(t.Context(), account), "quota is not known at initial selection")
+			if tc.historicalBalance {
+				account.Extra["codex_5h_used_percent"] = 100.0
+				account.Extra["codex_5h_reset_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+				account.Extra[codexCreditStateKey] = codexCreditState{Credits: &OpenAICredits{HasCredits: true}, CreditsAt: time.Now().Add(-24 * time.Hour).UnixMilli()}
+			}
+			require.NoError(t, svc.CheckOpenAICreditPolicy(t.Context(), account), "unknown quota or historical positive credits permit initial selection")
 			result, err := svc.Forward(t.Context(), c, account, []byte(`{"model":"gpt-5.1","stream":false,"input":"hi"}`))
 			require.Equal(t, 1, dialer.DialCount(), "policy denial must not reconnect/replay")
 			require.Empty(t, httpRecorder.requests, "policy denial must not fall back to HTTP")
@@ -88,6 +99,13 @@ func TestForwardOpenAIWSV2_CreditAdmissionAfterHandshake(t *testing.T) {
 			require.NotNil(t, result)
 			require.True(t, result.OpenAIWSMode)
 			require.Equal(t, 1, writes)
+			if tc.hasCredits == "true" && !tc.apiKey {
+				state := svc.codexCreditState(account)
+				require.NotNil(t, state.Credits)
+				require.True(t, state.Credits.HasCredits)
+				require.NotNil(t, state.Credits.Balance)
+				require.Equal(t, tc.balance, *state.Credits.Balance)
+			}
 		})
 	}
 }

@@ -59,7 +59,7 @@ func TestCodexCreditPassiveParsingAndAdmission(t *testing.T) {
 	}
 }
 
-func TestCodexCreditDefaultUnknownStaleManualResumeAndThresholds(t *testing.T) {
+func TestCodexCreditDefaultUnknownHistoricalManualResumeAndThresholds(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	a := creditTestAccount()
 	ctx := svc.withOpenAIQuotaAutoPauseContext(context.Background())
@@ -69,11 +69,24 @@ func TestCodexCreditDefaultUnknownStaleManualResumeAndThresholds(t *testing.T) {
 	require.ErrorContains(t, svc.CheckOpenAICreditPolicy(ctx, a), "does not allow")
 	a.Extra[CodexAllowCreditUsageKey] = true
 	require.NoError(t, svc.CheckOpenAICreditPolicy(ctx, a))
-	for _, at := range []int64{time.Now().Add(-10 * time.Minute).UnixMilli(), time.Now().Add(time.Hour).UnixMilli()} {
+	for _, tc := range []struct {
+		at      int64
+		allowed bool
+	}{
+		{at: time.Now().Add(-10 * time.Minute).UnixMilli(), allowed: true},
+		{at: time.Now().Add(-90 * 24 * time.Hour).UnixMilli(), allowed: true},
+		{at: time.Now().Add(time.Hour).UnixMilli()},
+		{at: 0},
+	} {
 		svc.codexCredits.mu.Lock()
-		svc.codexCredits.entries[a.ID].state.CreditsAt = at
+		svc.codexCredits.entries[a.ID].state.CreditsAt = tc.at
 		svc.codexCredits.mu.Unlock()
-		require.Error(t, svc.CheckOpenAICreditPolicy(ctx, a))
+		err := svc.CheckOpenAICreditPolicy(ctx, a)
+		if tc.allowed {
+			require.NoError(t, err, "historical positive evidence permits a real request")
+		} else {
+			require.Error(t, err, "missing or future observation time is not usable evidence")
+		}
 	}
 	svc.storeCodexCreditObservation(a, &OpenAICredits{HasCredits: true}, true, nil)
 	a.Extra["auto_pause_5h_threshold"] = 0.95
@@ -108,6 +121,7 @@ func TestCodexCreditShadowUsesParentPermissionAndOwnQuota(t *testing.T) {
 	require.Error(t, svc.CheckOpenAICreditPolicy(context.Background(), shadow), "shadow cannot authorize itself")
 	require.NoError(t, svc.CheckOpenAICreditPolicy(context.Background(), parent), "Spark exhaustion is not parent quota exhaustion")
 	parent.Extra[CodexAllowCreditUsageKey] = true
+	svc.codexCredits.entries[parent.ID].state.CreditsAt = time.Now().Add(-24 * time.Hour).UnixMilli()
 	require.NoError(t, svc.CheckOpenAICreditPolicy(context.Background(), shadow))
 	require.NotNil(t, svc.codexCreditState(parent).Credits)
 	require.Nil(t, svc.codexCreditState(shadow).Credits, "credit observation belongs to the credential owner")
@@ -117,6 +131,54 @@ func TestCodexCreditShadowUsesParentPermissionAndOwnQuota(t *testing.T) {
 	require.Empty(t, svc.codexCreditState(other).Quota, "unknown feature windows cannot poison normal quota")
 	parent.Extra[CodexAllowCreditUsageKey] = false
 	require.Error(t, svc.CheckOpenAICreditPolicy(context.Background(), shadow), "an open WS observes disabling before its next turn")
+}
+
+func TestCodexCreditHistoricalEvidenceIsReplacedNotRenewedByTraffic(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	a := creditTestAccount()
+	at := time.Now().Add(-24 * time.Hour).UnixMilli()
+	a.Extra = map[string]any{
+		CodexAllowCreditUsageKey: true,
+		"codex_7d_used_percent":  100.0,
+		"codex_7d_reset_at":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		codexCreditStateKey:      codexCreditState{Credits: &OpenAICredits{HasCredits: true}, CreditsAt: at},
+	}
+	ctx := svc.withOpenAIQuotaAutoPauseContext(t.Context())
+	require.NoError(t, svc.CheckOpenAICreditPolicy(ctx, a))
+	paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, a)
+	require.False(t, paused)
+
+	// A quota-only response does not claim that the credit balance changed.
+	svc.observeCodexCreditEvent(ctx, a, []byte(`{"type":"codex.rate_limits","rate_limits":{"secondary":{"used_percent":100,"window_minutes":10080,"reset_after_seconds":3600}}}`))
+	require.Equal(t, at, svc.codexCreditState(a).CreditsAt, "do not manufacture a fresh balance timestamp")
+	require.NoError(t, svc.CheckOpenAICreditPolicy(ctx, a))
+
+	// New negative evidence stops subsequent turns and candidate admission.
+	svc.observeCodexCreditEvent(ctx, a, []byte(`{"type":"codex.rate_limits","credits":{"has_credits":false,"unlimited":false,"balance":"0"}}`))
+	require.Error(t, svc.CheckOpenAICreditPolicy(ctx, a))
+	paused, decision := shouldAutoPauseOpenAIAccountByQuota(ctx, a)
+	require.True(t, paused)
+	require.Equal(t, "codex_credit_usage_manual_resume_required", decision.reason)
+	require.Positive(t, svc.codexCreditState(a).BlockedAt)
+
+	svc.observeCodexCreditEvent(ctx, a, []byte(`{"type":"codex.rate_limits","credits":{"has_credits":true,"unlimited":false,"balance":"42"}}`))
+	require.Error(t, svc.CheckOpenAICreditPolicy(ctx, a), "a new positive balance still cannot clear the exhaustion latch")
+}
+
+func TestCodexCreditHistoricalEvidenceDoesNotOverrideNewerUnknownSnapshot(t *testing.T) {
+	a := creditTestAccount()
+	a.Extra = map[string]any{
+		CodexAllowCreditUsageKey: true,
+		"codex_7d_used_percent":  100.0,
+		"codex_7d_reset_at":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		codexCreditStateKey:      codexCreditState{Credits: &OpenAICredits{HasCredits: true}, CreditsAt: time.Now().Add(-24 * time.Hour).UnixMilli()},
+		openaiQuotaCreditsKey:    openAICreditsSnapshot{Credits: nil, FetchedAt: time.Now().Unix()},
+	}
+	svc := &OpenAIGatewayService{}
+	state := svc.codexCreditState(a)
+	require.Nil(t, state.Credits, "use the latest evidence, not any positive snapshot in history")
+	require.Zero(t, state.BlockedAt, "unknown is not proof of exhaustion")
+	require.Error(t, svc.CheckOpenAICreditPolicy(t.Context(), a))
 }
 
 type creditWriteRepo struct {

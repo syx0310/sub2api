@@ -21,7 +21,6 @@ const (
 	CodexAllowCreditUsageKey = "codex_allow_credit_usage"
 	codexCreditStateKey      = "codex_credit_policy_state"
 	codexCreditResumeKey     = "codex_credit_usage_resume_at"
-	codexCreditFreshness     = 5 * time.Minute
 	codexCreditCapacity      = 4096
 	codexCreditLookupTimeout = 100 * time.Millisecond
 )
@@ -105,8 +104,12 @@ func codexCreditResumeAt(account *Account) int64 {
 }
 
 func codexCreditsAvailable(state codexCreditState, now time.Time) bool {
+	// The latest positive snapshot permits an attempt even after an idle period.
+	// A TTL would reject the account before a real request could refresh passive
+	// evidence. This is not a guaranteed balance: newer observations and the
+	// exhaustion latch still take precedence, and missing/future timestamps fail.
 	age := now.Sub(time.UnixMilli(state.CreditsAt))
-	return state.Credits != nil && state.CreditsAt > 0 && age >= 0 && age < codexCreditFreshness && codexCreditsPositive(state.Credits)
+	return state.Credits != nil && state.CreditsAt > 0 && age >= 0 && codexCreditsPositive(state.Credits)
 }
 
 func codexCreditsPositive(credits *OpenAICredits) bool {

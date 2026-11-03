@@ -52,15 +52,20 @@ func TestSchedulerCacheCodexCreditCandidateAdmission(t *testing.T) {
 	}
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 	for _, tc := range []struct {
-		name                      string
-		allow, displayOnly, stale bool
-		blocked, resume           int64
-		wantReason                string
+		name                                      string
+		allow, displayOnly, stale, empty, unknown bool
+		blocked, resume                           int64
+		wantReason                                string
 	}{
 		{name: "enabled with passive balance", allow: true},
 		{name: "enabled with manual display balance", allow: true, displayOnly: true},
 		{name: "disabled", wantReason: "codex_credit_usage_disabled"},
-		{name: "stale balance", allow: true, stale: true, wantReason: "codex_credit_usage_unknown_or_empty"},
+		{name: "historical passive balance", allow: true, stale: true},
+		{name: "historical manual display balance", allow: true, stale: true, displayOnly: true},
+		{name: "historical balance permission off", stale: true, wantReason: "codex_credit_usage_disabled"},
+		{name: "historical empty balance", allow: true, stale: true, empty: true, wantReason: "codex_credit_usage_unknown_or_empty"},
+		{name: "historical unknown balance", allow: true, stale: true, unknown: true, wantReason: "codex_credit_usage_unknown_or_empty"},
+		{name: "historical balance exhaustion latch", allow: true, stale: true, blocked: now.UnixMilli(), wantReason: "codex_credit_usage_manual_resume_required"},
 		{name: "exhaustion latch", allow: true, blocked: now.UnixMilli(), wantReason: "codex_credit_usage_manual_resume_required"},
 		{name: "manually reauthorized", allow: true, blocked: now.UnixMilli(), resume: now.UnixMilli()},
 	} {
@@ -70,11 +75,18 @@ func TestSchedulerCacheCodexCreditCandidateAdmission(t *testing.T) {
 				at = now.Add(-10 * time.Minute)
 			}
 			credits := map[string]any{"has_credits": true, "unlimited": false, "balance": "12.50"}
+			if tc.empty {
+				credits["has_credits"], credits["balance"] = false, "0"
+			}
+			if tc.unknown {
+				credits = nil
+			}
 			account.Extra = map[string]any{
 				service.CodexAllowCreditUsageKey: tc.allow,
 				"codex_credit_usage_resume_at":   tc.resume,
 				"codex_5h_used_percent":          100.0, "codex_5h_reset_at": now.Add(time.Hour).Format(time.RFC3339),
 				"codex_usage_updated_at": now.Format(time.RFC3339), "unrelated_large_payload": "drop me",
+				"auto_pause_5h_threshold": 1.0,
 			}
 			if tc.displayOnly {
 				account.Extra["codex_credits_snapshot"] = map[string]any{"credits": credits, "fetched_at": at.Unix()}
