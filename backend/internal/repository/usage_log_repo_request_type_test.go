@@ -123,7 +123,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
-			nil, nil, nil, nil, // optional turn-state lengths
+			nil, // optional request ingress
 			log.Prewarm,
 			createdAt,
 		).
@@ -222,7 +222,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
-			nil, nil, nil, nil, // optional turn-state lengths
+			nil, // optional request ingress
 			log.Prewarm,
 			createdAt,
 		).
@@ -305,8 +305,8 @@ func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestT
 	prepared := prepareUsageLogInsert(log)
 
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-7])
-	require.Equal(t, true, prepared.args[len(prepared.args)-7])
+	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-4])
+	require.Equal(t, true, prepared.args[len(prepared.args)-4])
 	require.Equal(t, int16(service.RequestTypeStream), prepared.args[30])
 	require.Equal(t, service.RequestTypeStream, log.RequestType)
 	require.True(t, log.Stream)
@@ -948,9 +948,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullFloat64{},
 			sql.NullString{}, // upstream_request_id
 			sql.NullString{},
-			false, // native_compaction_v2
-			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
-			false, // prewarm
+			false,            // native_compaction_v2
+			sql.NullString{}, // optional request ingress
+			false,            // prewarm
 			now,
 		}})
 		require.NoError(t, err)
@@ -1037,8 +1037,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // upstream_request_id
 			sql.NullString{},  // session_id
 			false,             // native_compaction_v2
-			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
-			false, // prewarm
+			sql.NullString{},  // optional request ingress
+			false,             // prewarm
 			now,
 		}})
 		require.NoError(t, err)
@@ -1104,8 +1104,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // upstream_request_id
 			sql.NullString{},  // session_id
 			true,              // native_compaction_v2
-			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
-			false, // prewarm
+			sql.NullString{},  // optional request ingress
+			false,             // prewarm
 			now,
 		}})
 		require.NoError(t, err)
@@ -1172,8 +1172,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // upstream_request_id
 			sql.NullString{},  // session_id
 			false,             // native_compaction_v2
-			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
-			false, // prewarm
+			sql.NullString{},  // optional request ingress
+			false,             // prewarm
 			now,
 		}})
 		require.NoError(t, err)

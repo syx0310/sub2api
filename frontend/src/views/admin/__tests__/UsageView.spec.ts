@@ -34,7 +34,7 @@ const messages: Record<string, string> = {
   'admin.usage.failedToLoadUser': 'Failed to load user',
 	'admin.usage.requestId': 'Request ID',
 	'admin.usage.upstreamRequestId': 'Upstream ID',
-  'admin.usage.codexTurnStateLength': 'Turn State Length',
+  'admin.usage.ingress': 'Ingress',
 	'usage.requestedModel': 'Requested model',
 	'usage.sentUpstreamModel': 'Sent upstream model',
 	'usage.upstreamResponseModel': 'Upstream response model',
@@ -521,14 +521,15 @@ describe('admin UsageView request ID column visibility', () => {
     )
     expect(localStorage.setItem).toHaveBeenCalledWith(
       'usage-hidden-columns-version',
-      'codex-turn-state-hidden-by-default',
+      'request-ingress-hidden-by-default',
     )
     expect(usageTable.props('columns').some((column: { key: string }) => column.key === 'codex_turn_state')).toBe(false)
-    const turnStateToggle = wrapper.findAll('button').find((button) => button.text() === 'Turn State Length')
-    expect(turnStateToggle).toBeDefined()
-    await turnStateToggle!.trigger('click')
+    expect(usageTable.props('columns').some((column: { key: string }) => column.key === 'request_ingress')).toBe(false)
+    const ingressToggle = wrapper.findAll('button').find((button) => button.text() === 'Ingress')
+    expect(ingressToggle).toBeDefined()
+    await ingressToggle!.trigger('click')
     const keys = usageTable.props('columns').map((column: { key: string }) => column.key)
-    expect(keys.indexOf('codex_turn_state')).toBe(keys.indexOf('body_size') + 1)
+    expect(keys.indexOf('request_ingress')).toBe(keys.indexOf('body_size') + 1)
     wrapper.unmount()
   })
 
@@ -574,14 +575,15 @@ describe('admin UsageView request ID column visibility', () => {
   })
 })
 
-describe('admin UsageView turn-state column preference migration', () => {
+describe('admin UsageView ingress column preference migration', () => {
   afterEach(() => {
     vi.mocked(localStorage.getItem).mockReset().mockReturnValue(null)
   })
 
   it.each([
     ['upstream-request-id-hidden-by-default', false],
-    ['codex-turn-state-hidden-by-default', true],
+    ['codex-turn-state-hidden-by-default', false],
+    ['request-ingress-hidden-by-default', true],
   ])('preserves old choices for preference version %s', async (version, visible) => {
     vi.mocked(localStorage.getItem).mockImplementation((key) => {
       if (key === 'usage-hidden-columns') return JSON.stringify(['model'])
@@ -601,7 +603,8 @@ describe('admin UsageView turn-state column preference migration', () => {
     expect(keys).not.toContain('model')
     expect(keys).toContain('request_id')
     expect(keys).toContain('upstream_request_id')
-    expect(keys.includes('codex_turn_state')).toBe(visible)
+    expect(keys.includes('request_ingress')).toBe(visible)
+    expect(keys).not.toContain('codex_turn_state')
     wrapper.unmount()
   })
 })

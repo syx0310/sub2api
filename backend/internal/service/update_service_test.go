@@ -69,6 +69,33 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+func TestUpdateServicePostReleaseFreshAndCached(t *testing.T) {
+	for _, tt := range []struct {
+		current, latest string
+		update          bool
+	}{
+		{"0.2.19", "v0.2.19p1", true}, {"0.2.19p2", "v0.2.19p10", true},
+		{"0.2.19p1", "v0.2.19", false}, {"0.2.19p10", "v0.2.19p2", false},
+		{"0.2.19p10", "v0.2.20", true},
+	} {
+		t.Run(tt.current+"/"+tt.latest, func(t *testing.T) {
+			svc := NewUpdateService(&updateServiceCacheStub{}, &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: tt.latest}}, tt.current, "release")
+			for _, force := range []bool{true, false} {
+				info, err := svc.CheckUpdate(context.Background(), force)
+				require.NoError(t, err)
+				require.Equal(t, tt.update, info.HasUpdate)
+			}
+		})
+	}
+	svc := newRollbackTestService("0.2.19p10", []*GitHubRelease{{TagName: "v0.2.19"}, {TagName: "v0.2.19p1"}, {TagName: "v0.2.19p2"}, {TagName: "invalid"}})
+	versions, err := svc.ListRollbackVersions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, versions, 3)
+	require.Equal(t, "0.2.19p2", versions[0].Version)
+	require.Equal(t, "0.2.19p1", versions[1].Version)
+	require.Equal(t, "0.2.19", versions[2].Version)
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

@@ -178,6 +178,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AliyunCaptchaRegion:                                    settings.AliyunCaptchaRegion,
 		APIKeyACLTrustForwardedIP:                              settings.APIKeyACLTrustForwardedIP,
 		ForwardedClientIPHeaders:                               settings.ForwardedClientIPHeaders,
+		RequestIngressValidateProxy:                            settings.RequestIngressValidateProxy,
+		RequestIngressTrustedProxies:                           settings.RequestIngressTrustedProxies,
 		LinuxDoConnectEnabled:                                  settings.LinuxDoConnectEnabled,
 		LinuxDoConnectClientID:                                 settings.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecretConfigured:                   settings.LinuxDoConnectClientSecretConfigured,

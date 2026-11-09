@@ -648,13 +648,14 @@ const exportToExcel = async () => {
 
 // Column visibility
 const ALWAYS_VISIBLE = ['user', 'created_at']
-const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'request_id', 'upstream_request_id', 'user_agent', 'codex_turn_state']
+const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'request_id', 'upstream_request_id', 'user_agent', 'request_ingress']
 const HIDDEN_COLUMNS_KEY = 'usage-hidden-columns'
 const HIDDEN_COLUMNS_VERSION_KEY = 'usage-hidden-columns-version'
 // 隐藏列版本链：每级只把当级新增列加入隐藏集，不重置用户已显式打开的列。
 const HIDDEN_COLUMNS_PREV_VERSION = 'request-id-hidden-by-default'
 const HIDDEN_COLUMNS_UPSTREAM_REQUEST_VERSION = 'upstream-request-id-hidden-by-default'
-const HIDDEN_COLUMNS_CURRENT_VERSION = 'codex-turn-state-hidden-by-default'
+const HIDDEN_COLUMNS_TURN_STATE_VERSION = 'codex-turn-state-hidden-by-default'
+const HIDDEN_COLUMNS_CURRENT_VERSION = 'request-ingress-hidden-by-default'
 
 const allColumns = computed(() => [
   { key: 'user', label: t('admin.usage.user'), sortable: false },
@@ -675,7 +676,7 @@ const allColumns = computed(() => [
   { key: 'user_agent', label: t('usage.userAgent'), sortable: false },
   { key: 'ip_address', label: t('admin.usage.ipAddress'), sortable: false },
   { key: 'body_size', label: t('admin.usage.bodySize'), sortable: false },
-  { key: 'codex_turn_state', label: t('admin.usage.codexTurnStateLength'), sortable: false }
+  { key: 'request_ingress', label: t('admin.usage.ingress'), sortable: false }
 ])
 
 const hiddenColumns = reactive<Set<string>>(new Set())
@@ -708,7 +709,7 @@ const toggleColumn = (key: string) => {
 
 // ---- 错误请求 tab 列设置(与用量明细同机制,独立存储) ----
 const ERR_ALWAYS_VISIBLE = ['user', 'status', 'created_at', 'actions']
-const ERR_DEFAULT_HIDDEN_COLUMNS = ['user_agent']
+const ERR_DEFAULT_HIDDEN_COLUMNS = ['user_agent', 'request_ingress']
 const ERR_HIDDEN_COLUMNS_KEY = 'usage-error-hidden-columns'
 
 // key 集合须与 OpsErrorLogTable 内部 allColumns 一致
@@ -727,6 +728,7 @@ const errAllColumns = computed(() => [
   { key: 'created_at', label: t('admin.ops.errorLog.time') },
   { key: 'user_agent', label: t('usage.userAgent') },
   { key: 'client_ip', label: t('admin.ops.errorLog.ip') },
+  { key: 'request_ingress', label: t('admin.usage.ingress') },
   { key: 'actions', label: t('admin.ops.errorLog.action') },
 ])
 
@@ -760,6 +762,11 @@ const loadSavedErrColumns = () => {
     const saved = localStorage.getItem(ERR_HIDDEN_COLUMNS_KEY)
     const keys = saved ? (JSON.parse(saved) as string[]) : ERR_DEFAULT_HIDDEN_COLUMNS
     keys.forEach((key) => errHiddenColumns.add(key))
+    if (localStorage.getItem('usage-error-ingress-column-version') !== '1') {
+      errHiddenColumns.add('request_ingress')
+      localStorage.setItem(ERR_HIDDEN_COLUMNS_KEY, JSON.stringify([...errHiddenColumns]))
+      localStorage.setItem('usage-error-ingress-column-version', '1')
+    }
   } catch {
     ERR_DEFAULT_HIDDEN_COLUMNS.forEach((key) => errHiddenColumns.add(key))
   }
@@ -783,13 +790,14 @@ const loadSavedColumns = () => {
       })
       const savedVersion = localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY)
       if (savedVersion !== HIDDEN_COLUMNS_CURRENT_VERSION) {
-        if (savedVersion !== HIDDEN_COLUMNS_UPSTREAM_REQUEST_VERSION) {
+        if (savedVersion !== HIDDEN_COLUMNS_TURN_STATE_VERSION && savedVersion !== HIDDEN_COLUMNS_UPSTREAM_REQUEST_VERSION) {
           if (savedVersion !== HIDDEN_COLUMNS_PREV_VERSION) {
             hiddenColumns.add('request_id')
           }
           hiddenColumns.add('upstream_request_id')
         }
-        hiddenColumns.add('codex_turn_state')
+        hiddenColumns.delete('codex_turn_state')
+        hiddenColumns.add('request_ingress')
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
       }

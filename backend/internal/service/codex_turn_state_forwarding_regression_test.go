@@ -16,7 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestCodexTurnStateLengthsHTTPForward(t *testing.T) {
+func TestCodexTurnStateForwardingWithoutLengthObservation(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("passthrough=%v/stream=%v", passthrough, stream), func(t *testing.T) {
@@ -36,17 +36,10 @@ func TestCodexTurnStateLengthsHTTPForward(t *testing.T) {
 				body := []byte(fmt.Sprintf(`{"model":"gpt-5.1","stream":%v,"input":"hello","client_metadata":{"x-codex-turn-state":"metadata-token"}}`, stream))
 				result, err := svc.Forward(context.Background(), c, account, body)
 				require.NoError(t, err)
-				require.Equal(t, len("request-token"), *result.CodexTurnState.RequestHeaderBytes)
-				require.Equal(t, len("metadata-token"), *result.CodexTurnState.RequestMetadataBytes)
-				require.Equal(t, len("response-token"), *result.CodexTurnState.ResponseHeaderBytes)
+				require.NotNil(t, result)
+				require.Equal(t, "response-token", c.Writer.Header().Get(openAICodexTurnStateHeader))
 				require.Equal(t, "request-token", upstream.lastReq.Header.Get(openAICodexTurnStateHeader))
 				require.Equal(t, "metadata-token", gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-turn-state").String())
-				if upstreamStream {
-					require.NotNil(t, result.CodexTurnState.ResponseMetadataBytes)
-					require.Equal(t, len("event-token"), *result.CodexTurnState.ResponseMetadataBytes)
-				} else {
-					require.Nil(t, result.CodexTurnState.ResponseMetadataBytes)
-				}
 			})
 		}
 	}
@@ -68,7 +61,7 @@ func (d *codexLengthWSDialer) Dial(context.Context, string, http.Header, string)
 	return d.conn, http.StatusSwitchingProtocols, http.Header{"X-Codex-Turn-State": {"handshake-token"}}, nil
 }
 
-func TestCodexTurnStateLengthsWSPerResponse(t *testing.T) {
+func TestCodexTurnStateWSForwardingWithoutLengthObservation(t *testing.T) {
 	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
 		t.Run(mode, func(t *testing.T) {
 			controlCtx, cancel := context.WithCancelCause(context.Background())
@@ -85,11 +78,11 @@ func TestCodexTurnStateLengthsWSPerResponse(t *testing.T) {
 			svc.openaiWSPool = pool
 			account := passthroughLifecycleAccount()
 			account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
-			results := make(chan CodexTurnStateLengths, 4)
+			results := make(chan *OpenAIForwardResult, 4)
 			server, serverErr := startPassthroughHookRecordingServer(t, controlCtx, svc, account, &OpenAIWSIngressHooks{
 				AfterTurn: func(_ int, result *OpenAIForwardResult, _ error) {
 					if result != nil {
-						results <- result.CodexTurnState
+						results <- result
 					}
 				},
 			})
@@ -101,15 +94,16 @@ func TestCodexTurnStateLengthsWSPerResponse(t *testing.T) {
 			upstream.Send(`{"type":"response.metadata","headers":{"x-codex-turn-state":"first-response-token"}}`)
 			upstream.Send(`{"type":"response.created","response":{"id":"resp_length_1","model":"gpt-5.1"}}`)
 			upstream.Send(`{"type":"response.completed","response":{"id":"resp_length_1","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
-			for range 3 {
-				_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
+			for i := range 3 {
+				frame, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
 				require.NoError(t, err)
+				if i == 0 {
+					require.Equal(t, "first-response-token", gjson.GetBytes(frame, "headers.x-codex-turn-state").String())
+				}
 			}
 			select {
 			case got := <-results:
-				require.Equal(t, len("first-echo"), *got.RequestMetadataBytes)
-				require.Equal(t, len("handshake-token"), *got.ResponseHeaderBytes)
-				require.Equal(t, len("first-response-token"), *got.ResponseMetadataBytes)
+				require.Equal(t, "resp_length_1", got.RequestID)
 			case <-time.After(3 * time.Second):
 				t.Fatal("missing first turn observation")
 			}
@@ -126,10 +120,7 @@ func TestCodexTurnStateLengthsWSPerResponse(t *testing.T) {
 			}
 			select {
 			case got := <-results:
-				require.Zero(t, *got.RequestMetadataBytes)
-				require.Nil(t, got.RequestHeaderBytes, "no new handshake for the next turn")
-				require.Nil(t, got.ResponseHeaderBytes, "do not misattribute cached handshake headers")
-				require.Nil(t, got.ResponseMetadataBytes, "no stale metadata from the prior response")
+				require.Equal(t, "resp_length_2", got.RequestID)
 			case <-time.After(3 * time.Second):
 				t.Fatal("missing second turn observation")
 			}

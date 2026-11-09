@@ -1084,11 +1084,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		openAIWSHeaderValueForLog(handshakeHeaders, "x-request-id"),
 	)
 
-	var turnStateLengths atomic.Pointer[codexTurnStateLengthObserver]
-	initialTurnStateLengths := s.newCodexTurnStateLengthObserver(account)
-	initialTurnStateLengths.request(headers, firstClientMessage)
-	initialTurnStateLengths.responseHeaders(handshakeHeaders)
-	turnStateLengths.Store(initialTurnStateLengths)
 	upstreamFrameConn, ok := upstreamConn.(openaiwsv2.FrameConn)
 	if !ok {
 		return errors.New("openai ws passthrough upstream connection does not support frame relay")
@@ -1327,9 +1322,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					}
 				}
 				pushRequestBodyBytes(clientPayloadBytes)
-				nextTurnStateLengths := s.newCodexTurnStateLengthObserver(account)
-				nextTurnStateLengths.request(nil, out)
-				turnStateLengths.Store(nextTurnStateLengths)
 				usageMeta.updateFromResponseCreate(out, model, requestModelForThisFrame)
 				reasoningSession.activate(reasoningFrame, out, model, requestModelForThisFrame)
 				reasoningSession.stampPassthrough(usageMeta)
@@ -1439,7 +1431,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					// Bare errors arm only after BeforeWriteClient has ruled out a
 					// hidden rate-limit failover or a dedicated reconnect close.
 					eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-					turnStateLengths.Load().event(payload, eventType)
 					if eventType != "error" {
 						bareErrorDrain.observe(payload)
 					}
@@ -1491,8 +1482,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					requestBytes += int64(len(payload))
 				}
 				pushRequestBodyBytes(requestBytes)
-				// Automatic continuations have no new outbound request/handshake.
-				turnStateLengths.Store(s.newCodexTurnStateLengthObserver(account))
 				reasoningSession.beginAutomatic()
 				reasoningSession.stampPassthrough(usageMeta)
 				if err := hooks.beforeForward(turnNo, auditPayload, inheritedUpstreamModel, reasoningSession); err != nil {
@@ -1533,7 +1522,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					OpenAIWSMode:                  true,
 					UpstreamTerminalEvent:         normalizeOpenAIWSTerminalEvent(turn.TerminalEventType),
 					ResponseHeaders:               cloneHeader(handshakeHeaders),
-					CodexTurnState:                turnStateLengths.Load().snapshot(),
 					Duration:                      turn.Duration,
 					FirstTokenMs:                  turn.FirstTokenMs,
 					RequestBodyBytes:              bodyBytesPtr(popRequestBodyBytes()),
@@ -1702,7 +1690,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		OpenAIWSMode:                  true,
 		UpstreamTerminalEvent:         normalizeOpenAIWSTerminalEvent(relayResult.TerminalEventType),
 		ResponseHeaders:               cloneHeader(handshakeHeaders),
-		CodexTurnState:                turnStateLengths.Load().snapshot(),
 		Duration:                      relayResult.Duration,
 		FirstTokenMs:                  relayResult.FirstTokenMs,
 		RequestBodyBytes:              bodyBytesPtr(initialRequestBodyBytes),

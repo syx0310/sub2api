@@ -14,6 +14,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -174,7 +175,6 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		responseBytes := int64(3400 + len(path))
 		upstreamRequestID := "upstream-" + path
 		sessionID := "session-" + path
-		zero, requestState, responseState := 0, 292, 99
 		return &service.UsageLog{
 			UserID:                    user.ID,
 			APIKeyID:                  apiKey.ID,
@@ -189,7 +189,7 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 			ActualCost:                0.5,
 			RequestBodyBytes:          &requestBytes,
 			ResponseBodyBytes:         &responseBytes,
-			CodexTurnState:            service.CodexTurnStateLengths{RequestHeaderBytes: &zero, RequestMetadataBytes: &requestState, ResponseHeaderBytes: &responseState},
+			RequestIngress:            &requestmeta.Ingress{Host: "api.example.com:8443", Source: "forwarded_host", PeerIP: "10.0.0.1"},
 			LongContextBillingApplied: true,
 			Prewarm:                   true,
 			CreatedAt:                 time.Now().UTC(),
@@ -215,10 +215,13 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		require.True(t, prewarm)
 		require.Equal(t, *log.UpstreamRequestID, upstreamRequestID)
 		require.Equal(t, *log.SessionID, sessionID)
-		require.Equal(t, sql.NullInt64{Valid: true, Int64: 0}, requestHeader)
-		require.Equal(t, sql.NullInt64{Valid: true, Int64: 292}, requestMetadata)
-		require.Equal(t, sql.NullInt64{Valid: true, Int64: 99}, responseHeader)
+		require.False(t, requestHeader.Valid, "legacy length columns are no longer written")
+		require.False(t, requestMetadata.Valid)
+		require.False(t, responseHeader.Valid)
 		require.False(t, responseMetadata.Valid)
+		var ingress sql.NullString
+		require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT request_ingress FROM usage_logs WHERE request_id = $1 AND api_key_id = $2", log.RequestID, log.APIKeyID).Scan(&ingress))
+		require.Equal(t, log.RequestIngress, parseIngressJSON(ingress))
 	}
 
 	t.Run("single", func(t *testing.T) {
@@ -234,8 +237,24 @@ func TestUsageLogRepository_ExtensionFieldsRoundTripAllWritePaths(t *testing.T) 
 		require.True(t, stored.Prewarm)
 		require.Equal(t, log.UpstreamRequestID, stored.UpstreamRequestID)
 		require.Equal(t, log.SessionID, stored.SessionID)
-		require.Equal(t, log.CodexTurnState, stored.CodexTurnState)
+		require.Equal(t, log.RequestIngress, stored.RequestIngress)
 	})
+	for _, bestEffort := range []bool{false, true} {
+		t.Run(fmt.Sprintf("context_capture_best_effort_%v", bestEffort), func(t *testing.T) {
+			log := newLog("context-capture")
+			want := *log.RequestIngress
+			log.RequestIngress = nil
+			requestCtx := requestmeta.WithIngress(ctx, want)
+			if bestEffort {
+				require.NoError(t, repo.CreateBestEffort(requestCtx, log))
+			} else {
+				_, err := repo.Create(requestCtx, log)
+				require.NoError(t, err)
+			}
+			require.Equal(t, &want, log.RequestIngress)
+			assertStored(t, log)
+		})
+	}
 
 	t.Run("create_batch", func(t *testing.T) {
 		log := newLog("create-batch")

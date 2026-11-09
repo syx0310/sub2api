@@ -21,7 +21,6 @@ import (
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	resolveOpenAIWSThreadScope(c, body)
 	beginUpstreamResponseModelObservation(c)
-	clearCodexTurnStateLengthObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
@@ -1088,11 +1087,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Send request
 		upstreamStart := time.Now()
-		turnStateLengths := s.observeCodexTurnStateHTTPRequest(c, account, upstreamReq, body)
 		resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
-		if resp != nil {
-			turnStateLengths.responseHeaders(resp.Header)
-		}
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if headerGuard != nil && headerGuard.stopHeaderWait() {
 			if resp != nil && resp.Body != nil {
@@ -1343,7 +1338,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			OpenAICacheWrite12h:           openAIUses12hCacheWriteBody(account, upstreamModel, body),
 			RequestID:                     resp.Header.Get("x-request-id"),
 			UpstreamHeaders:               resp.Header,
-			CodexTurnState:                observedCodexTurnStateLengths(c),
 			ResponseID:                    responseID,
 			Usage:                         *usage,
 			Model:                         originalModel,
@@ -1443,7 +1437,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(s.codexTurnStateRequestContext(ctx, account, body), "POST", targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

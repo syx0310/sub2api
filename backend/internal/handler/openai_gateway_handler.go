@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -276,6 +277,9 @@ func usageRecordContext(parent context.Context, base context.Context) context.Co
 	}
 	if parent == nil {
 		return base
+	}
+	if ingress := requestmeta.IngressFromContext(parent); ingress != nil {
+		base = requestmeta.WithIngress(base, *ingress)
 	}
 	if clientRequestID, _ := parent.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
 		base = context.WithValue(base, ctxkey.ClientRequestID, strings.TrimSpace(clientRequestID))
@@ -4349,6 +4353,7 @@ const cyberPolicyRecordedKey = "ops_cyber_recorded"
 // cyberPolicyOpsErrorMeta carries request-scoped fields captured outside the
 // async goroutine for building the cyber ops_error_logs entry.
 type cyberPolicyOpsErrorMeta struct {
+	RequestIngress  *requestmeta.Ingress
 	RequestID       string
 	ClientRequestID string
 	Platform        string
@@ -4373,6 +4378,7 @@ type cyberPolicyOpsErrorMeta struct {
 func buildCyberPolicyOpsErrorEntry(meta cyberPolicyOpsErrorMeta, mark *service.CyberPolicyMark) *service.OpsInsertErrorLogInput {
 	rt := int16(service.RequestTypeCyberBlocked)
 	entry := &service.OpsInsertErrorLogInput{
+		RequestIngress:    meta.RequestIngress,
 		RequestID:         meta.RequestID,
 		ClientRequestID:   meta.ClientRequestID,
 		Platform:          meta.Platform,
@@ -4421,6 +4427,7 @@ const cyberSessionBlockedClientMsg = "该会话已被网络安全策略屏蔽，
 func buildCyberSessionBlockedOpsEntry(meta cyberPolicyOpsErrorMeta) *service.OpsInsertErrorLogInput {
 	rt := int16(service.RequestTypeCyberBlocked)
 	entry := &service.OpsInsertErrorLogInput{
+		RequestIngress:    meta.RequestIngress,
 		RequestID:         meta.RequestID,
 		ClientRequestID:   meta.ClientRequestID,
 		Platform:          meta.Platform,
@@ -4576,6 +4583,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 		requestCtx = c.Request.Context()
 	}
 	meta.Platform = resolveOpsPlatform(requestCtx, apiKey, guessPlatformFromPath(meta.RequestPath))
+	meta.RequestIngress = requestmeta.IngressFromContext(requestCtx)
 	if c.Request != nil {
 		meta.ClientRequestID, _ = c.Request.Context().Value(ctxkey.ClientRequestID).(string)
 		meta.UserAgent = c.GetHeader("User-Agent")
@@ -4669,6 +4677,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 		apiKeyPrefix = keyPrefix(apiKey.Key, 8)
 	}
 	opsMeta := cyberPolicyOpsErrorMeta{
+		RequestIngress:  requestmeta.IngressFromContext(requestCtx),
 		RequestID:       requestID,
 		ClientRequestID: clientRequestID,
 		Platform:        platform,
@@ -4694,7 +4703,6 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 			cancel()
 		}
 	}
-	codexTurnStateLengths := service.ObservedCodexTurnStateLengths(c)
 	pricingAt := service.OpenAIPricingAtFromContext(requestCtx)
 	reservationDone := inflightNoop
 	if forwardErrored && gwSvc != nil {
@@ -4704,6 +4712,9 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 		defer reservationDone()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if opsMeta.RequestIngress != nil {
+			ctx = requestmeta.WithIngress(ctx, *opsMeta.RequestIngress)
+		}
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
 				LogOnly:         cyberLogOnly,
@@ -4726,7 +4737,6 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyForRequest(requestCtx context.Co
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
 				Prewarm:            len(prewarm) > 0 && prewarm[0],
-				CodexTurnState:     codexTurnStateLengths,
 				APIKey:             apiKey,
 				Account:            account,
 				Subscription:       subscription,

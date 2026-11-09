@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"strings"
 	"time"
 )
@@ -60,9 +61,10 @@ type OpsErrorLog struct {
 	GroupID     *int64 `json:"group_id"`
 	GroupName   string `json:"group_name"`
 
-	ClientIP    *string `json:"client_ip"`
-	RequestPath string  `json:"request_path"`
-	Stream      bool    `json:"stream"`
+	ClientIP       *string              `json:"client_ip"`
+	RequestIngress *requestmeta.Ingress `json:"request_ingress,omitempty"`
+	RequestPath    string               `json:"request_path"`
+	Stream         bool                 `json:"stream"`
 
 	InboundEndpoint  string `json:"inbound_endpoint"`
 	UpstreamEndpoint string `json:"upstream_endpoint"`

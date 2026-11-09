@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
@@ -625,6 +626,10 @@ func (s *GatewayService) billingDeps() *billingDeps {
 func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usageLog *UsageLog, logKey string) {
 	if repo == nil || usageLog == nil {
 		return
+	}
+	// Snapshot before detaching: sync fallback may replace an expired context.
+	if usageLog.RequestIngress == nil {
+		usageLog.RequestIngress = requestmeta.IngressFromContext(ctx)
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()

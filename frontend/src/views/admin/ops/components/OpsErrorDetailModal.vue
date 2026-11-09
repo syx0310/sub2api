@@ -13,6 +13,10 @@
 
     <div v-else class="space-y-6 p-6">
       <!-- Summary -->
+      <div v-if="detail.request_ingress" class="rounded-xl bg-gray-50 p-4 dark:bg-dark-900">
+        <div class="mb-1 text-xs text-gray-400">{{ t('admin.usage.ingress') }}</div>
+        <RequestIngressCell :value="detail.request_ingress" />
+      </div>
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-900">
           <div class="text-xs font-bold uppercase tracking-wider text-gray-400">{{ t('admin.ops.errorDetail.requestId') }}</div>
@@ -225,6 +229,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIngressCell from '@/components/admin/usage/RequestIngressCell.vue'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'

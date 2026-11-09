@@ -1802,6 +1802,8 @@
             </div>
           </div>
 
+          <RequestIngressSettings v-model:validate="form.request_ingress_validate_proxy" v-model:proxies="form.request_ingress_trusted_proxies" />
+
           <!-- Panel API Rate Limit Settings -->
           <div class="card">
             <div
@@ -9042,6 +9044,7 @@ import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vu
 import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
+import RequestIngressSettings from "@/components/admin/settings/RequestIngressSettings.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
@@ -9909,6 +9912,8 @@ const form = reactive<SettingsForm>({
   aliyun_captcha_region: "cn",
   api_key_acl_trust_forwarded_ip: true,
   forwarded_client_ip_headers: [],
+  request_ingress_validate_proxy: false,
+  request_ingress_trusted_proxies: [],
   // LinuxDo Connect OAuth 登录
   linuxdo_connect_enabled: false,
   linuxdo_connect_client_id: "",
@@ -11585,6 +11590,8 @@ async function saveSettings() {
       aliyun_captcha_region: form.aliyun_captcha_region,
       api_key_acl_trust_forwarded_ip: form.api_key_acl_trust_forwarded_ip,
       forwarded_client_ip_headers: form.forwarded_client_ip_headers,
+      request_ingress_validate_proxy: form.request_ingress_validate_proxy,
+      request_ingress_trusted_proxies: form.request_ingress_trusted_proxies,
       linuxdo_connect_enabled: form.linuxdo_connect_enabled,
       linuxdo_connect_client_id: form.linuxdo_connect_client_id,
       linuxdo_connect_client_secret:

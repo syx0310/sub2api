@@ -123,7 +123,7 @@ const DataTableStub = {
         <slot name="cell-latency" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-body_size" :row="row" />
-        <slot name="cell-codex_turn_state" :row="row" />
+        <slot name="cell-request_ingress" :row="row" />
         <slot name="cell-request_id" :row="row" />
         <slot name="cell-upstream_request_id" :row="row" />
       </div>
@@ -748,21 +748,20 @@ describe('admin UsageTable body size column', () => {
   })
 })
 
-describe('admin UsageTable turn-state lengths', () => {
+describe('admin UsageTable ingress', () => {
   it.each([
     [undefined, '—'],
-    [{ request_header_bytes: 0, request_metadata_bytes: 292, response_header_bytes: null, response_metadata_bytes: 356 }, '0 B'],
-  ])('renders optional observations without confusing zero and absent', (observation, expected) => {
+    [{ host: 'api.example.com:8443', source: 'forwarded_host' as const, peer_ip: '10.0.0.1' }, 'api.example.com:8443'],
+  ])('renders optional ingress observations', (observation, expected) => {
     const wrapper = mount(UsageTable, {
-      props: { data: [{ ...baseImageRow, codex_turn_state: observation }], loading: false, columns: [{ key: 'codex_turn_state', label: 'Turn State Length' }] },
+      props: { data: [{ ...baseImageRow, request_ingress: observation }], loading: false, columns: [{ key: 'request_ingress', label: 'Ingress' }] },
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
     })
-    const text = wrapper.get('[data-test="codex-turn-state-lengths"]').text()
+    const text = wrapper.get('[data-test="request-ingress"]').text()
     expect(text).toContain(expected)
     if (observation) {
-      expect(text).toContain('292 B')
-      expect(text).toContain('356 B')
-      expect(text).toContain('—')
+      expect(text).toContain('X-Forwarded-Host')
+      expect(text).toContain('10.0.0.1')
     }
   })
 })

@@ -231,7 +231,7 @@ func resolvedOpenAIUpstreamServiceTier(c *gin.Context, outboundBodyTier *string)
 	return resolvedOpenAIUpstreamServiceTierFromObserver(upstreamResponseModelObserverFromContext(c), outboundBodyTier)
 }
 
-func observeOpenAISSEBody(observer *upstreamResponseModelObserver, body string, turnState *codexTurnStateLengthObserver) {
+func observeOpenAISSEBody(observer *upstreamResponseModelObserver, body string) {
 	if strings.TrimSpace(body) == "" {
 		return
 	}
@@ -239,10 +239,6 @@ func observeOpenAISSEBody(observer *upstreamResponseModelObserver, body string, 
 		if observer != nil {
 			observer.ObserveOpenAI(payload, eventType)
 		}
-		// Buffered OAuth responses still contain response.metadata, even though
-		// the downstream receives only the terminal JSON response. Observe its
-		// length before aggregation without retaining the opaque value.
-		turnState.event(payload, eventType)
 	})
 }
 

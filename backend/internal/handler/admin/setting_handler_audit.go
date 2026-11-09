@@ -152,6 +152,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if !equalStringSlice(before.ForwardedClientIPHeaders, after.ForwardedClientIPHeaders) {
 		changed = append(changed, "forwarded_client_ip_headers")
 	}
+	if before.RequestIngressValidateProxy != after.RequestIngressValidateProxy {
+		changed = append(changed, "request_ingress_validate_proxy")
+	}
+	if !equalStringSlice(before.RequestIngressTrustedProxies, after.RequestIngressTrustedProxies) {
+		changed = append(changed, "request_ingress_trusted_proxies")
+	}
 	if before.LinuxDoConnectEnabled != after.LinuxDoConnectEnabled {
 		changed = append(changed, "linuxdo_connect_enabled")
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -67,6 +68,9 @@ func Logger() gin.HandlerFunc {
 				zap.String("ingress_reject_reason", string(reason)),
 				zap.Bool(logger.OpsSystemLogSkipField, true),
 			)
+		}
+		if ingress := requestmeta.IngressFromContext(c.Request.Context()); ingress != nil {
+			fields = append(fields, zap.String("ingress_host", ingress.Host), zap.String("ingress_source", ingress.Source), zap.String("ingress_peer_ip", ingress.PeerIP))
 		}
 		if hasAccountID && accountID > 0 {
 			fields = append(fields, zap.Int64("account_id", accountID))

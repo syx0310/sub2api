@@ -5,6 +5,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"net/http/httptest"
 	"testing"
 
@@ -34,10 +35,10 @@ func TestScopedAdminUsageListDoesNotGrantNestedResourceRead(t *testing.T) {
 	for _, scoped := range []bool{true, false} {
 		t.Run(map[bool]string{true: "受限用量读取", false: "完整管理员保留响应"}[scoped], func(t *testing.T) {
 			repo := &scopedUsageResponseRepo{records: []service.UsageLog{{ID: 12, UserID: 7, APIKeyID: 8, AccountID: 11, RequestID: "request-public", RequestedModel: "requested-model", Model: "effective-model", InputTokens: 123, OutputTokens: 456, TotalCost: 1.25, ActualCost: 1, User: privateUser, APIKey: privateKey, Group: privateGroup, Subscription: privateSub, Account: privateAccount}}}
-			requestBytes, responseBytes, turnBytes := int64(1024), int64(2048), 32
+			requestBytes, responseBytes := int64(1024), int64(2048)
 			repo.records[0].RequestBodyBytes = &requestBytes
 			repo.records[0].ResponseBodyBytes = &responseBytes
-			repo.records[0].CodexTurnState = service.CodexTurnStateLengths{RequestMetadataBytes: &turnBytes}
+			repo.records[0].RequestIngress = &requestmeta.Ingress{Host: "api.example.com", Source: "host"}
 			h := NewUsageHandler(service.NewUsageService(repo, nil, nil, nil), nil, nil, nil)
 			r := gin.New()
 			r.Use(func(c *gin.Context) {
@@ -66,7 +67,8 @@ func TestScopedAdminUsageListDoesNotGrantNestedResourceRead(t *testing.T) {
 			require.JSONEq(t, `8`, string(item["api_key_id"]))
 			require.JSONEq(t, `1024`, string(item["request_body_bytes"]))
 			require.JSONEq(t, `2048`, string(item["response_body_bytes"]))
-			require.JSONEq(t, `{"request_header_bytes":null,"request_metadata_bytes":32,"response_header_bytes":null,"response_metadata_bytes":null}`, string(item["codex_turn_state"]))
+			require.JSONEq(t, `{"host":"api.example.com","source":"host"}`, string(item["request_ingress"]))
+			require.NotContains(t, item, "codex_turn_state")
 			if scoped {
 				require.NotContains(t, w.Body.String(), "private-")
 				require.NotContains(t, w.Body.String(), "97531")

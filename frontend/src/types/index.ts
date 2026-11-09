@@ -1879,11 +1879,10 @@ export interface UsageLogAccountSummary {
   name: string
 }
 
-export interface CodexTurnStateLengths {
-  request_header_bytes: number | null
-  request_metadata_bytes: number | null
-  response_header_bytes: number | null
-  response_metadata_bytes: number | null
+export interface RequestIngress {
+  host: string
+  source: 'forwarded_host' | 'host'
+  peer_ip?: string
 }
 
 export interface AdminUsageLog extends UsageLog {
@@ -1908,7 +1907,7 @@ export interface AdminUsageLog extends UsageLog {
   // 请求/返回逻辑 payload 大小（仅管理员可见）
   request_body_bytes?: number | null
   response_body_bytes?: number | null
-  codex_turn_state?: CodexTurnStateLengths | null
+  request_ingress?: RequestIngress | null
 
   // 最小账号信息（仅管理员接口返回）
   account?: UsageLogAccountSummary

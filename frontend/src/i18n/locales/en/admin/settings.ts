@@ -291,6 +291,14 @@ export default {
         forwardedClientIpHeadersLimit: 'At most {max} custom client-IP headers are allowed.',
         removeForwardedClientIpHeader: 'Remove {header}'
       },
+      requestIngress: {
+        title: 'Request ingress observations',
+        description: 'Record X-Forwarded-Host, falling back to Host. Diagnostic only; does not affect routing, authentication or client IP parsing.',
+        validate: 'Validate the forwarding proxy (off by default)',
+        hint: 'When off, direct clients can also declare the ingress: proxies should overwrite X-Forwarded-Host. When on, accept that header only from a matching direct TCP peer. An empty list uses Host only.',
+        proxies: 'Ingress trusted proxy IPs / CIDRs',
+        proxiesHint: 'Up to 256 IPv4, IPv6 or CIDR entries, separated by newlines, spaces or commas. Enter the direct peer seen by sub2api (possibly a private Docker/NAT address), not the client IP. Independent of existing client IP trust settings.',
+      },
       linuxdo: {
         title: 'LinuxDo Connect Login',
         description: 'Configure LinuxDo Connect OAuth for Sub2API end-user login',

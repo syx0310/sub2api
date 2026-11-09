@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"testing"
 	"time"
 
@@ -31,18 +32,30 @@ func TestGetErrorLogByID_APIKeyPrefixAndUpstreamStatus(t *testing.T) {
 	require.Empty(t, plain.APIKeyPrefix)
 
 	validID, err := repo.InsertErrorLog(ctx, &service.OpsInsertErrorLogInput{
-		ErrorPhase:   "request",
-		ErrorType:    "api_error",
-		Severity:     "error",
-		StatusCode:   402,
-		CreatedAt:    time.Now(),
-		APIKeyPrefix: "sk-valid",
+		ErrorPhase:     "request",
+		ErrorType:      "api_error",
+		Severity:       "error",
+		StatusCode:     402,
+		CreatedAt:      time.Now(),
+		APIKeyPrefix:   "sk-valid",
+		RequestIngress: &requestmeta.Ingress{Host: "error.example", Source: "host", PeerIP: "192.0.2.1"},
 	})
 	require.NoError(t, err)
 
 	valid, err := repo.GetErrorLogByID(ctx, validID)
 	require.NoError(t, err)
 	require.Equal(t, "sk-valid", valid.APIKeyPrefix)
+	require.Equal(t, &requestmeta.Ingress{Host: "error.example", Source: "host", PeerIP: "192.0.2.1"}, valid.RequestIngress)
+	listed, err := repo.ListErrorLogs(ctx, &service.OpsErrorLogFilter{})
+	require.NoError(t, err)
+	found := false
+	for _, item := range listed.Errors {
+		if item.ID == validID {
+			found = true
+			require.Equal(t, valid.RequestIngress, item.RequestIngress)
+		}
+	}
+	require.True(t, found)
 
 	zero := 0
 	credentialFailureID, err := repo.InsertErrorLog(ctx, &service.OpsInsertErrorLogInput{

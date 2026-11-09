@@ -413,6 +413,8 @@ const baseSettingsResponse = {
   tencent_captcha_cloud_secret_key_configured: false,
   api_key_acl_trust_forwarded_ip: true,
   forwarded_client_ip_headers: [],
+  request_ingress_validate_proxy: false,
+  request_ingress_trusted_proxies: [],
   linuxdo_connect_enabled: false,
   linuxdo_connect_client_id: "",
   linuxdo_connect_client_secret_configured: false,

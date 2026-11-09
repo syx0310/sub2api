@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -415,6 +416,9 @@ func estimateOpsErrorLogJobBytes(entry *service.OpsInsertErrorLogInput) int64 {
 	}
 	if entry.UpstreamErrorsJSON != nil {
 		size += len(*entry.UpstreamErrorsJSON)
+	}
+	if entry.RequestIngress != nil {
+		size += 48 + len(entry.RequestIngress.Host) + len(entry.RequestIngress.Source) + len(entry.RequestIngress.PeerIP)
 	}
 	return int64(size)
 }
@@ -1284,6 +1288,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			entry.ClientIP = &clientIP
 		}
 
+		if c.Request != nil {
+			entry.RequestIngress = requestmeta.IngressFromContext(c.Request.Context())
+		}
 		enqueueOpsErrorLog(ops, entry)
 	}
 }
@@ -1400,6 +1407,9 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *service.OpsService, finalStatu
 		entry.ClientIP = &clientIP
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
+	if c.Request != nil {
+		entry.RequestIngress = requestmeta.IngressFromContext(c.Request.Context())
+	}
 	enqueueOpsErrorLog(ops, entry)
 }
 
@@ -1589,6 +1599,9 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		entry.ClientIP = &clientIP
 	}
 
+	if c.Request != nil {
+		entry.RequestIngress = requestmeta.IngressFromContext(c.Request.Context())
+	}
 	enqueueOpsErrorLog(ops, entry)
 }
 

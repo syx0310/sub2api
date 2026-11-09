@@ -169,14 +169,10 @@ func TestOpenAIOAuthBufferedMetadataLengthsSurviveJSONAggregation(t *testing.T) 
 			if contentType != "" {
 				header.Set("Content-Type", contentType)
 			}
-			rec, _, result := runOpenAIOAuthNonStreamRegressionWithHeader(t, passthrough,
+			rec, _, _ := runOpenAIOAuthNonStreamRegressionWithHeader(t, passthrough,
 				`{"model":"gpt-6.1-terra","input":"hi","stream":false}`, header, metadata+openAINonStreamRegressionSSE)
 			requireSingleJSONResponsesObject(t, rec)
-			require.NotNil(t, result.CodexTurnState.ResponseMetadataBytes)
-			require.Equal(t, len("opaque-state"), *result.CodexTurnState.ResponseMetadataBytes)
-			require.NotNil(t, result.CodexTurnState.ResponseHeaderBytes)
-			require.Equal(t, len("header-state"), *result.CodexTurnState.ResponseHeaderBytes)
-			require.NotContains(t, rec.Body.String(), "opaque-state", "metadata is observed, not injected into the terminal response")
+			require.NotContains(t, rec.Body.String(), "opaque-state", "metadata is not injected into the terminal response")
 		}
 	}
 }

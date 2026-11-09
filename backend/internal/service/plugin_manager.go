@@ -307,6 +307,12 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 	}
 
 	rollout := bindingRollout(enabled.Bindings)
+	if compatibility := EvaluatePluginCompatibility(enabled.Manifest, m.hostInfo); !compatibility.Compatible {
+		// Host compatibility is local to this process: do not disable a shared
+		// binding on other hosts during a rolling upgrade, or fall back to direct.
+		m.publishUnavailableRoute(enabled.ID, rollout, compatibility.Message)
+		return errors.New(compatibility.Message)
+	}
 	current := m.route.Load()
 	if current != nil && current.pluginID == enabled.ID && current.runtime != nil &&
 		!current.runtime.client.Exited() && current.rolloutPercent == rollout &&
@@ -567,6 +573,15 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 	if active := m.route.Load(); active != nil && active.pluginID != id {
 		return nil, errors.New("OpenAI OAuth 出站能力已有启用插件，请先停用当前插件")
 	}
+	compatibility := EvaluatePluginCompatibility(installation.Manifest, m.hostInfo)
+	if !compatibility.Compatible {
+		if hasEnabledOpenAIBinding(installation.Bindings) {
+			m.publishUnavailableRoute(id, bindingRollout(installation.Bindings), compatibility.Message)
+			return nil, errors.New(compatibility.Message)
+		}
+		stateErr := m.repo.UpdateState(ctx, id, PluginStateIncompatible, compatibility.Message, nil, installation.BinarySHA256, installation.State)
+		return nil, errors.Join(errors.New(compatibility.Message), stateErr)
+	}
 	if installation.State == PluginStateEnabled && hasEnabledOpenAIBinding(installation.Bindings) {
 		installation.Compatibility = EvaluatePluginCompatibility(installation.Manifest, m.hostInfo)
 		m.mu.Lock()
@@ -576,11 +591,6 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 		if installation.RuntimeHealthy {
 			return installation, nil
 		}
-	}
-	compatibility := EvaluatePluginCompatibility(installation.Manifest, m.hostInfo)
-	if !compatibility.Compatible {
-		stateErr := m.repo.UpdateState(ctx, id, PluginStateIncompatible, compatibility.Message, nil, installation.BinarySHA256, installation.State)
-		return nil, errors.Join(errors.New(compatibility.Message), stateErr)
 	}
 	if !compatibility.Tested && !acceptUntested {
 		return nil, errors.New("插件未声明已测试当前 Sub2API 版本，需要管理员确认后启用")
@@ -1009,6 +1019,12 @@ func (m *PluginManager) markRuntimeUnavailable(failedRoute *pluginRoute, message
 }
 
 func (m *PluginManager) prepareRuntime(ctx context.Context, installation *PluginInstallation, validateConfig bool) (*pluginRuntime, error) {
+	if installation == nil {
+		return nil, errors.New("插件安装记录为空")
+	}
+	if compatibility := EvaluatePluginCompatibility(installation.Manifest, m.hostInfo); !compatibility.Compatible {
+		return nil, errors.New(compatibility.Message)
+	}
 	runtime, err := m.newRuntime(ctx, installation)
 	if err != nil {
 		return nil, err

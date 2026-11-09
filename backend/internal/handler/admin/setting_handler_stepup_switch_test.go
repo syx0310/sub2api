@@ -208,3 +208,34 @@ func TestUpdateSettingsRejectsInvalidForwardedClientIPHeader(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.JSONEq(t, `["X-Existing-IP"]`, repo.values[service.SettingKeyForwardedClientIPHeaders])
 }
+
+func TestUpdateSettingsRequestIngress(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyAPIKeyACLTrustForwardedIP: "true",
+		service.SettingKeyForwardedClientIPHeaders:  `["X-Existing-Ip"]`,
+	})
+	defaults := doUpdateSettings(t, h, map[string]any{"registration_enabled": true}, nil)
+	require.Equal(t, http.StatusOK, defaults.Code)
+	require.Contains(t, defaults.Body.String(), `"request_ingress_validate_proxy":false`)
+	require.Contains(t, defaults.Body.String(), `"request_ingress_trusted_proxies":[]`)
+	saved := doUpdateSettings(t, h, map[string]any{"request_ingress_validate_proxy": true, "request_ingress_trusted_proxies": []string{"192.0.2.1", "10.20.0.9/24", "2001:db8::1/64", "192.0.2.1"}}, nil)
+	require.Equal(t, http.StatusOK, saved.Code, saved.Body.String())
+	require.JSONEq(t, `["192.0.2.1","10.20.0.0/24","2001:db8::/64"]`, repo.values[service.SettingKeyRequestIngressTrustedProxies])
+	request := httptest.NewRequest("GET", "http://internal/", nil)
+	request.RemoteAddr = "10.20.0.5:54321"
+	request.Header.Set("X-Forwarded-Host", "public.example")
+	require.Equal(t, "public.example", h.settingService.RequestIngressPolicy().Capture(request).Host)
+	request.RemoteAddr = "203.0.113.5:54321"
+	require.Equal(t, "internal", h.settingService.RequestIngressPolicy().Capture(request).Host)
+	preserved := doUpdateSettings(t, h, map[string]any{"registration_enabled": true}, nil)
+	require.Equal(t, http.StatusOK, preserved.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyRequestIngressValidateProxy])
+	invalid := doUpdateSettings(t, h, map[string]any{"request_ingress_trusted_proxies": []string{"proxy.example"}}, nil)
+	require.Equal(t, http.StatusBadRequest, invalid.Code)
+	require.JSONEq(t, `["192.0.2.1","10.20.0.0/24","2001:db8::/64"]`, repo.values[service.SettingKeyRequestIngressTrustedProxies])
+	cleared := doUpdateSettings(t, h, map[string]any{"request_ingress_trusted_proxies": []string{}}, nil)
+	require.Equal(t, http.StatusOK, cleared.Code)
+	require.JSONEq(t, `[]`, repo.values[service.SettingKeyRequestIngressTrustedProxies])
+	require.Equal(t, "true", repo.values[service.SettingKeyAPIKeyACLTrustForwardedIP])
+	require.JSONEq(t, `["X-Existing-Ip"]`, repo.values[service.SettingKeyForwardedClientIPHeaders])
+}

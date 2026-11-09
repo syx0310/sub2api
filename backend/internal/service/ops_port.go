@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmeta"
 	"time"
 )
 
@@ -65,11 +66,12 @@ type OpsInsertErrorLogInput struct {
 	RequestID       string
 	ClientRequestID string
 
-	UserID    *int64
-	APIKeyID  *int64
-	AccountID *int64
-	GroupID   *int64
-	ClientIP  *string
+	UserID         *int64
+	APIKeyID       *int64
+	AccountID      *int64
+	GroupID        *int64
+	ClientIP       *string
+	RequestIngress *requestmeta.Ingress
 
 	Platform    string
 	Model       string

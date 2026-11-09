@@ -183,7 +183,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	logOpenAIWSModeDebug(
-		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
+		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
 		account.ID,
 		account.Type,
 		normalizeOpenAIWSLogValue(string(decision.Transport)),
@@ -191,7 +191,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		previousResponseID != "",
 		truncateOpenAIWSLogValue(sessionHash, 12),
 		turnState != "",
-		len(turnState),
 		turnMetadata != "",
 		len(turnMetadata),
 		storeDisabled,
@@ -299,7 +298,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 	if previousResponseID != "" {
 		logOpenAIWSModeInfo(
-			"continuation_probe account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s preferred_conn_id=%s conn_reused=%v store_disabled=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v",
+			"continuation_probe account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s preferred_conn_id=%s conn_reused=%v store_disabled=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v has_prompt_cache_key=%v",
 			account.ID,
 			account.Type,
 			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
@@ -314,7 +313,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
 			normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
 			turnState != "",
-			len(turnState),
 			promptCacheKey != "",
 		)
 	}
@@ -329,11 +327,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader))
 	logOpenAIWSModeDebug(
-		"handshake account_id=%d conn_id=%s has_turn_state=%v turn_state_len=%d",
+		"handshake account_id=%d conn_id=%s has_turn_state=%v",
 		account.ID,
 		connID,
 		handshakeTurnState != "",
-		len(handshakeTurnState),
 	)
 	if handshakeTurnState != "" {
 		if stateStore != nil && stateHash != "" {
@@ -375,12 +372,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 
-	turnStateLengths := s.newCodexTurnStateLengthObserver(account)
-	turnStateLengths.requestObject(nil, payload)
-	if !lease.Reused() {
-		turnStateLengths.requestObject(wsHeaders, payload)
-		turnStateLengths.responseHeaders(lease.HandshakeHeaders())
-	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
@@ -473,7 +464,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               lease.HandshakeHeaders(),
-			CodexTurnState:                turnStateLengths.snapshot(),
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 			ClientDisconnect:              clientDisconnected,
@@ -657,7 +647,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			continue
 		}
 		responseModelObserver.ObserveOpenAI(message, eventType)
-		turnStateLengths.event(message, eventType)
 		eventCount++
 		if firstEventType == "" {
 			firstEventType = eventType
@@ -737,7 +726,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			)
 			if fallbackReason == "previous_response_not_found" {
 				logOpenAIWSModeInfo(
-					"previous_response_not_found_diag account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s response_id=%s event_idx=%d req_stream=%v store_disabled=%v conn_reused=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v err_code=%s err_type=%s err_message=%s",
+					"previous_response_not_found_diag account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s response_id=%s event_idx=%d req_stream=%v store_disabled=%v conn_reused=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v has_prompt_cache_key=%v err_code=%s err_type=%s err_message=%s",
 					account.ID,
 					account.Type,
 					connID,
@@ -754,7 +743,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
 					normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
 					turnState != "",
-					len(turnState),
 					promptCacheKey != "",
 					errCode,
 					errType,

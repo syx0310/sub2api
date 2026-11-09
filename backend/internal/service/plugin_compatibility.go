@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appversion"
 	pluginv1 "github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1"
 	"golang.org/x/mod/semver"
 )
@@ -35,8 +36,9 @@ func EvaluatePluginCompatibility(manifest PluginManifest, host PluginHostInfo) P
 		return result
 	}
 	result.Compatible = true
+	hostVersion, _ := appversion.Normalize(host.Version) // range check above already validated it
 	for _, tested := range manifest.Requires.TestedSub2APIVersions {
-		if normalizeSemver(tested) == normalizeSemver(host.Version) {
+		if testedVersion, err := appversion.Normalize(tested); err == nil && testedVersion == hostVersion {
 			result.Tested = true
 			break
 		}
@@ -66,8 +68,8 @@ func normalizeSemver(version string) string {
 }
 
 func matchesSemverRange(version, expression string) bool {
-	v := normalizeSemver(version)
-	if v == "" {
+	v, err := appversion.Normalize(version)
+	if err != nil {
 		return false
 	}
 	tokens := strings.Fields(strings.ReplaceAll(expression, ",", " "))
@@ -84,11 +86,10 @@ func matchesSemverRange(version, expression string) bool {
 				break
 			}
 		}
-		bound := normalizeSemver(raw)
-		if bound == "" {
+		comparison, err := appversion.Compare(v, raw)
+		if err != nil {
 			return false
 		}
-		comparison := semver.Compare(v, bound)
 		matched := map[string]bool{
 			">=": comparison >= 0,
 			"<=": comparison <= 0,

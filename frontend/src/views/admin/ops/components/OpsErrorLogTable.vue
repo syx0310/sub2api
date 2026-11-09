@@ -150,6 +150,10 @@
           </div>
         </template>
 
+        <template #cell-request_ingress="{ row }">
+          <RequestIngressCell :value="row.request_ingress" />
+        </template>
+
         <template #cell-actions="{ row }">
           <button
             type="button"
@@ -179,6 +183,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIngressCell from '@/components/admin/usage/RequestIngressCell.vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/common/DataTable.vue'
@@ -211,6 +216,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'created_at', label: t('admin.ops.errorLog.time'), sortable: true },
   { key: 'user_agent', label: t('usage.userAgent') },
   { key: 'client_ip', label: t('admin.ops.errorLog.ip') },
+  { key: 'request_ingress', label: t('admin.usage.ingress') },
   { key: 'actions', label: t('admin.ops.errorLog.action') },
 ])
 

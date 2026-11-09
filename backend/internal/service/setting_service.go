@@ -117,6 +117,9 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 
 // SettingService 系统设置服务
 type SettingService struct {
+	requestIngressMu            sync.Mutex
+	requestIngressCache         atomic.Pointer[cachedRequestIngressPolicy]
+	requestIngressRefreshing    atomic.Bool
 	scopedAdminKeyRepo          ScopedAdminKeyRepository
 	settingRepo                 SettingRepository
 	defaultSubGroupReader       DefaultSubscriptionGroupReader

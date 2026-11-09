@@ -79,7 +79,7 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 		"account_rate_multiplier":      usage.AccountRateMultiplier,
 		"account_stats_cost":           usage.AccountStatsCost,
 	}
-	// Preserve the fork's numeric observability fields without exposing request
+	// Preserve the fork's bounded diagnostic fields without exposing request
 	// bodies, turn-state values, credentials or related resource DTOs.
 	if usage.RequestBodyBytes != nil {
 		result["request_body_bytes"] = usage.RequestBodyBytes
@@ -87,8 +87,8 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 	if usage.ResponseBodyBytes != nil {
 		result["response_body_bytes"] = usage.ResponseBodyBytes
 	}
-	if usage.CodexTurnState != nil {
-		result["codex_turn_state"] = usage.CodexTurnState
+	if usage.RequestIngress != nil {
+		result["request_ingress"] = usage.RequestIngress
 	}
 	return result
 }

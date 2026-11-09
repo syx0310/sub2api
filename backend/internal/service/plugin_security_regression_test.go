@@ -109,6 +109,28 @@ func TestPluginReconcileFailsClosedWhenDesiredStateCannotBeRead(t *testing.T) {
 	require.ErrorContains(t, routeErr, "插件不可用")
 }
 
+func TestPluginReconcileRechecksPostReleaseHostWithoutChangingGlobalBinding(t *testing.T) {
+	manifest := testPluginManifest(nil)
+	manifest.Requires.Sub2API = "=0.2.19"
+	repo := &pluginTokenRepository{installation: &PluginInstallation{ID: 42, Manifest: manifest, State: PluginStateEnabled,
+		Bindings: []PluginBinding{{Capability: PluginCapabilityOpenAIOAuthOutbound, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth, Enabled: true, RolloutPercent: 100}},
+	}}
+	manager := &PluginManager{repo: repo, hostInfo: PluginHostInfo{Version: "0.2.19p1"}, runtimes: make(map[int64]*pluginRuntime), localInstallations: make(map[int64]*PluginInstallation)}
+	require.ErrorContains(t, manager.reconcileOnce(context.Background()), "不满足插件要求")
+	require.Equal(t, PluginStateEnabled, repo.installation.State)
+	require.True(t, repo.installation.Bindings[0].Enabled)
+	require.NotNil(t, manager.route.Load())
+	require.NotEmpty(t, manager.route.Load().unavailable)
+	_, err := manager.Enable(context.Background(), 42, true, 100)
+	require.ErrorContains(t, err, "不满足插件要求")
+	_, err = manager.prepareRuntime(context.Background(), repo.installation, false)
+	require.ErrorContains(t, err, "不满足插件要求")
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	_, handled, routeErr := manager.RoundTripOpenAIOAuth(context.Background(), request, "", &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+	require.True(t, handled)
+	require.Error(t, routeErr, "no fallback to direct transport")
+}
+
 type normalizingPluginClient struct {
 	pluginv1.TransportPluginClient
 	normalized []byte

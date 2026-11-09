@@ -290,6 +290,14 @@ export default {
         forwardedClientIpHeadersLimit: '自定义客户端 IP 请求头最多允许 {max} 个。',
         removeForwardedClientIpHeader: '移除 {header}'
       },
+      requestIngress: {
+        title: '请求入口记录',
+        description: '优先记录 X-Forwarded-Host，否则记录 Host。仅用于观测，不影响路由、鉴权或客户端 IP 解析。',
+        validate: '校验入口转发头的代理来源（默认关闭）',
+        hint: '关闭时，直连请求也可声明入口，请确保反代覆盖客户端传来的 X-Forwarded-Host。开启时，只有直接 TCP 对端命中下方列表才采信该头；列表为空则仅使用 Host。',
+        proxies: '入口可信代理 IP / CIDR',
+        proxiesHint: '支持多个 IPv4、IPv6 和 CIDR；每行一个，也可用空格或逗号分隔，最多 256 项。填写 sub2api 实际看到的直接对端（Docker/NAT 后可能是内网地址），不是客户端 IP。此列表独立于原客户端 IP 信任设置。',
+      },
       linuxdo: {
         title: 'LinuxDo Connect 登录',
         description: '配置 LinuxDo Connect OAuth，用于 Sub2API 用户登录',

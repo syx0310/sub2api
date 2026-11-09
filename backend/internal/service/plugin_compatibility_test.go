@@ -46,3 +46,20 @@ func TestMatchesSemverRange(t *testing.T) {
 	assert.False(t, matchesSemverRange("dev", ">=0.1.0"))
 	assert.False(t, matchesSemverRange("0.1.179", "^0.1.0"))
 }
+
+func TestPluginHostPostReleaseCompatibility(t *testing.T) {
+	manifest := testPluginManifest(nil)
+	manifest.Requires.Sub2API = ">=0.2.19 <0.2.20"
+	manifest.Requires.TestedSub2APIVersions = []string{"0.2.19"}
+	host := PluginHostInfo{Version: "v0.2.19p1"}
+	result := EvaluatePluginCompatibility(manifest, host)
+	require.True(t, result.Compatible)
+	require.Equal(t, "untested", result.Status)
+	manifest.Requires.TestedSub2APIVersions = []string{"0.2.19p1"}
+	require.True(t, EvaluatePluginCompatibility(manifest, host).Tested)
+	manifest.Requires.Sub2API = "=0.2.19"
+	require.False(t, EvaluatePluginCompatibility(manifest, host).Compatible)
+	require.True(t, matchesSemverRange("0.2.19p10", ">=0.2.19p2 <0.2.20"))
+	require.False(t, matchesSemverRange("0.2.19p2", ">=0.2.19p10"))
+	require.Empty(t, normalizeSemver("0.2.19p1"), "plugin package versions remain standard SemVer")
+}

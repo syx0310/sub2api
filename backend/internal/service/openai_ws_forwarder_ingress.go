@@ -852,7 +852,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if firstPayload.previousResponseID != "" {
 		firstPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(firstPayload.previousResponseID)
 		logOpenAIWSModeInfo(
-			"ingress_ws_continuation_probe account_id=%d turn=%d previous_response_id=%s previous_response_id_kind=%s preferred_conn_id=%s session_hash=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v store_disabled=%v",
+			"ingress_ws_continuation_probe account_id=%d turn=%d previous_response_id=%s previous_response_id_kind=%s preferred_conn_id=%s session_hash=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v has_prompt_cache_key=%v store_disabled=%v",
 			account.ID,
 			1,
 			truncateOpenAIWSLogValue(firstPayload.previousResponseID, openAIWSIDValueMaxLen),
@@ -862,7 +862,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "session_id"),
 			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "conversation_id"),
 			turnState != "",
-			len(turnState),
 			firstPayload.promptCacheKey != "",
 			storeDisabled,
 		)
@@ -874,7 +873,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	agentTaskRecoveryTried := false
-	var pendingTurnStateHandshake CodexTurnStateLengths
 	var acquireTurnLease func(int, string, bool, bool) (*openAIWSConnLease, error)
 	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool, forceNewConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
@@ -942,13 +940,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			return nil, acquireErr
 		}
-		pendingTurnStateHandshake = CodexTurnStateLengths{}
 		if !lease.Reused() {
-			observation := s.newCodexTurnStateLengthObserver(account)
-			observation.request(req.Headers, nil)
-			observation.responseHeaders(lease.HandshakeHeaders())
 			s.observeCodexCreditHeaders(ctx, account, lease.HandshakeHeaders(), !account.IsShadow())
-			pendingTurnStateHandshake = observation.snapshot()
 		}
 		connID := strings.TrimSpace(lease.ConnID())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
@@ -990,12 +983,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnStart := time.Now()
 		wroteDownstream := false
 		var downstreamBytes int64
-		turnStateLengths := s.newCodexTurnStateLengthObserver(account)
-		if turnStateLengths != nil {
-			turnStateLengths.value = pendingTurnStateHandshake
-		}
-		pendingTurnStateHandshake = CodexTurnStateLengths{}
-		turnStateLengths.request(nil, payload)
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -1056,8 +1043,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
 				RequestedReasoningEffort:      requestedReasoningEffort, Stream: reqStream, OpenAIWSMode: true,
 				UpstreamTerminalEvent: terminalEvent, ResponseHeaders: lease.HandshakeHeaders(),
-				CodexTurnState: turnStateLengths.snapshot(),
-				Duration:       time.Since(turnStart), FirstTokenMs: firstTokenMs,
+				Duration: time.Since(turnStart), FirstTokenMs: firstTokenMs,
 				RequestBodyBytes: bodyBytesPtr(requestBodyBytes), ResponseBodyBytes: bodyBytesPtr(downstreamBytes),
 				ClientDisconnect: clientDisconnected,
 			}
@@ -1106,7 +1092,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			previousResponseNotFound := false
 			previousResponseNotFoundMessage := ""
 			responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
-			turnStateLengths.event(upstreamMessage, eventType)
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
@@ -1567,7 +1552,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			chainedFromLast := expectedPrev != "" && currentPreviousResponseID == expectedPrev
 			currentPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(currentPreviousResponseID)
 			logOpenAIWSModeInfo(
-				"ingress_ws_turn_chain account_id=%d turn=%d conn_id=%s previous_response_id=%s previous_response_id_kind=%s last_turn_response_id=%s chained_from_last=%v preferred_conn_id=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v store_disabled=%v",
+				"ingress_ws_turn_chain account_id=%d turn=%d conn_id=%s previous_response_id=%s previous_response_id_kind=%s last_turn_response_id=%s chained_from_last=%v preferred_conn_id=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v has_prompt_cache_key=%v store_disabled=%v",
 				account.ID,
 				turn,
 				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
@@ -1579,7 +1564,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				openAIWSHeaderValueForLog(baseAcquireReq.Headers, "session_id"),
 				openAIWSHeaderValueForLog(baseAcquireReq.Headers, "conversation_id"),
 				turnState != "",
-				len(turnState),
 				openAIWSPayloadStringFromRaw(currentPayload, "prompt_cache_key") != "",
 				storeDisabled,
 			)

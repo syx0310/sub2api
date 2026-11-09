@@ -5,7 +5,7 @@
  */
 
 import { apiClient, buildGatewayUrl } from '../client'
-import type { PaginatedResponse } from '@/types'
+import type { PaginatedResponse, RequestIngress } from '@/types'
 
 export type OpsQueryMode = 'auto' | 'raw' | 'preagg'
 
@@ -935,6 +935,7 @@ export interface OpsErrorLog {
   group_name: string
 
   client_ip?: string | null
+  request_ingress?: RequestIngress | null
   request_path?: string
   stream?: boolean
 

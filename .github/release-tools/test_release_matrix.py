@@ -139,6 +139,15 @@ class ReleaseMatrixTest(unittest.TestCase):
         self.assertEqual(output['owner_lower'], 'exampleowner')
         self.assertEqual(len(json.loads(output['matrix'])['include']), 5)
 
+    def test_post_release_version_keeps_numeric_patch_in_plan(self):
+        release.VERSION_FILE.write_text('0.2.19p10\n')
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):
+            release.plan(argparse.Namespace(ref='feature/test', dry_run=True, simple=False))
+        output = dict(line.split('=', 1) for line in Path('outputs').read_text().splitlines())
+        self.assertEqual(output['version'], '0.2.19p10')
+        for invalid in ('0.2.19p0', '0.2.19p01', '0.2.19p', '0.2.19p1garbage'):
+            self.assertIsNone(release.VERSION_RE.fullmatch(invalid))
+
     def test_docker_commands_do_not_publish_during_dry_run(self):
         fake_bin = Path('bin')
         fake_bin.mkdir()
