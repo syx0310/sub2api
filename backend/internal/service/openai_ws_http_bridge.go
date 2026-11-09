@@ -439,6 +439,53 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, createdAt int6
 	return body
 }
 
+// Project the final, already scoped per-create body onto HTTP headers. A WS
+// handshake describes only the first create; it must not replace a later
+// child's canonical metadata or resurrect the first turn's compaction marker.
+func applyOpenAIWSHTTPBridgeTurnIdentityHeaders(headers http.Header, body []byte, turn int) {
+	metadata := gjson.GetBytes(body, "client_metadata")
+	embedded := metadata.Get(openAIWSTurnMetadataHeader)
+	var canonical gjson.Result
+	if embedded.Type == gjson.String {
+		canonical = gjson.Parse(embedded.String())
+	}
+	headers.Del(openAIWSTurnMetadataHeader)
+	if canonical.IsObject() {
+		var fields map[string]any
+		if err := decodeOpenAIJSONUseNumber([]byte(embedded.String()), &fields); err == nil {
+			if raw, err := marshalCodexTurnMetadata(fields); err == nil {
+				headers.Set(openAIWSTurnMetadataHeader, string(raw))
+			}
+		}
+	}
+	for _, field := range []struct {
+		canonical, projection string
+		headers               []string
+	}{
+		{"installation_id", "x-codex-installation-id", []string{"x-codex-installation-id"}},
+		{"session_id", "session_id", []string{"session_id", "session-id"}},
+		// Current Codex projects thread_id to x-client-request-id on both
+		// HTTP and WS; leaving the handshake value would identify the parent.
+		{"thread_id", "thread_id", []string{"thread-id", "thread_id", "x-client-request-id"}},
+		{"window_id", "x-codex-window-id", []string{"x-codex-window-id"}},
+		{"parent_thread_id", "x-codex-parent-thread-id", []string{"x-codex-parent-thread-id"}},
+	} {
+		value := canonical.Get(field.canonical)
+		if !value.Exists() {
+			value = metadata.Get(field.projection)
+		}
+		if !value.Exists() && turn == 1 {
+			continue // Legacy first-create headers still identify this request.
+		}
+		for _, header := range field.headers {
+			headers.Del(header)
+			if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+				headers.Set(header, value.String())
+			}
+		}
+	}
+}
+
 func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	ctx context.Context,
 	c *gin.Context,
@@ -454,6 +501,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	grokCacheIdentity string,
 	turn int,
 	writeClientMessage func([]byte) error,
+	clientInstructions ...openAIResponsesClientInstructions,
 ) (*OpenAIForwardResult, error) {
 	if s == nil {
 		return nil, errors.New("service is nil")
@@ -468,6 +516,17 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		return nil, errors.New("client websocket writer is nil")
 	}
 	responseModelObserver := &upstreamResponseModelObserver{}
+	instructions := captureOpenAIResponsesClientInstructions(payload)
+	if len(clientInstructions) > 0 {
+		instructions = clientInstructions[0]
+	}
+	if c != nil && c.Request != nil {
+		normalized, err := normalizeOpenAIWSInitialTurnMetadata(payload, c.GetHeader(openAIWSTurnMetadataHeader), turn)
+		if err != nil {
+			return nil, fmt.Errorf("normalize bridge turn metadata: %w", err)
+		}
+		payload = normalized
+	}
 
 	body, err := prepareOpenAIWSHTTPBridgeBody(account, payload)
 	if err != nil {
@@ -479,6 +538,27 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			return nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, err.Error(), err)
 		}
 		return nil, fmt.Errorf("prepare http bridge body: %w", err)
+	}
+	// Reuse the fork's fingerprint policy per create: device is the default;
+	// session/full remain explicit opt-ins. The caller has already applied the
+	// account/API-key identity namespace, so do not scope this payload twice.
+	stageCodexFingerprintIDs(c, nil)
+	if account.UsesOpenAICodexProtocol() {
+		var clientHeaders http.Header
+		if c != nil && c.Request != nil {
+			clientHeaders = c.Request.Header
+		}
+		fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders)
+		if fpIDs != nil {
+			fpBody, fpChanged, fpErr := applyCodexFingerprintClientMetadataRaw(body, fpIDs)
+			if fpErr != nil {
+				return nil, fmt.Errorf("apply http bridge codex fingerprint: %w", fpErr)
+			}
+			if fpChanged {
+				body = fpBody
+			}
+		}
+		stageCodexFingerprintIDs(c, fpIDs)
 	}
 	grokIntentSourceBody := append([]byte(nil), body...)
 	_, grokExplicitToolsField := openAIWSHTTPBridgeRawField(grokIntentSourceBody, "tools")
@@ -542,6 +622,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		if buildErr != nil {
 			return nil, buildErr
+		}
+		if account.UsesOpenAICodexProtocol() {
+			applyOpenAIWSHTTPBridgeTurnIdentityHeaders(upstreamReq.Header, requestBody, turn)
 		}
 		if account.Platform != PlatformGrok && isOpenAIResponsesLiteWebSocketPayload(payload) {
 			upstreamReq.Header.Set(responsesLiteHeader, "true")
@@ -676,6 +759,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	sawDone := false
 	wroteDownstream := false
 	var downstreamBytes int64
+	instructionsEcho := instructions.restoreValue(body)
 	pendingClientMessages := make([][]byte, 0, 4)
 	pendingClientMessageBytes := int64(0)
 	capacityFailoverSuppressedLogged := false
@@ -738,11 +822,12 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	if hasResponsesClientToolMapping(clientToolMapping) {
-		resp.Body = newResponsesClientToolStreamBody(resp.Body, clientToolMapping, maxLineSize)
+		resp.Body = newResponsesClientToolStreamBody(resp.Body, clientToolMapping, maxLineSize, s.cfg)
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
 	defer putSSEScannerBuf64K(scanBuf)
 
 	pendingSSEEventType := ""
@@ -846,6 +931,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			upstreamMessage = stamped
 		}
 		replayCollector.AddEvent(eventType, upstreamMessage)
+		upstreamMessage = restoreOpenAIResponsesInstructionsAtPath(upstreamMessage, "response.instructions", instructionsEcho)
 
 		var upstreamEventErr error
 		if officialOpenAIResponses && bareErrorPending && (eventType == "response.completed" || eventType == "response.done") {

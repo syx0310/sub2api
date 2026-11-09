@@ -186,6 +186,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		payloadBytes             int
 		requestedReasoningEffort *string
 		reasoningFrame           *openAIWSReasoningFrame
+		clientInstructions       openAIResponsesClientInstructions
 	}
 	ingressSessionOriginalModel := ""
 
@@ -491,6 +492,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			payloadBytes:             len(normalized),
 			requestedReasoningEffort: requestedReasoningEffort,
 			reasoningFrame:           reasoningFrame,
+			clientInstructions:       captureOpenAIResponsesClientInstructions(raw),
 		}, nil
 	}
 
@@ -703,6 +705,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				grokCacheIdentity,
 				turn,
 				writeClientMessage,
+				currentBridgePayload.clientInstructions,
 			)
 			if bridgeErr != nil && isOpenAIWSSessionPreempted(ctx) {
 				return errOpenAIWSSessionPreempted
@@ -975,7 +978,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	var rejectedFieldRetryState *openAIResponsesRejectedFieldRetryState
-	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, requestBodyBytes int64, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, requestedReasoningEffort *string) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, requestBodyBytes int64, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, requestedReasoningEffort *string, clientInstructions openAIResponsesClientInstructions) (*OpenAIForwardResult, error) {
+		instructionsEcho := clientInstructions.restoreValue(payload)
 		responseModelObserver := &upstreamResponseModelObserver{}
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
@@ -1216,7 +1220,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				// Only rewrite the downstream copy. Account health and terminal-event
 				// handling below must continue to inspect the original upstream payload.
-				clientMessage := upstreamMessage
+				clientMessage := restoreOpenAIResponsesInstructionsAtPath(upstreamMessage, "response.instructions", instructionsEcho)
 				if eventType == "error" || eventType == "response.failed" {
 					if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(clientMessage); changed {
 						clientMessage = rewritten
@@ -1321,6 +1325,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentPayloadBytes := firstPayload.payloadBytes
 	currentRequestedReasoningEffort := firstPayload.requestedReasoningEffort
 	currentReasoningFrame := firstPayload.reasoningFrame
+	currentClientInstructions := firstPayload.clientInstructions
 	isStrictAffinityTurn := func(payload []byte) bool {
 		if !storeDisabled {
 			return false
@@ -1573,7 +1578,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if err := hooks.beforeForward(turn, currentPayload, gjson.GetBytes(currentPayload, "model").String(), reasoningSession); err != nil {
 			return err
 		}
-		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentRequestBodyBytes, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentRequestBodyBytes, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort, currentClientInstructions)
 		if relayErr != nil {
 			lastTurnClean = false
 			if isOpenAIWSSessionPreempted(ctx) {
@@ -1721,6 +1726,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentPayloadBytes = nextPayload.payloadBytes
 		currentRequestedReasoningEffort = nextPayload.requestedReasoningEffort
 		currentReasoningFrame = nextPayload.reasoningFrame
+		currentClientInstructions = nextPayload.clientInstructions
 		rejectedFieldRetryState = newOpenAIResponsesRejectedFieldRetryState(currentPayload)
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
 		if !storeDisabled {

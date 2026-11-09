@@ -363,6 +363,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		SetOpsUpstreamModel(c, actualModel)
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		syncOpenAIResponsesInstructionsEcho(c, body)
 		upstreamReq, buildErr := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 		releaseUpstreamCtx()
 		if buildErr != nil {
@@ -430,7 +431,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 				maxLineSize = s.cfg.Gateway.MaxLineSize
 			}
-			resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, mapping, maxLineSize)
+			resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, mapping, maxLineSize, s.cfg)
 		}
 
 		// x-codex-turn-state 溯源：下游回传由 writeOpenAIPassthroughResponseHeaders
@@ -1976,6 +1977,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
 	defer putSSEScannerBuf64K(scanBuf)
 	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
@@ -2030,6 +2032,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					return resultWithUsage(), fmt.Errorf("restore OpenAI passthrough namespace response: %w", restoreErr)
 				}
 				restoredData = restoreCodexToolNamesFromSSEContext(c, restoredData, rawEventType)
+				restoredData = restoreOpenAIResponsesInstructionsEchoInEvent(c, restoredData)
 				if !bytes.Equal(restoredData, dataBytes) {
 					dataBytes = restoredData
 					trimmedData = strings.TrimSpace(string(restoredData))
@@ -2342,6 +2345,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", err)
 	}
 	body = restoreCodexToolNamesFromContext(c, body)
+	body = restoreOpenAIResponsesInstructionsEchoInResponse(c, body)
 	body, err = restoreOpenAIResponsesClientToolPayload(c, body)
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
@@ -2414,11 +2418,12 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", restoreErr)
 		}
 		restoredBody = restoreCodexToolNamesFromContext(c, restoredBody)
-		body = restoredBody
+		body = restoreOpenAIResponsesInstructionsEchoInResponse(c, restoredBody)
 	} else {
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
 		}
+		bodyText = restoreOpenAIResponsesInstructionsEchoInSSEBody(c, bodyText)
 		body = []byte(bodyText)
 	}
 

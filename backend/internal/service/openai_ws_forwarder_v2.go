@@ -372,6 +372,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 
+	// This is a single HTTP request, so the snapshot cannot be replaced by a
+	// later WS create. Match the ordinary HTTP/SSE instructions echo behavior.
+	instructionFields := map[string]any{}
+	if value, exists := payload["instructions"]; exists {
+		instructionFields["instructions"] = value
+	}
+	syncOpenAIResponsesInstructionsEcho(c, payloadAsJSONBytes(instructionFields))
+	instructionsEcho := openAIResponsesInstructionsEchoRestoreValue(c)
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
@@ -693,6 +701,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 			}
 			message = restoreCodexToolNamesFromContext(c, message)
+			message = restoreOpenAIResponsesInstructionsAtPath(message, "response.instructions", instructionsEcho)
 		}
 		if openAIWSMessageShouldParseUsage(eventType, message) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
@@ -845,6 +854,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			finalResponse = s.replaceModelInResponseBody(finalResponse, mappedModel, originalModel)
 		}
 		finalResponse = s.correctToolCallsInResponseBody(finalResponse)
+		finalResponse = restoreOpenAIResponsesInstructionsAtPath(finalResponse, "instructions", instructionsEcho)
 		populateOpenAIUsageFromResponseJSON(finalResponse, usage)
 		if responseID == "" {
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())

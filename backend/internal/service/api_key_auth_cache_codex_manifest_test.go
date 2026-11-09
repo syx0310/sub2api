@@ -18,7 +18,7 @@ func TestAPIKeyAuthSnapshotGroupCodexModelsManifestRoundtrip(t *testing.T) {
 		User: &User{ID: 46, Status: StatusActive},
 		Group: &Group{
 			ID: groupID, Name: "codex-manifest-roundtrip", Platform: PlatformOpenAI, Status: StatusActive,
-			Hydrated: true, ImageCountBilling: true,
+			Hydrated: true, ImageCountBilling: true, RequirePrivacySet: true,
 			CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
 				Enabled:                   true,
 				AccountIDs:                []int64{7, 8},
@@ -40,15 +40,18 @@ func TestAPIKeyAuthSnapshotGroupCodexModelsManifestRoundtrip(t *testing.T) {
 	require.True(t, used)
 	require.NotNil(t, materialized.Group)
 	require.True(t, materialized.Group.ImageCountBilling, "image billing and catalog policy must survive the same auth snapshot")
+	require.True(t, materialized.Group.RequirePrivacySet, "privacy gate and custom catalog TTL must coexist in v27")
 	require.True(t, materialized.Group.CodexModelsManifestConfig.Enabled)
 	require.Equal(t, []int64{7, 8}, materialized.Group.CodexModelsManifestConfig.AccountIDs)
 	require.True(t, materialized.Group.CodexModelsManifestConfig.FallbackToScheduler)
 	require.Equal(t, &fresh, materialized.Group.CodexModelsManifestConfig.OAuthCacheTTLSeconds)
 	require.Equal(t, &stale, materialized.Group.CodexModelsManifestConfig.OAuthCacheStaleTTLSeconds)
 	require.Equal(t, apiKeyAuthSnapshotVersion, cached.Snapshot.Version)
-	cached.Snapshot.Version = 24
-	materialized, used, err = svc.applyAuthCacheEntry(apiKey.Key, &cached)
-	require.NoError(t, err)
-	require.False(t, used, "v24 lacks the image-count billing contract")
-	require.Nil(t, materialized)
+	for _, oldVersion := range []int{24, 25, 26} {
+		cached.Snapshot.Version = oldVersion
+		materialized, used, err = svc.applyAuthCacheEntry(apiKey.Key, &cached)
+		require.NoError(t, err)
+		require.False(t, used, "old snapshots must miss rather than silently lose current policy")
+		require.Nil(t, materialized)
+	}
 }

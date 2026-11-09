@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	"io"
 	"testing"
 
@@ -35,9 +36,15 @@ func TestPrereadBodyPreservesOriginalRequestStats(t *testing.T) {
 				require.NoError(t, writer.Close())
 			}
 			req := newRequestWithBody(t, compressed.Bytes(), encoding)
+			budget := NewBodyMemoryBudget(32 << 20)
+			ctx, release := WithRequestBodyMemoryBudget(context.Background(), budget)
+			t.Cleanup(release)
+			req = req.WithContext(ctx)
 			decoded, err := ReadRequestBodyWithPrealloc(req) // allowlist middleware
 			require.NoError(t, err)
 			require.Equal(t, samplePayload, string(decoded))
+			reserved := requestBodyBudgetUsed(budget)
+			require.GreaterOrEqual(t, reserved, int64(len(decoded)))
 			req.Body = NewPrereadBody(decoded)
 			_, err = io.ReadFull(req.Body, make([]byte, 3)) // partial multipart consumer
 			require.NoError(t, err)
@@ -56,6 +63,10 @@ func TestPrereadBodyPreservesOriginalRequestStats(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, rewritten, body)
 			require.Equal(t, stats, nextStats)
+			require.Equal(t, reserved, requestBodyBudgetUsed(budget), "stats and preread reuse must not allocate another body reservation")
+			release()
+			release()
+			require.Zero(t, requestBodyBudgetUsed(budget), "stats context must preserve the reservation's cleanup")
 		})
 	}
 }

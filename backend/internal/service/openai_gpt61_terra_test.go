@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -233,4 +234,93 @@ func TestGPT61TerraBackgroundCompactionClientReplay(t *testing.T) {
 			})
 		}
 	}
+}
+
+// The fork deliberately maps explicit disabled/minimal effort to low, including
+// after a transport fallback. Upstream's minimal -> 400 policy is not adopted.
+func TestGPT61TerraExplicitEffortCompatibilityAcrossHTTPRoutes(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for effort, want := range map[string]string{"none": "low", "minimal": "low", "ultra": "xhigh", "max": "max"} {
+			t.Run(fmt.Sprintf("passthrough=%t/%s", passthrough, effort), func(t *testing.T) {
+				s := newAstraOAuthSetup(t, passthrough)
+				s.upstream.resp = &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(codexCompletedSSE(`{"id":"resp_effort","model":"gpt-6.1-terra","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)))}
+				body := []byte(fmt.Sprintf(`{"model":"gpt-6.1-terra","stream":false,"input":"hi","reasoning":{"effort":%q}}`, effort))
+				_, err := s.svc.Forward(context.Background(), s.c, s.account, body)
+				require.NoError(t, err)
+				require.Equal(t, want, gjson.GetBytes(s.upstream.lastBody, "reasoning.effort").String())
+			})
+		}
+	}
+}
+
+func TestGPT61TerraOfflineCodexCatalog(t *testing.T) {
+	body, err := BuildCodexModelsManifest([]string{"gpt-6.1-terra"})
+	require.NoError(t, err)
+	models := decodeCodexManifestModels(t, body)
+	require.Len(t, models, 1)
+	m := models[0]
+	require.Equal(t, "gpt-6.1-terra", m["slug"])
+	require.Equal(t, "GPT-6.1 Terra", m["display_name"])
+	require.Equal(t, "low", m["default_reasoning_level"])
+	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, effortsFromManifestModel(t, m))
+	require.EqualValues(t, 500000, m["context_window"])
+	require.EqualValues(t, 872000, m["max_context_window"])
+	require.Equal(t, "xhigh", m["multi_agent_reasoning_effort"])
+	require.Equal(t, "v2", m["multi_agent_version"])
+	require.Equal(t, []any{map[string]any{"id": "priority", "name": "Fast", "description": "1.5x speed"}}, m["service_tiers"])
+	messages, ok := m["model_messages"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, gjson.GetBytes(openai.CodexGPT61TerraMetadata, "model_messages.instructions_template").String(), messages["instructions_template"])
+	require.NotEmpty(t, messages["persistent_instructions"])
+}
+
+func TestGPT61TerraCatalogTemplateDoesNotChangePromptInjectionPolicy(t *testing.T) {
+	var descriptor struct {
+		ModelMessages struct {
+			InstructionsTemplate string `json:"instructions_template"`
+		} `json:"model_messages"`
+	}
+	require.NoError(t, json.Unmarshal(openai.CodexGPT61TerraMetadata, &descriptor))
+	require.NotEmpty(t, descriptor.ModelMessages.InstructionsTemplate)
+	for _, model := range []string{"gpt-6.1-terra", "openai/GPT-6.1-Terra-high", "gpt-6.1-terra-openai-compact"} {
+		require.NotEqual(t, descriptor.ModelMessages.InstructionsTemplate, openai.CodexBaseInstructionsForModel(model), model)
+		require.Equal(t, openai.CodexBaseInstructionsForModel("gpt-5.5"), openai.CodexBaseInstructionsForModel(model), model)
+	}
+}
+
+func TestGPT61TerraCodexCapabilitiesFollowRoute(t *testing.T) {
+	for _, tc := range []struct {
+		accountType, base string
+		toolMode, lite    string
+	}{
+		{AccountTypeAPIKey, "https://api.openai.com", `"code_mode_only"`, "false"},
+		{AccountTypeOAuth, "https://chatgpt.com", `"code_mode_only"`, "true"},
+	} {
+		account := &Account{Platform: PlatformOpenAI, Type: tc.accountType, Credentials: map[string]any{"base_url": tc.base}}
+		caps := accountCodexToolCapabilities(account, "gpt-6.1-terra")
+		require.JSONEq(t, tc.toolMode, string(caps["tool_mode"]), tc.accountType)
+		require.JSONEq(t, tc.lite, string(caps["use_responses_lite"]), tc.accountType)
+		require.JSONEq(t, "true", string(caps["supports_search_tool"]), tc.accountType)
+		require.False(t, bytes.Contains(caps["service_tiers"], []byte("ultrafast")), tc.accountType)
+	}
+
+	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com"}}
+	body, err := completeAPIKeyCodexModelsManifestMetadata([]byte(`{"models":[{"slug":"gpt-6.1-terra"}]}`), true, apiKey)
+	require.NoError(t, err)
+	models := decodeCodexManifestModels(t, body)
+	require.Len(t, models, 1)
+	require.Equal(t, false, models[0]["use_responses_lite"])
+	require.Equal(t, "low", models[0]["default_reasoning_level"])
+	require.EqualValues(t, 500000, models[0]["context_window"])
+
+	adjusted, err := adjustAPIKeyCodexModelsManifest([]byte(`{"models":[{"slug":"gpt-6.1-terra","use_responses_lite":true}]}`), apiKey)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"models":[{"slug":"gpt-6.1-terra","use_responses_lite":false}]}`, string(adjusted))
+}
+
+func TestGPT61TerraCompatPromptCacheKey(t *testing.T) {
+	for _, model := range []string{"gpt-6.1-terra", "openai/GPT-6.1-Terra-max", "gpt-6.1-terra-none"} {
+		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
+	}
+	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-6.1-terra-preview"))
 }
