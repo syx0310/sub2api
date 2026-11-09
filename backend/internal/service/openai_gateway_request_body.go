@@ -2118,10 +2118,6 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact, responsesLite boo
 	return normalized, changed, nil
 }
 
-func isOpenAICodexModel(model string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
-}
-
 // extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,
 // billingModel, originalModel）：显式 effort 的模型归一化（max 保留判定）用第一个
 // 非空候选；body 未携带 effort 时的模型后缀推导依次尝试每个候选——OAuth 的

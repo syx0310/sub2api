@@ -69,7 +69,7 @@ func TestWSInstructionsEchoIsPerCreate(t *testing.T) {
 				return `{"type":"response.create","model":"gpt-5.1","input":[{"type":"message","role":"user","content":"hello"}]` + field + `}`
 			}
 			client := dialPassthroughLifecycleClientWithPayload(t, server, bodyFor(`"first"`))
-			defer client.CloseNow()
+			defer func() { _ = client.CloseNow() }()
 			for i, raw := range []string{`"first"`, `"second\nline"`, "", `""`} {
 				if i > 0 {
 					require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(bodyFor(raw))))
