@@ -44,20 +44,20 @@ func TestHTTPToWSSearchReacquirePreservesAdmission(t *testing.T) {
 			t.Cleanup(pool.Close)
 			svc := &OpenAIGatewayService{cfg: cfg, cache: &stubGatewayCache{}, openaiWSPool: pool, toolCorrector: NewCodexToolCorrector()}
 			account := &Account{ID: 799, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"access_token": "test"}}
-			call := func(body map[string]any) (*OpenAIForwardResult, error, int) {
+			call := func(body map[string]any) (*OpenAIForwardResult, int, error) {
 				recorder := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(recorder)
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				result, err := svc.forwardOpenAIWSV2(t.Context(), c, account, body, "search-test", "search-test", "test", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, true, false, "gpt-5.1", "gpt-5.1", time.Now(), 0, "", nil)
-				return result, err, recorder.Code
+				return result, recorder.Code, err
 			}
-			_, err, _ := call(map[string]any{"model": "gpt-5.1", "store": false, "input": "before"})
+			_, _, err := call(map[string]any{"model": "gpt-5.1", "store": false, "input": "before"})
 			require.NoError(t, err)
 			request := map[string]any{"model": "gpt-5.1", "store": false, "input": "complete new request", "tools": []any{map[string]any{"type": "web_search"}}}
 			if name == "anchored" {
 				request["previous_response_id"] = "resp_before_search"
 			}
-			result, err, status := call(request)
+			result, status, err := call(request)
 			require.Len(t, old.writes, 1, "no search request is written to the incompatible socket")
 			switch name {
 			case "anchored":
