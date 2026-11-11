@@ -613,9 +613,9 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	t.Parallel()
 
 	firstCreated := []byte(`{"type":"response.created","response":{"id":"resp_turn_1"}}`)
-	firstTerminal := []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1}}}`)
+	firstTerminal := []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":{"cache_write_tokens":2,"cache_write_tokens_details":{"ttl_30m_tokens":0,"ttl_12h_tokens":2}}}}}`)
 	secondCreated := []byte(`{"type":"response.created","response":{"id":"resp_turn_2"}}`)
-	secondTerminal := []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4}}}`)
+	secondTerminal := []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4,"input_tokens_details":{"cache_write_tokens":3,"cache_write_tokens_details":{"ttl_30m_tokens":3,"ttl_12h_tokens":0}}}}}`)
 	clientConn := newPassthroughTestFrameConn(nil, false)
 	upstreamConn := newPassthroughTestFrameConn(nil, false)
 
@@ -666,14 +666,21 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	require.Equal(t, "response.completed", firstTurn.TerminalEventType)
 	require.Equal(t, 2, firstTurn.Usage.InputTokens)
 	require.Equal(t, 1, firstTurn.Usage.OutputTokens)
+	require.Zero(t, firstTurn.Usage.CacheCreation30mInputTokens)
+	require.Equal(t, 2, firstTurn.Usage.CacheCreation12hInputTokens)
 	require.Equal(t, int64(len(firstCreated)+len(firstTerminal)), firstTurn.ResponseBodyBytes)
 	require.Equal(t, "resp_turn_2", secondTurn.RequestID)
 	require.Equal(t, "response.failed", secondTurn.TerminalEventType)
 	require.Equal(t, 3, secondTurn.Usage.InputTokens)
 	require.Equal(t, 4, secondTurn.Usage.OutputTokens)
+	require.Equal(t, 3, secondTurn.Usage.CacheCreation30mInputTokens)
+	require.Zero(t, secondTurn.Usage.CacheCreation12hInputTokens, "failed turn must not inherit the previous turn's long writes")
 	require.Equal(t, int64(len(secondCreated)+len(secondTerminal)), secondTurn.ResponseBodyBytes)
 	require.Equal(t, 5, outcome.result.Usage.InputTokens)
 	require.Equal(t, 5, outcome.result.Usage.OutputTokens)
+	require.Equal(t, 5, outcome.result.Usage.CacheCreationInputTokens)
+	require.Equal(t, 3, outcome.result.Usage.CacheCreation30mInputTokens)
+	require.Equal(t, 2, outcome.result.Usage.CacheCreation12hInputTokens)
 	require.Equal(t, int64(len(firstCreated)+len(firstTerminal)+len(secondCreated)+len(secondTerminal)), outcome.result.ResponseBodyBytes)
 }
 
@@ -710,11 +717,11 @@ func TestRelay_ResponseSteerTracksAutomaticContinuation(t *testing.T) {
 	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 2 }, time.Second, 10*time.Millisecond)
 
 	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.steer.accepted","steer":{"id":"steer_1","previous_response_id":"resp_initial"}}`)}
-	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.incomplete","response":{"id":"resp_initial","incomplete_details":{"reason":"steered"},"usage":{"input_tokens":10,"output_tokens":2}}}`)}
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.incomplete","response":{"id":"resp_initial","incomplete_details":{"reason":"steered"},"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cache_write_tokens":8,"cache_write_tokens_details":{"ttl_30m_tokens":3,"ttl_12h_tokens":5}}}}}`)}
 	firstTurn := <-turns
 	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_successor","model":"gpt-6-astra"}}`)}
 	automaticTurn := <-automaticTurns
-	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_successor","model":"gpt-6-astra","usage":{"input_tokens":12,"output_tokens":4}}}`)}
+	upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_successor","model":"gpt-6-astra","usage":{"input_tokens":12,"output_tokens":4,"input_tokens_details":{"cache_write_tokens":10,"cache_write_tokens_details":{"ttl_30m_tokens":0,"ttl_12h_tokens":10}}}}}`)}
 	secondTurn := <-turns
 	require.NoError(t, upstreamConn.Close())
 
@@ -730,6 +737,10 @@ func TestRelay_ResponseSteerTracksAutomaticContinuation(t *testing.T) {
 	require.Equal(t, "response.incomplete", firstTurn.TerminalEventType)
 	require.Equal(t, "resp_successor", secondTurn.RequestID)
 	require.Equal(t, "response.completed", secondTurn.TerminalEventType)
+	require.Equal(t, 3, firstTurn.Usage.CacheCreation30mInputTokens)
+	require.Equal(t, 5, firstTurn.Usage.CacheCreation12hInputTokens)
+	require.Zero(t, secondTurn.Usage.CacheCreation30mInputTokens)
+	require.Equal(t, 10, secondTurn.Usage.CacheCreation12hInputTokens)
 	require.Equal(t, "steer_1", automaticTurn.SteerID)
 	require.Equal(t, "resp_initial", automaticTurn.PreviousResponseID)
 	require.Equal(t, "gpt-6-astra", automaticTurn.RequestModel)
@@ -737,6 +748,9 @@ func TestRelay_ResponseSteerTracksAutomaticContinuation(t *testing.T) {
 	require.JSONEq(t, string(steerPayload), string(automaticTurn.ClientPayloads[0]))
 	require.Equal(t, 22, outcome.result.Usage.InputTokens)
 	require.Equal(t, 6, outcome.result.Usage.OutputTokens)
+	require.Equal(t, 18, outcome.result.Usage.CacheCreationInputTokens)
+	require.Equal(t, 3, outcome.result.Usage.CacheCreation30mInputTokens)
+	require.Equal(t, 15, outcome.result.Usage.CacheCreation12hInputTokens)
 	require.Zero(t, outcome.result.DroppedDownstreamFrames)
 	require.Len(t, clientConn.Writes(), 5)
 }
@@ -1782,6 +1796,85 @@ func TestRelay_OnTurnComplete_FirstTokenMsRecordedForEveryTurn(t *testing.T) {
 		require.Equal(t, 2*time.Second, turn.Duration)
 	}
 	require.Equal(t, secondTurnAt, secondTurn.StartedAt)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not stop after cancellation")
+	}
+}
+
+func TestRelay_IsFirstTokenEventDecidesEveryTurnFirstToken(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	firstTurnAt := time.Date(2026, time.November, 5, 9, 0, 0, 0, time.UTC)
+	secondTurnAt := firstTurnAt.Add(time.Minute)
+	var clock atomic.Int64
+	clock.Store(firstTurnAt.UnixNano())
+
+	turns := make(chan RelayTurnResult, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Relay(
+			ctx,
+			clientConn,
+			upstreamConn,
+			[]byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+			RelayOptions{
+				FirstTurnStartedAt: firstTurnAt,
+				Now:                func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+				// Accept everything after response.created, including terminal events.
+				IsFirstTokenEvent: func(eventType string, _ []byte) bool {
+					return eventType != "response.created"
+				},
+				OnTurnComplete: func(current RelayTurnResult) {
+					turns <- current
+				},
+			},
+		)
+	}()
+
+	sendUpstream := func(at time.Time, payload string) {
+		forwarded := len(clientConn.Writes())
+		clock.Store(at.UnixNano())
+		upstreamConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(payload)}
+		require.Eventually(t, func() bool { return len(clientConn.Writes()) == forwarded+1 }, time.Second, time.Millisecond)
+	}
+	waitTurn := func(responseID string) RelayTurnResult {
+		select {
+		case turn := <-turns:
+			return turn
+		case <-time.After(time.Second):
+			t.Fatalf("turn %s did not complete", responseID)
+			return RelayTurnResult{}
+		}
+	}
+
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 1 }, time.Second, time.Millisecond)
+	sendUpstream(firstTurnAt.Add(100*time.Millisecond), `{"type":"response.created","response":{"id":"resp_first"}}`)
+	sendUpstream(firstTurnAt.Add(300*time.Millisecond), `{"type":"response.output_item.added","item":{"type":"reasoning"}}`)
+	sendUpstream(firstTurnAt.Add(900*time.Millisecond), `{"type":"response.output_text.delta","delta":"Hi"}`)
+	sendUpstream(firstTurnAt.Add(2*time.Second), `{"type":"response.completed","response":{"id":"resp_first","usage":{"input_tokens":1,"output_tokens":2}}}`)
+	firstTurn := waitTurn("resp_first")
+	require.NotNil(t, firstTurn.FirstTokenMs)
+	require.Equal(t, 300, *firstTurn.FirstTokenMs, "the injected rule picks the first-token event")
+
+	clock.Store(secondTurnAt.UnixNano())
+	clientConn.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+	}
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 2 }, time.Second, time.Millisecond)
+	sendUpstream(secondTurnAt.Add(100*time.Millisecond), `{"type":"response.created","response":{"id":"resp_second"}}`)
+	sendUpstream(secondTurnAt.Add(2*time.Second), `{"type":"response.completed","response":{"id":"resp_second","usage":{"input_tokens":1,"output_tokens":0}}}`)
+	secondTurn := waitTurn("resp_second")
+	require.Nil(t, secondTurn.FirstTokenMs, "terminal events never mark the first token")
 
 	cancel()
 	select {

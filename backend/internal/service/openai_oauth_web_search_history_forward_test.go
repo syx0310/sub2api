@@ -339,16 +339,15 @@ func TestOAuthWebSearchCompactionWSPerCreate(t *testing.T) {
 						}
 					}
 					if kind == "native with anchor" {
-						// A store=false ctx_pool anchor belongs to a live upstream
-						// connection. Establish it instead of inventing a cached ID.
-						initial := oauthWebSearchCompactionClientBody(t, "body turn wins", lite)
+						// Establish an anchor on a search-capable socket using the
+						// earlier standalone compaction's history declaration. The
+						// incompatible-socket/reconnect case is tested separately.
+						initial := oauthWebSearchCompactionClientBody(t, "native", lite)
 						initial, err = sjson.SetBytes(initial, "type", "response.create")
-						require.NoError(t, err)
-						initial, err = sjson.SetRawBytes(initial, "input", []byte(`[{"type":"message","role":"user","content":"hello"}]`))
 						require.NoError(t, err)
 						require.NoError(t, client.Write(ctx, coderws.MessageText, initial))
 						requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
-						finishTurn("resp_keep", false)
+						finishTurn("resp_keep", true)
 					}
 					for turn := 1; turn <= 2; turn++ {
 						requestKind := kind

@@ -67,10 +67,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	var samePrefixMigrations int
 	require.NoError(t, tx.QueryRowContext(context.Background(), `
 		SELECT COUNT(*) FROM schema_migrations WHERE filename IN (
-			'249_mcp_oauth.sql', '249_request_ingress_observation.sql'
+			'249_mcp_oauth.sql', '249_request_ingress_observation.sql', '249_add_usage_logs_api_key_cost_index_notx.sql'
 		)
 	`).Scan(&samePrefixMigrations))
-	require.Equal(t, 2, samePrefixMigrations, "fresh databases need both upstream MCP and fork ingress migrations")
+	require.Equal(t, 3, samePrefixMigrations, "fresh databases need all three distinct 249 migrations")
 	require.NoError(t, tx.QueryRowContext(context.Background(), `
 		SELECT COUNT(*) FROM schema_migrations WHERE filename IN (
 			'241_add_payment_order_bonus_amount.sql',

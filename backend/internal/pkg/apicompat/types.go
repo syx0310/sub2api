@@ -7,6 +7,9 @@ package apicompat
 import (
 	"bytes"
 	"encoding/json"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
 
 // ---------------------------------------------------------------------------
@@ -439,6 +442,9 @@ type ResponsesOutput struct {
 	Arguments string `json:"arguments,omitempty"`
 	// 来源为 namespace 子工具时的归属命名空间（codex 按 namespace+name 路由该调用）。
 	Namespace string `json:"namespace,omitempty"`
+	// Preserve the upstream encryption marker, including explicit null/[];
+	// omitting it can make sealed arguments appear to be plaintext.
+	EncryptedFunctionArgs json.RawMessage `json:"encrypted_function_args,omitempty"`
 
 	// type=custom_tool_call（custom/freeform 工具，input 为自由文本）
 	Input string `json:"input,omitempty"`
@@ -606,6 +612,16 @@ type ResponsesInputTokensDetails struct {
 	AudioTokens         int `json:"audio_tokens,omitempty"`
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 	CacheWriteTokens    int `json:"cache_write_tokens,omitempty"`
+	// Raw JSON preserves unknown/malformed provider details without failing the
+	// whole response. Billing uses the shared strict bucket validator below.
+	CacheWriteTokensDetails json.RawMessage `json:"cache_write_tokens_details,omitempty"`
+}
+
+func (u *ResponsesUsage) CacheWriteTTLTokens() (int, int) {
+	if u == nil || u.InputTokensDetails == nil {
+		return 0, 0
+	}
+	return openai.CacheWriteTTLTokens(gjson.ParseBytes(u.InputTokensDetails.CacheWriteTokensDetails), u.CacheCreationInputTokens)
 }
 
 // ResponsesOutputTokensDetails breaks down output token usage.
@@ -814,13 +830,14 @@ type ChatUsage struct {
 //   - completion_tokens_details: reasoning_tokens, audio_tokens,
 //     accepted_prediction_tokens, rejected_prediction_tokens
 type ChatTokenDetails struct {
-	CachedTokens             int `json:"cached_tokens,omitempty"`
-	AudioTokens              int `json:"audio_tokens,omitempty"`
-	CacheCreationTokens      int `json:"cache_creation_tokens,omitempty"`
-	CacheWriteTokens         int `json:"cache_write_tokens,omitempty"`
-	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+	CachedTokens             int             `json:"cached_tokens,omitempty"`
+	AudioTokens              int             `json:"audio_tokens,omitempty"`
+	CacheCreationTokens      int             `json:"cache_creation_tokens,omitempty"`
+	CacheWriteTokens         int             `json:"cache_write_tokens,omitempty"`
+	CacheWriteTokensDetails  json.RawMessage `json:"cache_write_tokens_details,omitempty"`
+	ReasoningTokens          int             `json:"reasoning_tokens,omitempty"`
+	AcceptedPredictionTokens int             `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int             `json:"rejected_prediction_tokens,omitempty"`
 }
 
 // ChatCompletionsChunk is a single streaming chunk from POST /v1/chat/completions.

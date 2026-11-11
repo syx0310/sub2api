@@ -119,7 +119,7 @@ func TestUsageLogStaticInsertShape_PlaceholdersMatchArgTypes(t *testing.T) {
 // session_id 之前，与参数类型表保持同位；缺失时落 NULL 而不是空串。
 func TestPrepareUsageLogInsert_RequestIngress(t *testing.T) {
 	prepared := prepareUsageLogInsert(&service.UsageLog{})
-	index := len(prepared.args) - 3
+	index := len(prepared.args) - 5
 	require.Equal(t, "jsonb", usageLogInsertArgTypes[index])
 	require.Nil(t, prepared.args[index])
 	require.NotContains(t, usageLogSelectColumns, "codex_turn_state")
@@ -137,7 +137,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 6
+	idx := len(prepared.args) - 8
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)

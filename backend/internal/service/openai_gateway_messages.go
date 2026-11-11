@@ -150,6 +150,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
 	anthropicReq.Model = upstreamModel
+	// Keep the existing replay conversion and configured token floor. Effort
+	// normalization follows the group policy below, not the conversion itself.
 	responsesReq, err := anthropicToResponses(s.cfg, &anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
@@ -212,6 +214,25 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	responsesBody, err := json.Marshal(responsesReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal responses request: %w", err)
+	}
+
+	// Apply explicit group mappings before Codex normalization can turn none
+	// into low. The policy runs once; final provider normalization follows it.
+	if account.Platform == PlatformOpenAI {
+		policyBody, changed, policyErr := ApplyOpenAIReasoningEffortPolicyFromContext(ctx, responsesBody)
+		if policyErr != nil {
+			if IsReasoningEffortPolicyDenied(policyErr) {
+				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+				writeAnthropicError(c, http.StatusForbidden, "forbidden_error", policyErr.Error())
+			}
+			return nil, policyErr
+		}
+		if changed {
+			responsesBody = policyBody
+			if responsesReq.Reasoning != nil {
+				responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
+			}
+		}
 	}
 
 	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
@@ -291,22 +312,6 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 					return nil, fmt.Errorf("remarshal after prompt cache key injection: %w", err)
 				}
 				responsesBody = updated
-			}
-		}
-	}
-	if account.Platform == PlatformOpenAI {
-		policyBody, changed, policyErr := ApplyOpenAIReasoningEffortPolicyFromContext(ctx, responsesBody)
-		if policyErr != nil {
-			if IsReasoningEffortPolicyDenied(policyErr) {
-				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-				writeAnthropicError(c, http.StatusForbidden, "forbidden_error", policyErr.Error())
-			}
-			return nil, policyErr
-		}
-		if changed {
-			responsesBody = policyBody
-			if responsesReq.Reasoning != nil {
-				responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
 			}
 		}
 	}
@@ -1467,5 +1472,6 @@ func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUs
 	if usage.InputTokensDetails != nil {
 		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
 	}
+	result.CacheCreation30mInputTokens, result.CacheCreation12hInputTokens = usage.CacheWriteTTLTokens()
 	return result
 }

@@ -33,6 +33,7 @@ func startPassthroughHookRecordingServer(
 			return
 		}
 		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(ResolveOpenAIWSClientReadLimitBytes(svc.cfg))
 
 		msgType, firstMessage, err := ReadOpenAIWSClientMessage(
 			controlCtx,

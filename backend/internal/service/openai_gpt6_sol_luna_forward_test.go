@@ -182,7 +182,12 @@ func TestGPT6SolLunaWSConfigurationAndCompact(t *testing.T) {
 						upstream.Send(`{"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"opaque"}}`)
 						frames++
 					}
-					upstream.Send(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":%q,"output":%s,"usage":{"input_tokens":1,"output_tokens":1}}}`, id, model, output))
+					short, long := []int{0, 100, 40, 0}[turn], []int{0, 0, 60, 100}[turn]
+					details := ""
+					if turn > 0 {
+						details = fmt.Sprintf(`,"cache_write_tokens_details":{"ttl_30m_tokens":%d,"ttl_12h_tokens":%d}`, short, long)
+					}
+					upstream.Send(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":%q,"output":%s,"usage":{"input_tokens":101,"output_tokens":1,"input_tokens_details":{"cache_write_tokens":100%s}}}}`, id, model, output, details))
 					for range frames {
 						_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
 						require.NoError(t, err)
@@ -190,7 +195,10 @@ func TestGPT6SolLunaWSConfigurationAndCompact(t *testing.T) {
 					select {
 					case result := <-results:
 						require.NotNil(t, result.ReasoningEffort)
-						require.Equal(t, model == "gpt-6.1-terra" && turn == 0, result.OpenAICacheWrite12h, "TTL belongs to the current outbound create")
+						require.Equal(t, 100, result.Usage.CacheCreationInputTokens)
+						require.Equal(t, short, result.Usage.CacheCreation30mInputTokens, "use this turn's response, never request TTL")
+						require.Equal(t, long, result.Usage.CacheCreation12hInputTokens)
+						assertOpenAITTLUsageRecorded(t, result)
 						require.Equal(t, want, *result.ReasoningEffort, "turn %d", turn+1)
 					case <-time.After(3 * time.Second):
 						t.Fatal("missing usage result")

@@ -13,7 +13,7 @@ import (
 func TestUsageLogPrewarmInsertShapes(t *testing.T) {
 	log := &service.UsageLog{UserID: 1, APIKeyID: 2, RequestID: "prewarm", Model: "gpt-6-astra", Prewarm: true, CreatedAt: time.Now()}
 	prepared := prepareUsageLogInsert(log)
-	index := len(prepared.args) - 2
+	index := len(prepared.args) - 4
 	require.Equal(t, true, prepared.args[index])
 	require.Equal(t, "boolean", usageLogInsertArgTypes[index])
 	require.Contains(t, usageLogSelectColumns, "prewarm")

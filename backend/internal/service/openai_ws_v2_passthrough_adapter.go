@@ -134,7 +134,6 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 }
 
 type openAIWSPassthroughUsageMeta struct {
-	cacheWriteTTL            atomic.Pointer[string]
 	serviceTier              atomic.Pointer[string]
 	reasoningEffort          atomic.Pointer[string]
 	requestedReasoningEffort atomic.Pointer[string]
@@ -159,7 +158,6 @@ func (m *openAIWSPassthroughUsageMeta) initFromFirstFrame(policyOutput []byte, m
 	if m == nil {
 		return
 	}
-	m.cacheWriteTTL.Store(openAIWSTrimmedStringPtr(gjson.GetBytes(policyOutput, "prompt_cache_options.ttl").String()))
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, m.sessionRequestModel))
 	m.storeTurnModels(m.sessionRequestModel, policyOutput)
@@ -196,7 +194,6 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 	if m == nil {
 		return
 	}
-	m.cacheWriteTTL.Store(openAIWSTrimmedStringPtr(gjson.GetBytes(policyOutput, "prompt_cache_options.ttl").String()))
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, requestModelForFrame))
 	m.storeTurnModels(requestModelForFrame, policyOutput)
@@ -1397,6 +1394,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:       s.openAIWSWriteTimeout(),
 			FirstTurnStartedAt: firstTurnStartedAt,
+			IsFirstTokenEvent:  openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx)),
 			TakeNextTurnStartedAt: func() time.Time {
 				startedAt := acceptedTurnStartedAt.Swap(nil)
 				if startedAt == nil {
@@ -1500,15 +1498,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
 				turnResult := &OpenAIForwardResult{
-					OpenAICacheWrite12h: openAIUses12hCacheWrite(account, turnUpstreamModel, optionalStringValue(usageMeta.cacheWriteTTL.Load())),
-					RequestID:           turn.RequestID,
+					RequestID: turn.RequestID,
 					Usage: OpenAIUsage{
-						InputTokens:              turn.Usage.InputTokens,
-						ImageInputTokens:         turn.Usage.ImageInputTokens,
-						OutputTokens:             turn.Usage.OutputTokens,
-						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
-						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
-						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
+						InputTokens:                 turn.Usage.InputTokens,
+						ImageInputTokens:            turn.Usage.ImageInputTokens,
+						OutputTokens:                turn.Usage.OutputTokens,
+						CacheCreationInputTokens:    turn.Usage.CacheCreationInputTokens,
+						CacheCreation30mInputTokens: turn.Usage.CacheCreation30mInputTokens,
+						CacheCreation12hInputTokens: turn.Usage.CacheCreation12hInputTokens,
+						CacheReadInputTokens:        turn.Usage.CacheReadInputTokens,
+						ImageOutputTokens:           turn.Usage.ImageOutputTokens,
 					},
 					Model:                         turnRequestModel,
 					UpstreamModel:                 openAIWSDifferentModel(turnRequestModel, turnUpstreamModel),
@@ -1668,15 +1667,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 
 	resultRequestModel, resultUpstreamModel := usageMeta.turnModels(relayResult.RequestModel)
 	result := &OpenAIForwardResult{
-		OpenAICacheWrite12h: openAIUses12hCacheWrite(account, resultUpstreamModel, optionalStringValue(usageMeta.cacheWriteTTL.Load())),
-		RequestID:           relayResult.RequestID,
+		RequestID: relayResult.RequestID,
 		Usage: OpenAIUsage{
-			InputTokens:              relayResult.Usage.InputTokens,
-			ImageInputTokens:         relayResult.Usage.ImageInputTokens,
-			OutputTokens:             relayResult.Usage.OutputTokens,
-			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
-			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
+			InputTokens:                 relayResult.Usage.InputTokens,
+			ImageInputTokens:            relayResult.Usage.ImageInputTokens,
+			OutputTokens:                relayResult.Usage.OutputTokens,
+			CacheCreationInputTokens:    relayResult.Usage.CacheCreationInputTokens,
+			CacheCreation30mInputTokens: relayResult.Usage.CacheCreation30mInputTokens,
+			CacheCreation12hInputTokens: relayResult.Usage.CacheCreation12hInputTokens,
+			CacheReadInputTokens:        relayResult.Usage.CacheReadInputTokens,
+			ImageOutputTokens:           relayResult.Usage.ImageOutputTokens,
 		},
 		Model:                         resultRequestModel,
 		UpstreamModel:                 openAIWSDifferentModel(resultRequestModel, resultUpstreamModel),
@@ -1904,6 +1904,19 @@ func relayErrorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// openAIWSFirstTokenEventFunc applies the configured TTFT mode to WebSocket
+// events so they report first-token time on the same basis as SSE streams.
+// codex.* frames are WebSocket-only out-of-band events, not model output.
+func openAIWSFirstTokenEventFunc(mode string) func(eventType string, message []byte) bool {
+	return func(eventType string, message []byte) bool {
+		eventType = strings.TrimSpace(eventType)
+		if eventType == "error" || isOpenAIWSTerminalEvent(eventType) || strings.HasPrefix(eventType, "codex.") {
+			return false
+		}
+		return openAIStreamDataStartsTTFT(string(message), eventType, false, mode)
+	}
 }
 
 func openAIWSFirstTokenMsForLog(firstTokenMs *int) int {

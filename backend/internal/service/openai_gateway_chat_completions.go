@@ -448,7 +448,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	}
 	stampOpenAIResponsesUpstreamEndpoint(c, result)
 	if result != nil {
-		result.OpenAICacheWrite12h = openAIUses12hCacheWriteBody(account, upstreamModel, responsesBody)
 	}
 
 	// cyber_policy：标记已设、error 已按 Chat Completions 格式发给客户端。丢弃 result、

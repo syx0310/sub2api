@@ -216,7 +216,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
 
-	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
+	acquireRequest := openAIWSAcquireRequest{
 		ThreadScope: openAIWSPoolThreadScope(c, account),
 		Account:     account,
 		WSURL:       wsURL,
@@ -232,7 +232,29 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			return ""
 		}(),
-	})
+	}
+	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+	if err == nil && account.IsOpenAIOAuthLike() && lease.initializedWithoutWebSearch() {
+		requestPayload := payloadAsJSONBytes(payload)
+		if openAIWSWebSearchDeclared(requestPayload) {
+			lease.MarkBroken()
+			lease.Release()
+			if !openAIWSSearchActivationCanReconnect(requestPayload) {
+				// Not a transport failure: retrying this delta via SSE cannot
+				// reconstruct the missing client-owned history.
+				message := "web search activation requires complete input history; resend the full request without previous_response_id"
+				if c != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+						"type": "invalid_request_error", "code": "openai_ws_search_full_replay_required", "message": message,
+					}})
+				}
+				return nil, errors.New(message)
+			}
+			acquireRequest.PreferredConnID = ""
+			acquireRequest.ForceNewConn = true
+			lease, err = s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+		}
+	}
 	if err != nil {
 		var agentDialErr *openAIWSDialError
 		if s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
@@ -405,6 +427,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
+	startsFirstToken := openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx))
+	// Timing mode must not change the response commitment/retry boundary.
+	seenTokenEvent := false
 	responseID := ""
 	var finalResponse []byte
 	wroteDownstream := false
@@ -454,7 +479,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			OpenAICacheWrite12h:           openAIUses12hCacheWriteMap(account, mappedModel, payload),
 			RequestID:                     responseID,
 			ResponseID:                    responseID,
 			Usage:                         *usage,
@@ -668,12 +692,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		isTokenEvent := isOpenAIWSTokenEvent(eventType)
 		if isTokenEvent {
 			tokenEventCount++
+			seenTokenEvent = true
 		}
 		isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
 		if isTerminalEvent {
 			terminalEventCount++
 		}
-		if firstTokenMs == nil && isTokenEvent {
+		if firstTokenMs == nil && startsFirstToken(eventType, message) {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
@@ -786,7 +811,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if reqStream && !clientDisconnected {
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
-			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
+			shouldBuffer := !seenTokenEvent && !isTokenEvent && !isTerminalEvent
 			if shouldBuffer {
 				buffered := make([]byte, len(message))
 				copy(buffered, message)

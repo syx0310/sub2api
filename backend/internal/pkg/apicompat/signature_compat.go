@@ -17,6 +17,10 @@ const (
 )
 
 func compatibleResponsesReasoningEncryptedContent(raw, targetProvider string) (string, bool) {
+	// This versioned CC Switch envelope is JSON state, not provider ciphertext.
+	if strings.HasPrefix(strings.TrimSpace(raw), "ccswitch-openai-reasoning-v1:") {
+		return "", false
+	}
 	switch strings.ToLower(strings.TrimSpace(targetProvider)) {
 	case "openai":
 		return compatibleGPTReasoningEncryptedContent(raw)
@@ -32,7 +36,7 @@ func compatibleResponsesReasoningEncryptedContent(raw, targetProvider string) (s
 
 func compatibleGrokReasoningEncryptedContent(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || len(trimmed) > maxReasoningSignatureLen {
+	if trimmed == "" || len(trimmed) > maxReasoningSignatureLen || strings.HasPrefix(trimmed, "ccswitch-openai-reasoning-v1:") {
 		return "", false
 	}
 	if provider, payload, ok := splitReasoningSignatureProviderPrefix(trimmed); ok {

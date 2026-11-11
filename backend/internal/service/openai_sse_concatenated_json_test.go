@@ -29,7 +29,24 @@ func TestOpenAIStreamingPassthroughRepairsConcatenatedJSONDocumentsInSingleDataL
 }
 
 func TestOpenAIWSv2StreamingRepairsConcatenatedJSONDocumentsInSingleMessage(t *testing.T) {
+	for _, mode := range []string{OpenAITTFTModeSemantic, OpenAITTFTModeVisible} {
+		t.Run(mode, func(t *testing.T) {
+			testOpenAIWSv2ConcatenatedJSON(t, mode)
+		})
+	}
+}
+
+func testOpenAIWSv2ConcatenatedJSON(t *testing.T, mode string) {
 	gin.SetMode(gin.TestMode)
+	previous := gatewayForwardingCache.Load()
+	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{openAITTFTMode: mode, expiresAt: time.Now().Add(time.Minute).UnixNano()})
+	t.Cleanup(func() {
+		if previous != nil {
+			gatewayForwardingCache.Store(previous)
+		} else {
+			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{})
+		}
+	})
 
 	largeInProgress, outputItemAdded, completed := openAIConcatenatedJSONTestEvents(t)
 	captureConn := &openAIWSCaptureConn{events: [][]byte{
@@ -50,6 +67,7 @@ func TestOpenAIWSv2StreamingRepairsConcatenatedJSONDocumentsInSingleMessage(t *t
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
 	pool := newOpenAIWSConnPool(cfg)
+	t.Cleanup(pool.Close)
 	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
 	svc := &OpenAIGatewayService{
 		cfg:              cfg,
@@ -82,7 +100,11 @@ func TestOpenAIWSv2StreamingRepairsConcatenatedJSONDocumentsInSingleMessage(t *t
 	require.NotNil(t, result)
 	require.Equal(t, 7, result.Usage.InputTokens)
 	require.Equal(t, 9, result.Usage.OutputTokens)
-	require.Nil(t, result.FirstTokenMs)
+	if mode == OpenAITTFTModeVisible {
+		require.Nil(t, result.FirstTokenMs, "an empty assistant item is not visible output")
+	} else {
+		require.NotNil(t, result.FirstTokenMs, "the assistant item starts semantic TTFT")
+	}
 	assertOpenAISSEFrames(t, recorder.Body.String(), []string{
 		"response.in_progress",
 		"response.output_item.added",

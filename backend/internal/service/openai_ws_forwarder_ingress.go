@@ -985,6 +985,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
+		startsFirstToken := openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx))
 		wroteDownstream := false
 		var downstreamBytes int64
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
@@ -1038,8 +1039,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		resultWithUsage := func(terminalEvent string) *OpenAIForwardResult {
 			result := &OpenAIForwardResult{
-				OpenAICacheWrite12h: openAIUses12hCacheWriteBody(account, mappedModel, payload),
-				RequestID:           responseID, Usage: usage, Model: originalModel, UpstreamModel: mappedModel,
+				RequestID: responseID, Usage: usage, Model: originalModel, UpstreamModel: mappedModel,
 				UpstreamResponseModel:         responseModelObserver.Model(),
 				UpstreamResponseModelConflict: responseModelObserver.Conflict(),
 				UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
@@ -1203,7 +1203,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if isTerminalEvent {
 				terminalEventCount++
 			}
-			if firstTokenMs == nil && isTokenEvent {
+			if firstTokenMs == nil && startsFirstToken(eventType, upstreamMessage) {
 				ms := int(time.Since(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
@@ -1383,6 +1383,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	defer releaseSessionLease()
 
 	turn := 1
+	defer func() {
+		var failoverErr *UpstreamFailoverError
+		if turn > 1 && errors.As(returnErr, &failoverErr) {
+			// Native ingress does not retain a complete conversation for account
+			// migration. A nil current-turn payload makes the handler close the
+			// client connection instead of replaying its original first message.
+			returnErr = newOpenAIWSCurrentTurnFailoverError(returnErr, nil)
+		}
+	}()
 	rejectedFieldRetryState = newOpenAIResponsesRejectedFieldRetryState(currentPayload)
 	turnRetry := 0
 	lastTurnFinishedAt := time.Time{}
@@ -1551,6 +1560,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					pinSessionConn(sessionConnID)
 				}
 			}
+		}
+		// Check the final lease, including one acquired after a failed idle ping.
+		// A different pooled socket may have different initial search capability.
+		if account.IsOpenAIOAuthLike() && sessionLease.initializedWithoutWebSearch() && openAIWSWebSearchDeclared(currentPayload) {
+			if !openAIWSSearchActivationCanReconnect(currentPayload) {
+				resetSessionLease(true)
+				return NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "web search activation requires complete input history; reconnect with full input", nil)
+			}
+			logOpenAIWSModeInfo("ingress_ws_web_search_activation account_id=%d turn=%d action=reconnect", account.ID, turn)
+			resetSessionLease(true)
+			acquiredLease, acquireErr := acquireTurnLease(turn, "", false, true)
+			if acquireErr != nil {
+				return fmt.Errorf("acquire upstream websocket for web search activation: %w", acquireErr)
+			}
+			sessionLease = acquiredLease
+			sessionConnID = strings.TrimSpace(sessionLease.ConnID())
+			if storeDisabled {
+				pinSessionConn(sessionConnID)
+			}
+			// Send the client's standalone payload unchanged. The new handshake's
+			// credits are checked by BeforeForward before the first upstream write.
 		}
 		connID := sessionConnID
 		if currentPreviousResponseID != "" {

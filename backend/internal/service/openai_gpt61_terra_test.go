@@ -109,16 +109,11 @@ func TestGPT61TerraCacheWriteTTLForward(t *testing.T) {
 				body := []byte(fmt.Sprintf(`{"model":"gpt-6.1-terra","stream":false,"input":"hello","prompt_cache_options":{"ttl":%q}}`, ttl))
 				result, err := s.svc.Forward(context.Background(), s.c, s.account, body)
 				require.NoError(t, err)
-				require.Equal(t, route == "apikey" && ttl == "12h", result.OpenAICacheWrite12h)
+				require.Zero(t, result.Usage.CacheCreation12hInputTokens, "request TTL cannot prove billed writes")
 				require.Equal(t, route == "apikey", gjson.GetBytes(s.upstream.lastBody, "prompt_cache_options").Exists())
 			})
 		}
 	}
-	meta := newOpenAIWSPassthroughUsageMeta(openai.GPT61TerraModelID, nil)
-	meta.initFromFirstFrame([]byte(`{"model":"gpt-6.1-terra","prompt_cache_options":{"ttl":"12h"}}`), openai.GPT61TerraModelID)
-	require.Equal(t, "12h", optionalStringValue(meta.cacheWriteTTL.Load()))
-	meta.updateFromResponseCreate([]byte(`{"model":"gpt-6.1-terra"}`), openai.GPT61TerraModelID, openai.GPT61TerraModelID)
-	require.Empty(t, optionalStringValue(meta.cacheWriteTTL.Load()), "a new create must not inherit the previous TTL")
 }
 
 func TestGPT61TerraPricingAndTTL(t *testing.T) {
@@ -132,7 +127,10 @@ func TestGPT61TerraPricingAndTTL(t *testing.T) {
 	for _, total := range []int{272000, 272001} {
 		for _, tier := range []string{"default", "priority", "flex"} {
 			for _, twelve := range []bool{false, true} {
-				tokens := UsageTokens{InputTokens: total - 200000, CacheCreationTokens: 100000, CacheReadTokens: 100000, OutputTokens: 1000, OpenAICacheWrite12h: twelve}
+				tokens := UsageTokens{InputTokens: total - 200000, CacheCreationTokens: 100000, CacheReadTokens: 100000, OutputTokens: 1000, CacheCreation30mTokens: 100000}
+				if twelve {
+					tokens.CacheCreation30mTokens, tokens.CacheCreation12hTokens = 0, 100000
+				}
 				cost, err := svc.CalculateCostWithServiceTier(model, tokens, 1, tier)
 				require.NoError(t, err)
 				inScale, outScale, writeScale := 1.0, 1.0, 1.0
@@ -153,14 +151,14 @@ func TestGPT61TerraPricingAndTTL(t *testing.T) {
 	for _, custom := range []float64{0, 7e-6} {
 		p, err := svc.GetModelPricingWithChannel(model, &ChannelModelPricing{CacheWritePrice: &custom})
 		require.NoError(t, err)
-		cost := svc.computeTokenBreakdown(p, UsageTokens{CacheCreationTokens: 100, OpenAICacheWrite12h: true}, 1, "default", false)
+		cost := svc.computeTokenBreakdown(p, UsageTokens{CacheCreationTokens: 100, CacheCreation12hTokens: 100}, 1, "default", false)
 		require.InDelta(t, 100*custom, cost.CacheCreationCost, 1e-12)
 	}
 	custom := &LiteLLMModelPricing{InputCostPerToken: 123e-6, CacheCreationInputTokenCostExplicit: true, CacheCreationInputTokenCost: 0}
 	prices := &PricingService{pricingData: map[string]*LiteLLMModelPricing{model: custom}}
 	require.Same(t, custom, prices.GetModelPricing(model))
 	dynamic := NewBillingService(&config.Config{}, prices)
-	zeroCost, err := dynamic.CalculateCostWithServiceTier(model, UsageTokens{CacheCreationTokens: 100, OpenAICacheWrite12h: true}, 1, "priority")
+	zeroCost, err := dynamic.CalculateCostWithServiceTier(model, UsageTokens{CacheCreationTokens: 100, CacheCreation12hTokens: 100}, 1, "priority")
 	require.NoError(t, err)
 	require.Zero(t, zeroCost.CacheCreationCost)
 	var catalog map[string]json.RawMessage
@@ -168,7 +166,7 @@ func TestGPT61TerraPricingAndTTL(t *testing.T) {
 	require.Contains(t, catalog, "model_messages")
 }
 
-func TestGPT61TerraChatTTLUsesFinalRequest(t *testing.T) {
+func TestGPT61TerraChatTTLDoesNotInventUsage(t *testing.T) {
 	for _, raw := range []bool{false, true} {
 		t.Run(fmt.Sprintf("raw=%t", raw), func(t *testing.T) {
 			response := codexCompletedSSE(`{"id":"resp_ttl","model":"gpt-6.1-terra","output":[],"usage":{"input_tokens":100,"output_tokens":1}}`)
@@ -185,7 +183,7 @@ func TestGPT61TerraChatTTLUsesFinalRequest(t *testing.T) {
 			result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(`{"model":"alias","stream":false,"messages":[{"role":"user","content":"hello"}],"prompt_cache_options":{"ttl":"12h"}}`), "", "")
 			require.NoError(t, err)
 			require.Equal(t, "12h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
-			require.True(t, result.OpenAICacheWrite12h)
+			require.Zero(t, result.Usage.CacheCreation12hInputTokens)
 		})
 	}
 }
@@ -194,7 +192,7 @@ func TestGPT61TerraRegionalAPIContracts(t *testing.T) {
 	for _, host := range []string{"api.openai.com", "us.api.openai.com", "eu.api.openai.com", "eu.api.openai.com.example", "compatible.example"} {
 		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://" + host + "/v1"}}
 		official := host == "api.openai.com" || host == "us.api.openai.com" || host == "eu.api.openai.com"
-		require.Equal(t, official, openAIUses12hCacheWriteBody(account, openai.GPT61TerraModelID, []byte(`{"prompt_cache_options":{"ttl":"12h"}}`)))
+		require.Equal(t, official, shouldPreserveOpenAIPromptCacheOptions(account, openai.GPT61TerraModelID))
 		_, err := prepareGPT6ChatUpstreamBody(account, openai.GPT61TerraModelID, []byte(`{"tools":[{"type":"function","function":{"name":"echo"}}]}`))
 		require.Equal(t, official, err != nil, "Responses-only tool contract must include regional APIs: %s", host)
 	}

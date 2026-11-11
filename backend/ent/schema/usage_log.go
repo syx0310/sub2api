@@ -93,6 +93,10 @@ func (UsageLog) Fields() []ent.Field {
 		field.Float("image_output_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		field.Int("cache_creation_30m_tokens").
+			Default(0),
+		field.Int("cache_creation_12h_tokens").
+			Default(0),
 
 		// 成本字段
 		field.Float("input_cost").

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMigrations249MCPAndIngressCoexistPostgres(t *testing.T) {
+func TestMigrations249MCPIngressAndCostIndexCoexistPostgres(t *testing.T) {
 	dsn := os.Getenv("SCOPED_ADMIN_TEST_DSN")
 	if dsn == "" {
 		t.Skip("需要独立 SCOPED_ADMIN_TEST_DSN")
@@ -27,9 +27,15 @@ func TestMigrations249MCPAndIngressCoexistPostgres(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	const ingressFile = "249_request_ingress_observation.sql"
 	const mcpFile = "249_mcp_oauth.sql"
+	const indexFile = "249_add_usage_logs_api_key_cost_index_notx.sql"
+	const ttlFile = "250_openai_cache_write_ttl.sql"
 	ingress, err := migrations.FS.ReadFile(ingressFile)
 	require.NoError(t, err)
 	mcp, err := migrations.FS.ReadFile(mcpFile)
+	require.NoError(t, err)
+	index, err := migrations.FS.ReadFile(indexFile)
+	require.NoError(t, err)
+	ttl, err := migrations.FS.ReadFile(ttlFile)
 	require.NoError(t, err)
 	for _, upgrade := range []bool{false, true} {
 		t.Run(fmt.Sprintf("local_249_already_applied=%t", upgrade), func(t *testing.T) {
@@ -43,23 +49,28 @@ func TestMigrations249MCPAndIngressCoexistPostgres(t *testing.T) {
 				_, _ = base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 			})
 			_, err = db.Exec(`CREATE TABLE users(id BIGINT PRIMARY KEY);
-				CREATE TABLE usage_logs(id BIGINT PRIMARY KEY, codex_turn_state_request_header_bytes BIGINT);
+				CREATE TABLE usage_logs(id BIGINT PRIMARY KEY, codex_turn_state_request_header_bytes BIGINT,
+					api_key_id BIGINT, created_at TIMESTAMPTZ, actual_cost NUMERIC(20,10));
 				CREATE TABLE ops_error_logs(id BIGINT PRIMARY KEY);
-				INSERT INTO usage_logs VALUES (1, 42)`)
+				CREATE TABLE channel_model_pricing(id BIGINT PRIMARY KEY);
+				CREATE TABLE channel_pricing_intervals(id BIGINT PRIMARY KEY);
+				CREATE TABLE channel_account_stats_model_pricing(id BIGINT PRIMARY KEY);
+				CREATE TABLE channel_account_stats_pricing_intervals(id BIGINT PRIMARY KEY);
+				INSERT INTO usage_logs(id, codex_turn_state_request_header_bytes) VALUES (1, 42)`)
 			require.NoError(t, err)
 			ctx := context.Background()
 			if upgrade {
-				require.NoError(t, applyMigrationsFS(ctx, db, fstest.MapFS{ingressFile: {Data: ingress}}))
+				require.NoError(t, applyMigrationsFS(ctx, db, fstest.MapFS{ingressFile: {Data: ingress}, mcpFile: {Data: mcp}}))
 				_, err = db.Exec(`UPDATE usage_logs SET request_ingress='{"host":"old.example","source":"host","peer_ip":"10.0.0.1"}'`)
 				require.NoError(t, err)
 			}
-			all := fstest.MapFS{ingressFile: {Data: ingress}, mcpFile: {Data: mcp}}
+			all := fstest.MapFS{ingressFile: {Data: ingress}, mcpFile: {Data: mcp}, indexFile: {Data: index}, ttlFile: {Data: ttl}}
 			require.NoError(t, applyMigrationsFS(ctx, db, all))
 			require.NoError(t, applyMigrationsFS(ctx, db, all))
 			var count int
 			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count))
-			require.Equal(t, 2, count, "full filename, not prefix/max version, identifies a migration")
-			for name, body := range map[string][]byte{ingressFile: ingress, mcpFile: mcp} {
+			require.Equal(t, 4, count, "full filename, not prefix/max version, identifies a migration")
+			for name, body := range map[string][]byte{ingressFile: ingress, mcpFile: mcp, indexFile: index, ttlFile: ttl} {
 				var checksum string
 				require.NoError(t, db.QueryRow(`SELECT checksum FROM schema_migrations WHERE filename=$1`, name).Scan(&checksum))
 				require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(string(body))))), checksum)
@@ -76,6 +87,13 @@ func TestMigrations249MCPAndIngressCoexistPostgres(t *testing.T) {
 			if upgrade {
 				require.Equal(t, "old.example", host.String)
 			}
+			var short, long int
+			require.NoError(t, db.QueryRow(`SELECT cache_creation_30m_tokens, cache_creation_12h_tokens FROM usage_logs WHERE id=1`).Scan(&short, &long))
+			require.Zero(t, short)
+			require.Zero(t, long, "existing bills are not inferred or rewritten")
+			var healthy bool
+			require.NoError(t, db.QueryRow(`SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = 'idx_usage_logs_api_key_created_cost'::regclass`).Scan(&healthy))
+			require.True(t, healthy)
 		})
 	}
 }
