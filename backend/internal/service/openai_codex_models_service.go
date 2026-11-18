@@ -339,7 +339,7 @@ func openAIConfiguredAndObservedCodexModelIDsForGroup(accounts []Account, group 
 		seen[modelID] = struct{}{}
 	}
 	now := time.Now()
-	for _, modelID := range []string{openai.GPT6AstraModelID, openai.GPT6SolModelID, openai.GPT61SolModelID, openai.GPT61TerraModelID, openai.GPT6LunaModelID} {
+	for _, modelID := range []string{openai.GPT6AstraModelID, openai.GPT6SolModelID, openai.GPT61SolModelID, openai.GPT61TerraModelID, openai.GPT62SolModelID, openai.GPT62AstraModelID, openai.GPT6LunaModelID} {
 		if group != nil && !group.ModelAllowlist.Allows(modelID) {
 			continue
 		}
@@ -718,7 +718,7 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
 			Description: "Maximum reasoning depth for complex tasks",
 		})
 	}
-	if isOpenAIGPT6AstraModel(modelID) || normalized == openai.GPT6SolModelID || normalized == openai.GPT61SolModelID || normalized == openai.GPT61TerraModelID || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
+	if isOpenAIGPT6AstraModel(modelID) || openai.IsGPT62ModelSpelling(modelID) || normalized == openai.GPT6SolModelID || normalized == openai.GPT61SolModelID || normalized == openai.GPT61TerraModelID || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "ultra",
 			Description: "Maximum reasoning with automatic task delegation",
@@ -2186,6 +2186,8 @@ var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
 	"gpt-6-sol":     {},
 	"gpt-6.1-sol":   {},
 	"gpt-6.1-terra": {},
+	"gpt-6.2-sol":   {},
+	"gpt-6.2-astra": {},
 	"gpt-6-luna":    {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},

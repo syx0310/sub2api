@@ -82,6 +82,9 @@ func OpenAIWSPayloadToolReplaySelfContained(payload []byte) (bool, string) {
 		if !item.IsObject() {
 			return true
 		}
+		if isCodexExternalContextItem(item) {
+			return true
+		}
 		itemType := strings.TrimSpace(item.Get("type").String())
 		callID := strings.TrimSpace(item.Get("call_id").String())
 		if expected := expectedCodexToolOutputItemType(itemType); expected != "" && callID != "" {
@@ -150,6 +153,9 @@ func NeedsToolContinuation(reqBody map[string]any) bool {
 		if !ok {
 			continue
 		}
+		if isCodexExternalContextMap(itemMap) {
+			continue
+		}
 		itemType, _ := itemMap["type"].(string)
 		if isCodexToolCallItemType(itemType) || itemType == "item_reference" {
 			return true
@@ -177,6 +183,9 @@ func AnalyzeToolContinuationSignals(reqBody map[string]any) ToolContinuationSign
 	for _, item := range input {
 		itemMap, ok := item.(map[string]any)
 		if !ok {
+			continue
+		}
+		if isCodexExternalContextMap(itemMap) {
 			continue
 		}
 		itemType, _ := itemMap["type"].(string)
@@ -245,6 +254,9 @@ func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValid
 	var referenceIDs map[string]struct{}
 	input.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
+			return true
+		}
+		if isCodexExternalContextItem(item) {
 			return true
 		}
 		itemType := item.Get("type").String()
@@ -321,6 +333,9 @@ func AnalyzeToolCallOutputContextCoverageBytes(body []byte) ToolCallOutputContex
 		if !item.IsObject() {
 			return
 		}
+		if isCodexExternalContextItem(item) {
+			return
+		}
 		itemType := item.Get("type").String()
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
@@ -395,6 +410,9 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 		if !ok {
 			continue
 		}
+		if isCodexExternalContextMap(itemMap) {
+			continue
+		}
 		itemType, _ := itemMap["type"].(string)
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
@@ -419,6 +437,9 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 	for _, item := range input {
 		itemMap, ok := item.(map[string]any)
 		if !ok {
+			continue
+		}
+		if isCodexExternalContextMap(itemMap) {
 			continue
 		}
 		itemType, _ := itemMap["type"].(string)
@@ -492,6 +513,9 @@ func HasItemReferenceForCallIDs(reqBody map[string]any, callIDs []string) bool {
 	for _, item := range input {
 		itemMap, ok := item.(map[string]any)
 		if !ok {
+			continue
+		}
+		if isCodexExternalContextMap(itemMap) {
 			continue
 		}
 		itemType, _ := itemMap["type"].(string)

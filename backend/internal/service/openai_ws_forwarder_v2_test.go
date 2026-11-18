@@ -117,11 +117,16 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 
 	cases := []struct {
 		name        string
+		model       string
 		requestTier string
 		stream      bool
 	}{
-		{name: "priority_nonstream", requestTier: "priority", stream: false},
-		{name: "fast_stream", requestTier: "fast", stream: true},
+		{name: "priority_nonstream", model: "gpt-5.5", requestTier: "priority", stream: false},
+		{name: "fast_stream", model: "gpt-5.5", requestTier: "fast", stream: true},
+		{name: "sol62_nonstream", model: "gpt-6.2-sol", requestTier: "priority", stream: false},
+		{name: "sol62_stream", model: "gpt-6.2-sol", requestTier: "fast", stream: true},
+		{name: "astra62_nonstream", model: "gpt-6.2-astra", requestTier: "priority", stream: false},
+		{name: "astra62_stream", model: "gpt-6.2-astra", requestTier: "fast", stream: true},
 	}
 
 	for _, tc := range cases {
@@ -147,11 +152,12 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 
 			captureConn := &openAIWSCaptureConn{
 				events: [][]byte{
-					[]byte(`{"type":"response.completed","response":{"id":"resp_tier_v2","model":"gpt-5.5","status":"completed","service_tier":"default","usage":{"input_tokens":1,"output_tokens":1}}}`),
+					[]byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_tier_v2","model":%q,"status":"completed","service_tier":"default","usage":{"input_tokens":1,"output_tokens":1}}}`, tc.model)),
 				},
 			}
 			captureDialer := &openAIWSCaptureDialer{conn: captureConn}
 			pool := newOpenAIWSConnPool(cfg)
+			defer pool.Close()
 			pool.setClientDialerForTest(captureDialer)
 
 			svc := &OpenAIGatewayService{
@@ -175,8 +181,8 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 			}
 
 			body := []byte(fmt.Sprintf(
-				`{"model":"gpt-5.5","stream":%t,"service_tier":%q,"input":[{"type":"input_text","text":"hi"}]}`,
-				tc.stream, tc.requestTier,
+				`{"model":%q,"stream":%t,"service_tier":%q,"input":[{"type":"input_text","text":"hi"}]}`,
+				tc.model, tc.stream, tc.requestTier,
 			))
 			result, err := svc.Forward(context.Background(), c, account, body)
 			require.NoError(t, err)
@@ -189,6 +195,7 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 			require.Equal(t, "default", result.UpstreamResponseServiceTier)
 			require.Equal(t, "priority", captureConn.lastWrite["service_tier"],
 				"outbound WS payload still carries the requested Fast tier")
+			require.Equal(t, tc.model, captureConn.lastWrite["model"])
 		})
 	}
 }

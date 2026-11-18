@@ -22,9 +22,15 @@ func lastOpenAIConfigurationEffort(body []byte) (index int, effort string, prese
 		case "compaction", "compaction_summary", "context_compaction":
 			index, effort, present = -1, "", false
 		case "configuration_update":
+			// Format-only updates do not reset inherited reasoning. Explicit
+			// null/invalid effort is distinct from absence, never guessed.
+			field := item.Get("reasoning.effort")
+			if !field.Exists() {
+				return true
+			}
 			index, present = int(i.Int()), true
 			effort = ""
-			if field := item.Get("reasoning.effort"); field.Type == gjson.String {
+			if field.Type == gjson.String {
 				effort = strings.TrimSpace(field.String())
 			}
 		}
@@ -41,8 +47,11 @@ func lastOpenAIConfigurationEffortMap(input any) (effort string, present bool) {
 		case "compaction", "compaction_summary", "context_compaction":
 			effort, present = "", false
 		case "configuration_update":
-			present = true
 			reasoning, _ := item["reasoning"].(map[string]any)
+			if _, exists := reasoning["effort"]; !exists {
+				continue
+			}
+			present = true
 			effort, _ = reasoning["effort"].(string)
 			effort = strings.TrimSpace(effort)
 		}

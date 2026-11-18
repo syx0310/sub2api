@@ -12,7 +12,10 @@ import (
 // suffix separated by an underscore. It intentionally does not require the
 // prefix to match the concrete item variant so legacy server IDs and future
 // item types remain replayable.
-func shouldStripOpenAIResponsesInputItemID(_ string, id string) bool {
+func shouldStripOpenAIResponsesInputItemID(itemType string, id string) bool {
+	if itemType == "additional_tools" || itemType == "item_reference" {
+		return false // Declaration/reference IDs are opaque, including across turns.
+	}
 	return !isOpenAIResponsesPrefixedItemID(id)
 }
 

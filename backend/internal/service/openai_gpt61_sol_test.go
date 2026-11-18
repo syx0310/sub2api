@@ -100,7 +100,7 @@ func TestGPT61SolEUAllowsCallerSelectedTiersWithoutForcingThem(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"compute_residency": "EU"}}
 	group := &Group{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true}
 	ctx := context.WithValue(context.Background(), ctxkey.Group, group)
-	require.False(t, openAIGroupForcesFast(ctx, account, openai.GPT61SolModelID))
+	require.False(t, openAIGroupForcedServiceTier(ctx, account, openai.GPT61SolModelID) == OpenAIFastTierPriority)
 	for _, tier := range []string{"priority", "fast", "flex", "auto", "default", "ultrafast"} {
 		body := []byte(fmt.Sprintf(`{"model":"gpt-6.1-sol","service_tier":%q}`, tier))
 		out, err := svc.applyOpenAIFastPolicyToBody(ctx, account, openai.GPT61SolModelID, body)
@@ -117,7 +117,7 @@ func TestGPT61SolEUAllowsCallerSelectedTiersWithoutForcingThem(t *testing.T) {
 		require.Equal(t, want, gjson.GetBytes(out, "service_tier").String())
 	}
 	group.ForceOpenAIFast = true
-	require.True(t, openAIGroupForcesFast(ctx, account, openai.GPT61SolModelID), "explicit administrator force remains effective")
+	require.True(t, openAIGroupForcedServiceTier(ctx, account, openai.GPT61SolModelID) == OpenAIFastTierPriority, "explicit administrator force remains effective")
 	forced := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
 		ServiceTier: "missing", Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll,
 	}}})

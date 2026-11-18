@@ -82,12 +82,12 @@ func TestGPT61TerraEUFastAndLunaCurrentContract(t *testing.T) {
 	group := &Group{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true}
 	ctx := context.WithValue(context.Background(), ctxkey.Group, group)
 	for _, model := range []string{openai.GPT61TerraModelID, openai.GPT6LunaModelID} {
-		require.False(t, openAIGroupForcesFast(ctx, account, model))
+		require.False(t, openAIGroupForcedServiceTier(ctx, account, model) == OpenAIFastTierPriority)
 		out, err := svc.applyOpenAIFastPolicyToBody(ctx, account, model, []byte(fmt.Sprintf(`{"model":%q,"service_tier":"fast"}`, model)))
 		require.NoError(t, err)
 		require.Equal(t, "priority", gjson.GetBytes(out, "service_tier").String())
 		group.ForceOpenAIFast = true
-		require.True(t, openAIGroupForcesFast(ctx, account, model))
+		require.True(t, openAIGroupForcedServiceTier(ctx, account, model) == OpenAIFastTierPriority)
 		group.ForceOpenAIFast = false
 	}
 }

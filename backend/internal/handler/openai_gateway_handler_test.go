@@ -1106,13 +1106,15 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
 	h.cfg = &config.Config{}
 	h.cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds = 1
+	h.cfg.Gateway.OpenAIWS.ClientReadLimitBytes = 8 * 1024 * 1024
 	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
 	defer wsServer.Close()
 
 	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
-	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	clientConn, response, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
 	cancelDial()
 	require.NoError(t, err)
+	require.Equal(t, "8388608", response.Header.Get("x-codex-websocket-max-message-bytes"))
 	defer func() { _ = clientConn.CloseNow() }()
 
 	started := time.Now()

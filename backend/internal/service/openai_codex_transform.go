@@ -15,6 +15,8 @@ var codexModelMap = map[string]string{
 	"gpt-6-sol":            "gpt-6-sol",
 	"gpt-6.1-sol":          "gpt-6.1-sol",
 	"gpt-6.1-terra":        "gpt-6.1-terra",
+	"gpt-6.2-sol":          "gpt-6.2-sol",
+	"gpt-6.2-astra":        "gpt-6.2-astra",
 	"gpt-6-luna":           "gpt-6-luna",
 	"gpt-5.6-sol":          "gpt-5.6-sol",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
@@ -1598,6 +1600,10 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			continue
 		}
 		typ, _ := m["type"].(string)
+		if isCodexExternalContextMap(m) {
+			filtered = append(filtered, m)
+			continue
+		}
 
 		if typ == "reasoning" {
 			if sanitized, keep := sanitizeCodexReasoningInputItem(m); keep {

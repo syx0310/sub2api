@@ -32,8 +32,18 @@ func normalizeKnownOpenAICodexModel(model string) string {
 		return mapped
 	}
 	if strings.HasSuffix(normalized, "-openai-compact") {
-		if mapped := getNormalizedCodexModel(strings.TrimSuffix(normalized, "-openai-compact")); mapped != "" {
+		normalized = strings.TrimSuffix(normalized, "-openai-compact")
+		if mapped := getNormalizedCodexModel(normalized); mapped != "" {
 			return mapped
+		}
+	}
+	// Adopt upstream's 6.1 Sol effort aliases and the two 6.2 presets. Keep
+	// older families' exact-ID boundary (e.g. gpt-6-sol-max stays unknown).
+	// Never infer date/pro variants or a different model's price card.
+	if dash := strings.LastIndexByte(normalized, '-'); dash > 0 && (openai.IsGPT62ModelSpelling(normalized[:dash]) || normalized[:dash] == openai.GPT61SolModelID) {
+		switch normalized[dash+1:] {
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+			return normalized[:dash]
 		}
 	}
 	// Unknown GPT-6 names must not fall through to legacy substring guesses
@@ -93,7 +103,8 @@ func isOpenAIGPT61SolModel(model string) bool {
 }
 
 func openAIModelSupportsPublicUltrafast(model string) bool {
-	return isOpenAIGPT6AstraModel(model) || isOpenAIGPT61SolModel(model)
+	model = normalizeKnownOpenAICodexModel(model)
+	return isOpenAIGPT6AstraModel(model) || isOpenAIGPT61SolModel(model) || openai.IsGPT62ModelSpelling(model)
 }
 
 func isOpenAIGPT6Model(model string) bool {

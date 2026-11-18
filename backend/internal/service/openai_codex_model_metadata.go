@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 var codexToolCapabilityFields = []string{
@@ -12,6 +14,28 @@ var codexToolCapabilityFields = []string{
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
 	"multi_agent_reasoning_effort", "multi_agent_version",
 	"supports_reasoning_effort_updates",
+}
+
+// Group policy cannot grant an OAuth entitlement. Reuse the capabilities we
+// advertise; explicit null/empty snapshots override official API defaults.
+func openAIAccountSupportsUltrafast(account *Account, model string) bool {
+	model = normalizeKnownOpenAICodexModel(model)
+	if account == nil || !openAIModelSupportsUltrafast(model) {
+		return false
+	}
+	if openai.IsGPT62ModelSpelling(model) && account.IsOpenAIEUDataResidency() {
+		return false
+	}
+	tiers, valid := parseCodexServiceTiers(accountCodexToolCapabilities(account, model)["service_tiers"])
+	if !valid {
+		return false
+	}
+	for _, tier := range tiers {
+		if tier.ID == OpenAIFastTierUltrafast {
+			return true
+		}
+	}
+	return false
 }
 
 func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite bool) bool {
@@ -119,7 +143,7 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 	if account.IsOpenAIApiKey() && ultrafastEndpoint && openAIModelSupportsPublicUltrafast(modelID) &&
 		(isOpenAIGPT61SolModel(modelID) || (!euEndpoint && !account.IsOpenAIEUDataResidency())) {
 		tiers := configuredCodexServiceTiersForModel(modelID)
-		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; 6x Standard token pricing."})
+		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; model-specific Standard token pricing multiplier."})
 		encoded, err := json.Marshal(tiers)
 		if err != nil {
 			panic(err)

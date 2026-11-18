@@ -223,7 +223,7 @@ func TestNormalizeOpenAIResponsesWebSocketCompatibilityBody_SanitizesToolSchemas
 		require.NoError(t, err)
 		require.True(t, changed)
 		require.Equal(t, "object", gjson.GetBytes(normalized, "tools.0.parameters.type").String())
-		require.False(t, gjson.GetBytes(normalized, "tools.0.parameters.properties.q.pattern").Exists())
+		require.Equal(t, accountType == AccountTypeAPIKey, gjson.GetBytes(normalized, "tools.0.parameters.properties.q.pattern").Exists())
 	}
 }
 

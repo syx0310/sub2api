@@ -160,7 +160,7 @@ func TestUsageLogActualCostBreakdownNormalizesHistoricalAnomalies(t *testing.T) 
 	assertActualCostInvariant(t, 1.5, input, output, cacheCreation, cacheRead, other)
 }
 
-func TestModelActualCostBreakdownPreservesAccountScopeSemantics(t *testing.T) {
+func TestModelActualCostBreakdownKeepsChargeSeparateFromAccountCost(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
 	client := tx.Client()
@@ -182,8 +182,9 @@ func TestModelActualCostBreakdownPreservesAccountScopeSemantics(t *testing.T) {
 	models, err := repo.GetModelStatsWithFilters(ctx, base, base.Add(time.Hour), 0, 0, account.ID, 0, nil, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, models, 1)
-	require.InDelta(t, 8.0, models[0].ActualCost, 1e-9)
-	require.InDelta(t, 2.0, models[0].InputActualCost, 1e-9)
-	require.InDelta(t, 6.0, models[0].OutputActualCost, 1e-9)
+	require.InDelta(t, 2.0, models[0].ActualCost, 1e-9)
+	require.InDelta(t, 0.5, models[0].InputActualCost, 1e-9)
+	require.InDelta(t, 1.5, models[0].OutputActualCost, 1e-9)
+	require.InDelta(t, 8.0, models[0].AccountCost, 1e-9)
 	assertActualCostInvariant(t, models[0].ActualCost, models[0].InputActualCost, models[0].OutputActualCost, models[0].CacheCreationActualCost, models[0].CacheReadActualCost, models[0].OtherActualCost)
 }

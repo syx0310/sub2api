@@ -2070,7 +2070,7 @@ func TestApplyCodexOAuthTransform_GPT6AstraPreservesConfigurationUpdate(t *testi
 	require.NotContains(t, reqBody, "top_p")
 	require.NotContains(t, reqBody, "top_logprobs")
 	require.NotContains(t, reqBody, "truncation")
-	require.NotContains(t, reqBody, "context_management")
+	require.Contains(t, reqBody, "context_management")
 	require.Equal(t, []any{"reasoning.encrypted_content"}, reqBody["include"])
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)

@@ -44,7 +44,7 @@ func TestCodexTurnMetadataCanonicalSnapshot(t *testing.T) {
 		require.Equal(t, body, got, "a complete snapshot must remain byte-for-byte intact")
 	}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "acct-test"}}
-	got, changed, err := applyCodexAccountIdentityClientMetadataRaw(body, account, 7)
+	got, changed, err := applyCodexAccountIdentityClientMetadataRaw(body, account, 7, "")
 	require.NoError(t, err)
 	require.True(t, changed)
 	cm := gjson.GetBytes(got, "client_metadata")

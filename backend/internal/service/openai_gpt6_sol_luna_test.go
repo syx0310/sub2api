@@ -210,7 +210,7 @@ func TestGPT6OriginalSolEUDoesNotForceFast(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"compute_residency": "EU"}}
 	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, ForceOpenAIFast: true})
 	for _, model := range []string{"gpt-6-sol"} {
-		require.False(t, openAIGroupForcesFast(ctx, account, model))
+		require.False(t, openAIGroupForcedServiceTier(ctx, account, model) == OpenAIFastTierPriority)
 		for _, tier := range []string{"priority", "fast", "flex", "ultrafast", "auto", "default"} {
 			out, err := svc.applyOpenAIFastPolicyToBody(ctx, account, model, []byte(fmt.Sprintf(`{"model":%q,"service_tier":%q}`, model, tier)))
 			require.NoError(t, err)

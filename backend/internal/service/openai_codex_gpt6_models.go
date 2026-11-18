@@ -42,6 +42,17 @@ func configuredGPT6StandardModelDescriptor(modelID string) (configuredCodexModel
 		}
 		terra.officialMetadata = openai.CodexGPT61TerraMetadata
 		gpt6SolLunaCodexModels[openai.GPT61TerraModelID] = terra
+		for modelID, raw := range map[string][]byte{
+			openai.GPT62SolModelID:   openai.CodexGPT62SolMetadata,
+			openai.GPT62AstraModelID: openai.CodexGPT62AstraMetadata,
+		} {
+			var model configuredCodexModelDescriptor
+			if err := json.Unmarshal(raw, &model); err != nil {
+				panic(err)
+			}
+			model.officialMetadata = raw
+			gpt6SolLunaCodexModels[modelID] = model
+		}
 	})
 	descriptor, ok := gpt6SolLunaCodexModels[canonicalizeOpenAIModelAliasSpelling(modelID)]
 	return descriptor, ok
